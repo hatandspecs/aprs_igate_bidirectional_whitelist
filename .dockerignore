@@ -1,0 +1,4 @@
+run/
+igate.secrets
+*.md
+.git/

@@ -1,0 +1,5 @@
+# Real APRS-IS passcode — see README.md. Never commit this.
+igate.secrets
+
+# Generated at runtime: rendered direwolf.conf, container logs, etc.
+run/
