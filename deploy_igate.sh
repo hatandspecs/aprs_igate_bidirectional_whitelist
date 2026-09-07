@@ -41,6 +41,8 @@ STATUS_HTML="${RUN_DIR}/status.html"
 
 IMAGE_NAME="aprs-igate:latest"
 CONTAINER_NAME="aprs-igate"
+NETWORK_NAME="aprs-igate-net"
+NETWORK_SUBNET="172.28.7.0/29"
 
 BARE_DIREWOLF_PID="${RUN_DIR}/direwolf.pid"
 BARE_RIGCTLD_PID="${RUN_DIR}/rigctld.pid"
@@ -410,6 +412,57 @@ apply_radio_settings() {
   fi
 }
 
+
+# --- egress restriction ------------------------------------------------------
+# The container needs exactly two things off-box: DNS, and a TCP connection to
+# the APRS-IS server. Docker's default bridge grants unrestricted outbound
+# access, so the container is placed on its own network and filtered in the
+# DOCKER-USER chain, which Docker consults before its own forwarding rules.
+#
+# Requires root (iptables). Set RESTRICT_EGRESS = no to skip.
+egress_enabled() { [[ "${CFG[RESTRICT_EGRESS]:-yes}" == "yes" ]]; }
+
+network_ensure() {
+  docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 && return 0
+  docker network create --subnet "$NETWORK_SUBNET" "$NETWORK_NAME" >/dev/null \
+    && echo "Created network ${NETWORK_NAME} (${NETWORK_SUBNET})"
+}
+
+egress_rules_present() {
+  sudo -n iptables -C DOCKER-USER -s "$NETWORK_SUBNET" -j DROP 2>/dev/null
+}
+
+egress_apply() {
+  egress_enabled || return 0
+  command -v iptables >/dev/null || { echo "Note: iptables not found; egress unrestricted." >&2; return 0; }
+
+  local port="${CFG[IGSERVER_PORT]:-14580}"
+  if ! sudo -n true 2>/dev/null; then
+    echo "Note: egress restriction needs sudo. Run 'sudo -v' then 'up' again," >&2
+    echo "      or set RESTRICT_EGRESS = no in igate.conf." >&2
+    return 0
+  fi
+
+  egress_remove_rules
+  # Order matters: these are inserted, so the DROP must go in first to end up last.
+  sudo iptables -I DOCKER-USER 1 -s "$NETWORK_SUBNET" -j DROP
+  sudo iptables -I DOCKER-USER 1 -s "$NETWORK_SUBNET" -p tcp --dport "$port" -j RETURN
+  sudo iptables -I DOCKER-USER 1 -s "$NETWORK_SUBNET" -p udp --dport 53 -j RETURN
+  sudo iptables -I DOCKER-USER 1 -s "$NETWORK_SUBNET" -p tcp --dport 53 -j RETURN
+  sudo iptables -I DOCKER-USER 1 -s "$NETWORK_SUBNET" -m state --state ESTABLISHED,RELATED -j RETURN
+  echo "Egress restricted: DNS + tcp/${port} only (from ${NETWORK_SUBNET})"
+}
+
+egress_remove_rules() {
+  sudo -n true 2>/dev/null || return 0
+  local port="${CFG[IGSERVER_PORT]:-14580}"
+  sudo iptables -D DOCKER-USER -s "$NETWORK_SUBNET" -m state --state ESTABLISHED,RELATED -j RETURN 2>/dev/null || true
+  sudo iptables -D DOCKER-USER -s "$NETWORK_SUBNET" -p tcp --dport 53 -j RETURN 2>/dev/null || true
+  sudo iptables -D DOCKER-USER -s "$NETWORK_SUBNET" -p udp --dport 53 -j RETURN 2>/dev/null || true
+  sudo iptables -D DOCKER-USER -s "$NETWORK_SUBNET" -p tcp --dport "$port" -j RETURN 2>/dev/null || true
+  sudo iptables -D DOCKER-USER -s "$NETWORK_SUBNET" -j DROP 2>/dev/null || true
+}
+
 bare_is_running() {
   [[ -f "$BARE_DIREWOLF_PID" ]] && kill -0 "$(cat "$BARE_DIREWOLF_PID")" 2>/dev/null
 }
@@ -481,21 +534,43 @@ _docker_up() {
   [[ -n "$dialout_gid" ]] && group_flags+=(--group-add "$dialout_gid")
   [[ -n "$audio_gid" ]] && group_flags+=(--group-add "$audio_gid")
 
-  local -a device_flags=(--device "${cat_device}:${cat_device}")
-  [[ "$ptt_device" != "$cat_device" ]] && device_flags+=(--device "${ptt_device}:${ptt_device}")
+  # Serial: only the specific port(s) this radio uses, read/write, no mknod.
+  local -a device_flags=(--device "${cat_device}:${cat_device}:rw")
+  [[ "$ptt_device" != "$cat_device" ]] && device_flags+=(--device "${ptt_device}:${ptt_device}:rw")
+
+  # Audio: pass ONLY this radio's ALSA card, not all of /dev/snd. Passing the
+  # whole directory would also hand over the machine's built-in microphone
+  # (controlC0/pcmC0D0c), which this container has no business reaching.
+  local card snd_node
+  card="$(audio_card_number)"
+  if [[ -n "$card" ]]; then
+    for snd_node in "/dev/snd/controlC${card}" /dev/snd/pcmC${card}D*; do
+      [[ -e "$snd_node" ]] && device_flags+=(--device "${snd_node}:${snd_node}:rw")
+    done
+    # ALSA needs the timer node for its scheduling.
+    [[ -e /dev/snd/timer ]] && device_flags+=(--device "/dev/snd/timer:/dev/snd/timer:rw")
+  else
+    echo "Note: ADEVICE has no numeric card; falling back to passing all of /dev/snd." >&2
+    device_flags+=(--device /dev/snd:/dev/snd:rw)
+  fi
+
+  if egress_enabled; then
+    network_ensure
+    egress_apply
+  fi
 
   docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
+    --network "$(egress_enabled && echo "$NETWORK_NAME" || echo bridge)" \
     --user "$(id -u):$(id -g)" \
     --cap-drop=ALL \
     --security-opt no-new-privileges:true \
     --pids-limit=64 \
+    --memory=512m \
     --read-only \
     --tmpfs /tmp \
-    --tmpfs /var/lock \
     "${device_flags[@]}" \
-    --device /dev/snd:/dev/snd \
     "${group_flags[@]}" \
     -e RIG_MODEL="${CFG[RIG_MODEL]}" \
     -e CAT_DEVICE="${cat_device}" \
@@ -673,6 +748,16 @@ monitor_filter() {
     }
     BEGIN { pending = ""; ndetail = 0; collecting = 0 }
 
+    # --- redaction ---
+    # Direwolf echoes its APRS-IS login, which contains the passcode in clear
+    # text. Never render it: the whole point of igate.secrets is to keep that
+    # value out of sight. (It is still present in the raw `logs` output.)
+    /pass [0-9]+/ {
+      sub(/pass [0-9]+/, "pass ****")
+      emit("0;35", "IS LOGIN ", $0)
+      next
+    }
+
     # --- noise ---
     /^\[rx>ig\] #/                                { next }   # APRS-IS keepalive
     /^Rx IGate: Truncated information part at CR/ { next }
@@ -729,6 +814,7 @@ Packet flow monitor.  Ctrl-C to stop.
   IS DROP    came from APRS-IS, did NOT match the whitelist, dropped
   TX LOCAL   transmitted from this station (beacon or injected packet)
   IS SERVER  APRS-IS server chatter        WARN/INFO  problems and state
+  IS LOGIN   APRS-IS login handshake (passcode redacted)
 
   Indented grey lines are Direwolf's decode of the frame above
   ("monitor raw" hides them).
@@ -776,18 +862,28 @@ cmd_uninstall() {
   fi
 }
 
-case "${1:-}" in
-  config) cmd_config "${2:-}" ;;
-  build) cmd_build "${2:-}" ;;
-  up) cmd_up "${2:-}" ;;
-  down) cmd_down "${2:-}" ;;
-  restart) cmd_down "${2:-}"; cmd_up "${2:-}" ;;
-  status) cmd_status "${2:-}" ;;
-  logs) cmd_logs "${2:-}" ;;
-  monitor) cmd_monitor "${2:-}" ;;
-  uninstall) cmd_uninstall "${2:-}" ;;
-  *)
-    echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|uninstall} [config-file]" >&2
-    exit 1
-    ;;
-esac
+# Wrapped in a function and invoked on the final line so bash parses the whole
+# script before executing any of it. Bash otherwise reads a script incrementally
+# by byte offset: editing this file while a long-running subcommand (monitor,
+# logs) is active would shift those offsets and make the running shell resume
+# mid-construct, producing a spurious syntax error.
+main() {
+  case "${1:-}" in
+    config) cmd_config "${2:-}" ;;
+    build) cmd_build "${2:-}" ;;
+    up) cmd_up "${2:-}" ;;
+    down) cmd_down "${2:-}" ;;
+    restart) cmd_down "${2:-}"; cmd_up "${2:-}" ;;
+    status) cmd_status "${2:-}" ;;
+    logs) cmd_logs "${2:-}" ;;
+    monitor) cmd_monitor "${2:-}" ;;
+    uninstall) cmd_uninstall "${2:-}" ;;
+    *)
+      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|uninstall} [config-file]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
+

@@ -36,7 +36,7 @@ return to a freshly-cloned state.
 | `restart` | `down` then `up` |
 | `status` | Running or not; also writes `run/status.html` |
 | `logs` | Follow the raw Direwolf log |
-| `monitor` | Follow the log **annotated** — recommended |
+| `monitor` | Follow the log **annotated** — recommended. `monitor raw` omits decode detail |
 | `uninstall` | Tear down to a zero state |
 
 All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
@@ -44,32 +44,40 @@ All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
 ## Monitoring
 
 `./deploy_igate.sh monitor` is the one to use. It annotates Direwolf's output
-into plain language:
+into plain language, and shows Direwolf's decode of each frame indented beneath:
 
 ```
-16:17:34  INFO       Now connected to IGate server noam.aprs2.net
-16:17:34  IS SERVER  # logresp KD3CCO verified, server T2BC
-16:18:02  RF RX      KQ4BBR-9>T0PV3T,W3YA-1,WIDE2*:`i3$r67>/`"6G}Len - Mobile
-16:18:11  IS DROP    QRX>APQRX,TCPIP*,qAC::KC3WRY-14:not whitelisted{1
-16:18:40  IS GATED   SMS>APOSMS,TCPIP*,qAC,WA7BF::KD3CCO-7 :@4848324995 hello{99
-16:19:05  TX LOCAL   KD3CCO-10>APDW18,WIDE1-1,WIDE2-1::KD3CCO-7 :test{06
+17:23:49  RF RX      AA3BR>SYRV6V,N3KTX-1,WIDE1,W3YA-1,WIDE2*:`h@dl#GYY`"5+}_0
+17:23:49  RF->IS UP  AA3BR>SYRV6V,...,qAR,KD3CCO-10:`h@dl#GYY`"5+}_0
+                       MIC-E, Yaesu/Standard*, Yaesu FT3D, Off Duty
+                       N 39 26.6600, W 076 36.7200, 0 km/h, course 343, alt 111 m
+17:24:02  IS GATED   SMS>APOSMS,TCPIP*,qAC,WA7BF::KD3CCO-7 :@4848324995 hello{99
+17:24:11  IS DROP    QRX>APQRX,TCPIP*,qAC::KC3WRY-14:not whitelisted{1
 ```
 
 | Label | Meaning |
 |---|---|
 | `RF RX` | Heard on the air and decoded |
+| `RF->IS UP` | Heard on RF and gated **up** to APRS-IS by this station |
 | `IS GATED` | Came from APRS-IS, matched the whitelist, **was transmitted** |
 | `IS DROP` | Came from APRS-IS, did **not** match the whitelist, dropped |
 | `TX LOCAL` | Transmitted by this station (beacon or injected packet) |
 | `IS SERVER` | APRS-IS server chatter |
 | `WARN` / `INFO` | Problems and connection state |
 
+Indented grey lines are Direwolf's decode — packet type, position, radio model,
+comment text. `./deploy_igate.sh monitor raw` hides them if you want it terse.
+
 **Why this exists:** Direwolf's raw log prints `[ig>tx]` when a packet *arrives
 from APRS-IS* — before the whitelist runs — not when it transmits. The line that
 means *actually transmitted* is `[0L]`. Reading `[ig>tx]` as "transmitted" makes
-a correctly-working whitelist look broken. `monitor` pairs the two lines and
-reports the real outcome. If you use raw `logs` instead, remember: **an
-`[ig>tx]` with no following `[0L]` was dropped, not sent.**
+a correctly-working whitelist look broken. `monitor` pairs the two and reports
+the real outcome. If you use raw `logs` instead, remember: **an `[ig>tx]` with
+no following `[0L]` was dropped, not sent.**
+
+`RF->IS UP` only appears because `entrypoint.sh` runs Direwolf with `-d i`.
+Without that flag the entire uplink direction is invisible in the log — note it
+is `-d i`, not `-d g`, which is the unrelated GPS debug option.
 
 `./deploy_igate.sh status` also writes `run/status.html` — a static page showing
 state, whitelist, and resolved filter. Open with `xdg-open run/status.html`.
@@ -138,8 +146,16 @@ WHITELIST_CALLS = KD3CCO*          # comma-separated; * covers all SSIDs
 ADEVICE = plughw:1,0               # from `arecord -l`
 RIG_MODEL = 1035                   # hamlib model (1035 = FT-991, works for FTX-1)
 CAT_DEVICE = /dev/ttyUSB0          # CAT control port
+CAT_BAUD = 38400                   # CAT serial speed
 PTT_DEVICE = /dev/ttyACM0          # PTT port (same as CAT on single-port radios)
+PTT_TYPE = RIG                     # RIG = PTT via CAT command; also RTS, DTR
+IGLOGIN_CALL = KD3CCO              # APRS-IS login (base call, no SSID)
 ```
+
+The FTX-1 exposes CAT and PTT as **two separate serial ports**, which Direwolf's
+single-port `PTT RIG` directive can't drive — so `rigctld` bridges them and
+Direwolf talks to it over loopback. Single-port radios: set `PTT_DEVICE` the
+same as `CAT_DEVICE`.
 
 Multiple whitelisted calls: `WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9`.
 Only *messages* addressed to these are ever transmitted.
@@ -170,10 +186,13 @@ working, then back off.
 - **Enable your radio's TOT (time-out timer).** If USB drops mid-transmission
   the unkey can't get through and the radio sticks in transmit. No software can
   fix that — the control path is what died. The radio's own timer is the only
-  backstop. This happened twice at 5 W.
-- **Watch for RFI on the USB cable.** At 5 W with a whip near the laptop, RF
-  crashed the USB link. A ferrite choke and antenna separation fixed it; stable
-  at 1 W.
+  backstop. This happened twice at 5 W. **Set to 3 minutes here** — note it is
+  global on the FTX-1, applying to voice as well as data, so a long SSB over
+  could be cut. Invisible to APRS, where bursts are milliseconds.
+- **Watch for RFI on the USB cable.** At 5 W, RF crashed the USB link and stuck
+  the radio in transmit. Root cause was a quarter-wave whip with no ground
+  plane — poorly matched, radiating into the shack. A half-wave on a tripod
+  (SWR under 1.2:1 to 5 W) plus a ferrite choke fixed it properly.
 - **`up` refuses to start if the audio device is missing**, since PTT would
   still key the radio and transmit an unmodulated carrier.
 
@@ -192,6 +211,24 @@ gone.
 ## Deployment modes
 
 `DEPLOY_MODE = docker` (default) or `bare-metal`; override per-run with
-`IGATE_MODE=bare-metal`. Docker mode runs with all capabilities dropped, a
-read-only root filesystem, no exposed ports, and access to only the two serial
-devices and `/dev/snd`. **Bare-metal mode is implemented but untested.**
+`IGATE_MODE=bare-metal`. **Bare-metal mode is implemented but untested.**
+
+Docker mode is locked down to the minimum that still works — all capabilities
+dropped (verified: `CapEff` and `CapBnd` both zero), `no-new-privileges`,
+Docker's seccomp profile active, read-only root filesystem with only `/tmp`
+writable, non-root, 64 PIDs, 512 MB, and no published ports.
+
+Device access is **only this radio's nodes** — its two serial ports and its
+single ALSA card (`controlC1`, `pcmC1D0c`, `pcmC1D0p`, `timer`). Notably it does
+*not* get the whole `/dev/snd` directory, which the common recipe passes and
+which would include the laptop's built-in microphone.
+
+Outbound traffic is restricted to DNS and the APRS-IS port via a dedicated
+docker network filtered in the `DOCKER-USER` iptables chain. This needs `sudo`;
+without it `up` warns and continues with unrestricted egress rather than
+refusing to start. Disable with `RESTRICT_EGRESS = no`.
+
+Note that `monitor` redacts the APRS-IS passcode, which Direwolf echoes in its
+login line. Raw `logs` does not — prefer `monitor` when sharing output.
+
+Full detail and remaining gaps are in §13.4 of the design doc.
