@@ -1,240 +1,179 @@
 # Bidirectional APRS iGate
 
-Runs the strict-whitelist APRS iGate described in
-[aprs-igate-prototype-test.md](aprs-igate-prototype-test.md) as a locked-down
-Docker container, driven by one editable config file. Read that document
-first for *why* the design looks like this (the whitelist rule, the PTT
-ladder, the bench test procedure); this file is the *how to actually run it*.
+A strict-whitelist APRS iGate: packets heard on 144.390 are gated up to
+APRS-IS, and **only** APRS *messages* addressed to whitelisted callsigns are
+ever transmitted back onto RF. Everything else — positions, telemetry, other
+people's traffic — is silently dropped.
+
+Runs as a locked-down Docker container driven by one editable config file.
+The design rationale is in [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md);
+sections 13–15 there cover what was actually built, the problems hit along the
+way, and known limitations.
 
 ## Quickstart
 
 ```bash
 cp igate.secrets.example igate.secrets
-$EDITOR igate.secrets        # set IGLOGIN_PASSCODE to your real APRS-IS passcode
-$EDITOR igate.conf           # set MYCALL, ADEVICE, CAT_DEVICE, PTT_DEVICE, WHITELIST_CALLS
+$EDITOR igate.secrets     # your APRS-IS passcode
+$EDITOR igate.conf        # MYCALL, ADEVICE, CAT_DEVICE, PTT_DEVICE, WHITELIST_CALLS
 
-./deploy_igate.sh config     # validate everything resolves correctly
-./deploy_igate.sh up         # builds the image on first run, then starts the container
-./deploy_igate.sh logs       # watch for [rf>ig] / [ig>tx]
+./deploy_igate.sh config  # validate; prints resolved settings
+./deploy_igate.sh up      # builds image on first run, then starts
+./deploy_igate.sh monitor # watch packets: what's heard, gated, dropped
 ```
 
-Stop it with `./deploy_igate.sh down`. The sections below explain what each
-setting means, how to find your `ADEVICE`/`CAT_DEVICE`/`PTT_DEVICE` values,
-what APRS-IS and the passcode actually are, and the full command reference.
+Tear down with `./deploy_igate.sh down`, or `./deploy_igate.sh uninstall` to
+return to a freshly-cloned state.
 
-## Contents
+## Commands
 
-- `igate.conf` — the settings you edit (station call, audio device, radio
-  ports, APRS-IS login, whitelisted calls).
-- `igate.secrets` — your real APRS-IS passcode. **Not committed** (gitignored).
-- `Dockerfile` / `entrypoint.sh` — builds the container image.
-- `deploy_igate.sh` — the only script you run. Subcommands: `config`,
-  `build`, `up`, `down`, `restart`, `status`, `logs`.
+| Command | Does |
+|---|---|
+| `config` | Parse and validate `igate.conf`, print resolved settings (passcode masked) |
+| `build` | Build the container image |
+| `up` | Render `direwolf.conf`, apply audio levels, start |
+| `down` | Stop and remove the container |
+| `restart` | `down` then `up` |
+| `status` | Running or not; also writes `run/status.html` |
+| `logs` | Follow the raw Direwolf log |
+| `monitor` | Follow the log **annotated** — recommended |
+| `uninstall` | Tear down to a zero state |
 
-## 1. What APRS-IS is, and the "passcode"
+All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
 
-**APRS-IS** is the internet backbone that ties every APRS iGate in the world
-together — when your iGate hears a packet on RF, it forwards it to APRS-IS;
-when someone sends an APRS message from a phone or a website, it comes
-*from* APRS-IS and your iGate is what puts it on the air. `aprs.fi` and the
-NA7Q SMS gateway both sit on this network. Your iGate is just one more
-client connecting to it over plain TCP (port 14580).
+## Monitoring
 
-To log in, APRS-IS wants your callsign and a **passcode** — but this isn't a
-password you choose. It's a small numeric checksum computed from your
-callsign by a public, well-known algorithm (the same one every APRS client —
-APRSdroid, Xastir, Direwolf itself — uses). Anyone who knows your callsign
-can (re)compute it; it exists to keep accidents and casual misconfiguration
-off the network, not to authenticate you cryptographically. That said, it's
-still not something to publish in a git repo: treat it like any other
-account credential and keep it out of version control. Get yours from your
-club, an existing APRS client's settings, or any APRS-IS passcode
-calculator — search "APRS-IS passcode calculator" or generate it locally
-with an `aprs-passcode`/`callpass`-style tool if you have one installed.
-
-### Keeping it out of `igate.conf`
-
-`igate.conf` is meant to be committed and shared; `IGLOGIN_PASSCODE` in it is
-intentionally left **blank**. `deploy_igate.sh` resolves the real value from,
-in priority order:
-
-1. The `IGATE_PASSCODE` environment variable — good for a one-off run:
-   ```bash
-   IGATE_PASSCODE=12345 ./deploy_igate.sh up
-   ```
-2. `igate.secrets`, a small file next to the script, listed in `.gitignore`:
-   ```bash
-   cp igate.secrets.example igate.secrets
-   $EDITOR igate.secrets   # set IGLOGIN_PASSCODE = <your real passcode>
-   ```
-3. `IGLOGIN_PASSCODE` in `igate.conf` itself, if you really want it there.
-
-`./deploy_igate.sh config` prints the resolved passcode masked
-(`IGLOGIN_PASSCODE = ***45`) so you can confirm it loaded without echoing it
-in full.
-
-## 2. Your radio: the FTX-1 over CAT
-
-Hamlib (4.6.5, the version this image uses) has no dedicated FTX-1 model
-yet — `rigctl --list | grep -i ftx` comes back empty. But you've already
-confirmed, both from WSJT-X and from the `ftx1-tuner-sweep` project, that
-the FTX-1 CAT-controls cleanly as a **Yaesu FT-991** (hamlib model `1035`),
-and that it exposes CAT control and PTT as **two separate serial ports**
-over its one USB-C connection:
-
-| Function | Device (yours) | Notes |
-|---|---|---|
-| CAT control | `/dev/ttyUSB0` | 38400 baud, frequency/mode |
-| PTT | `/dev/ttyACM0` | keyed via a CAT command (hamlib calls this `RIG`; WSJT-X calls it "CAT") |
-
-Direwolf's own `PTT RIG model port` config line only accepts **one** serial
-port, so it can't drive this two-port setup by itself. The fix — and the
-reason there's an `entrypoint.sh` in this repo — is `rigctld`, hamlib's own
-daemon, which *does* support a separate `--ptt-file`. The container runs:
+`./deploy_igate.sh monitor` is the one to use. It annotates Direwolf's output
+into plain language:
 
 ```
-rigctld -m 1035 -r /dev/ttyUSB0 -s 38400 -p /dev/ttyACM0 -P RIG -t 4532 -T 127.0.0.1
+16:17:34  INFO       Now connected to IGate server noam.aprs2.net
+16:17:34  IS SERVER  # logresp KD3CCO verified, server T2BC
+16:18:02  RF RX      KQ4BBR-9>T0PV3T,W3YA-1,WIDE2*:`i3$r67>/`"6G}Len - Mobile
+16:18:11  IS DROP    QRX>APQRX,TCPIP*,qAC::KC3WRY-14:not whitelisted{1
+16:18:40  IS GATED   SMS>APOSMS,TCPIP*,qAC,WA7BF::KD3CCO-7 :@4848324995 hello{99
+16:19:05  TX LOCAL   KD3CCO-10>APDW18,WIDE1-1,WIDE2-1::KD3CCO-7 :test{06
 ```
 
-bound to loopback only (unreachable from outside the container), and
-Direwolf connects to it as a network rig: `PTT RIG 2 localhost:4532`. Both
-processes run in the same container; `entrypoint.sh` starts `rigctld` in the
-background, waits for it to come up, then `exec`s Direwolf so Direwolf
-becomes PID 1 and receives `docker stop` directly.
+| Label | Meaning |
+|---|---|
+| `RF RX` | Heard on the air and decoded |
+| `IS GATED` | Came from APRS-IS, matched the whitelist, **was transmitted** |
+| `IS DROP` | Came from APRS-IS, did **not** match the whitelist, dropped |
+| `TX LOCAL` | Transmitted by this station (beacon or injected packet) |
+| `IS SERVER` | APRS-IS server chatter |
+| `WARN` / `INFO` | Problems and connection state |
 
-If your radio only has one port, or you swap radios later, set
-`CAT_DEVICE` and `PTT_DEVICE` to the same path in `igate.conf` — the script
-detects that and only passes one `--device` flag through.
+**Why this exists:** Direwolf's raw log prints `[ig>tx]` when a packet *arrives
+from APRS-IS* — before the whitelist runs — not when it transmits. The line that
+means *actually transmitted* is `[0L]`. Reading `[ig>tx]` as "transmitted" makes
+a correctly-working whitelist look broken. `monitor` pairs the two lines and
+reports the real outcome. If you use raw `logs` instead, remember: **an
+`[ig>tx]` with no following `[0L]` was dropped, not sent.**
 
-Your exact settings, in `igate.conf`, become:
+`./deploy_igate.sh status` also writes `run/status.html` — a static page showing
+state, whitelist, and resolved filter. Open with `xdg-open run/status.html`.
 
-```
-RIG_MODEL = 1035
-CAT_DEVICE = /dev/ttyUSB0
-CAT_BAUD = 38400
-PTT_DEVICE = /dev/ttyACM0
-PTT_TYPE = RIG
-```
+## Testing it
 
-If you ever need to change radios: `rigctl --list` shows all model numbers,
-and `PTT_TYPE` can also be `RTS` or `DTR` for radios keyed by a serial
-control line instead of a CAT command (see Section 8 of the prototype doc
-for that fallback ladder).
+**1. Is it receiving?** Run `monitor` and wait for `RF RX` lines. If none appear
+while there's audible activity, the RX gain is too low (see Audio levels below).
 
-## 3. Audio device
-
-Section 5 of the prototype doc has you find this with `arecord -l` — same
-here. Plug in the FTX-1, then either run it on the host (if `alsa-utils` is
-installed) or through the image you're about to build, which already has it:
+**2. Is it transmitting a decodable signal?** The best test needs no second
+radio — send a packet with a digipeat path and see if a digipeater repeats it
+back to you:
 
 ```bash
-./deploy_igate.sh build   # first time only
-docker run --rm --device /dev/snd:/dev/snd --entrypoint arecord aprs-igate:latest -l
+echo 'KD3CCO-10>APDW18,WIDE1-1,WIDE2-1::KD3CCO-7 :test{01' \
+  | docker exec -i aprs-igate kissutil
 ```
 
-Look for "USB Audio CODEC", note the card number, and set it in
-`igate.conf`:
+Watch `monitor`. You'll see `TX LOCAL` immediately. If within ~30 seconds you
+also see the same message come back as `RF RX` or `IS GATED` with a digipeater
+in the path (e.g. `W3YA-1,WIDE1*`), **your signal is good** — a real station
+decoded and repeated it. That is the strongest single proof available.
+
+> Use your own callsign or SSID in test packets. Never put another operator's
+> callsign in a packet you transmit.
+
+**3. Is the whitelist working?** Watch for `IS DROP` lines — those are packets
+that arrived and were correctly refused. Seeing them is the whitelist working.
+
+**4. Full round trip.** Text `@KD3CCO-7 <message>` to the aprs.wiki SMS gateway
+at `866-352-4096`. It should appear as `IS GATED`. From RF, address a message to
+`SMS` with body `@<your-number> <message>`.
+
+## Configuration
+
+`igate.conf` is plain `key = value`. Key settings:
 
 ```
-ADEVICE = plughw:2,0    # card 2 from the arecord -l output
+MYCALL = KD3CCO-10                 # this station's callsign
+WHITELIST_CALLS = KD3CCO*          # comma-separated; * covers all SSIDs
+ADEVICE = plughw:1,0               # from `arecord -l`
+RIG_MODEL = 1035                   # hamlib model (1035 = FT-991, works for FTX-1)
+CAT_DEVICE = /dev/ttyUSB0          # CAT control port
+PTT_DEVICE = /dev/ttyACM0          # PTT port (same as CAT on single-port radios)
 ```
 
-## 4. Editing `igate.conf`
+Multiple whitelisted calls: `WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9`.
+Only *messages* addressed to these are ever transmitted.
 
-Plain `key = value`, `#` comments, no shell syntax — safe to hand-edit.
+### The passcode
 
-**Whitelist, one call:**
+`igate.conf` is meant to be committed, so the passcode goes elsewhere. Resolved
+in priority order: `IGATE_PASSCODE` env var → `igate.secrets` (gitignored) →
+`IGLOGIN_PASSCODE` in the config. The APRS-IS passcode is a checksum of your
+callsign, not a chosen password — but keep it out of version control anyway.
+`config` prints it masked.
+
+### Audio levels — important
+
 ```
-WHITELIST_CALLS = KD3CCO*
+TX_AUDIO_LEVEL = 10    # too high over-deviates: audible but decodes NOWHERE
+RX_AUDIO_LEVEL = 35    # too low decodes nothing
+DISABLE_AGC = yes
 ```
 
-**Whitelist, multiple calls** (comma-separated; the script chains them into
-Direwolf's `g/KD3CCO*/W3XYZ*` filter syntax for you):
-```
-WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9
-```
-The `*` wildcard covers all SSIDs of a call (`KD3CCO*` matches `KD3CCO-7`,
-`KD3CCO-10`, etc.); drop it to whitelist one specific SSID only. Remember
-the rule from the prototype doc: this is addressee-only and OR'd, so only
-*messages* to one of these calls will ever transmit — positions, telemetry,
-and messages to anyone else are dropped regardless of what else you add.
+These reset to (wrong) device defaults whenever the radio's USB re-enumerates,
+and both failure modes are **silent**. `up` re-applies them every start. If you
+change radios, recalibrate: raise TX until the digipeat test in §2 stops
+working, then back off.
 
-Everything else in the file (`MYCALL`, `IGTXVIA`, `IGTXLIMIT`, `IGSERVER`)
-maps directly to the Direwolf directives explained in Section 7 of the
-prototype doc.
+## Safety notes
 
-## 5. Commands
+- **Enable your radio's TOT (time-out timer).** If USB drops mid-transmission
+  the unkey can't get through and the radio sticks in transmit. No software can
+  fix that — the control path is what died. The radio's own timer is the only
+  backstop. This happened twice at 5 W.
+- **Watch for RFI on the USB cable.** At 5 W with a whip near the laptop, RF
+  crashed the USB link. A ferrite choke and antenna separation fixed it; stable
+  at 1 W.
+- **`up` refuses to start if the audio device is missing**, since PTT would
+  still key the radio and transmit an unmodulated carrier.
+
+## Tearing it down
 
 ```bash
-./deploy_igate.sh config          # parse + validate igate.conf, print resolved values
-./deploy_igate.sh build           # build the aprs-igate image
-./deploy_igate.sh up              # render direwolf.conf, start the container
-./deploy_igate.sh down            # stop and remove the container
-./deploy_igate.sh restart         # down, then up
-./deploy_igate.sh status          # is it running
-./deploy_igate.sh logs            # follow the log — watch for [rf>ig] / [ig>tx]
+./deploy_igate.sh down       # stop and remove the container
+./deploy_igate.sh uninstall  # also remove the image and run/ — back to a fresh clone
 ```
 
-Every subcommand except `down`/`status`/`logs` takes an optional config
-file path, e.g. `./deploy_igate.sh up field.conf`, if you keep more than one
-profile (bench vs. field, per Section 12 of the prototype doc).
+In bare-metal mode `uninstall` also removes the `direwolf` package, but
+deliberately leaves `hamlib` and `alsa-utils` alone — other ham radio software
+(WSJT-X among them) depends on hamlib. It prints the command if you want them
+gone.
 
-`up` refuses to start if any required setting is still blank — it tells you
-exactly which one. It also warns (but doesn't refuse) if `CAT_DEVICE`,
-`PTT_DEVICE`, or `/dev/snd` don't exist yet, in case the radio is unplugged.
+## Deployment modes
 
-## 6. What the container can and can't touch
+`DEPLOY_MODE = docker` (default) or `bare-metal`; override per-run with
+`IGATE_MODE=bare-metal`. Docker mode runs with all capabilities dropped, a
+read-only root filesystem, no exposed ports, and access to only the two serial
+devices and `/dev/snd`. **Bare-metal mode is implemented but untested.**
 
-Least privilege, matched to exactly what Direwolf + rigctld need:
+## Known limitation
 
-- **No `--privileged`, all Linux capabilities dropped** (`--cap-drop=ALL`),
-  `no-new-privileges` set, process count capped (`--pids-limit=64`).
-- **Read-only root filesystem** — only `/tmp` and `/var/lock` are writable
-  (both anonymous tmpfs, gone on container removal).
-- **Device access limited to exactly two things**: the specific serial
-  device node(s) for CAT/PTT, and `/dev/snd` for the USB audio codec. No
-  other host devices are reachable.
-- **Runs as a dedicated non-root user** inside the image; it can only open
-  those device nodes because the container is launched with `--group-add`
-  for the host's `dialout` and `audio` group GIDs — the same groups your own
-  user account needs to be in to use the radio directly.
-- **No exposed ports.** `rigctld` binds to `127.0.0.1` inside the container
-  only, reachable by Direwolf in the same container and nothing outside it.
-  The only network traffic leaving the container is the outbound APRS-IS
-  connection.
-- **`--restart unless-stopped`** so it survives a reboot, matching the
-  systemd suggestion in Section 12 of the prototype doc, without needing a
-  systemd unit on the host.
-
-Podman (installed on this machine) is a drop-in alternative if you'd rather
-avoid a root-owned daemon entirely — `podman build`/`podman run` accept the
-same flags used here.
-
-## 7. Bench test procedure
-
-Once `up` reports the container is running, follow Section 9 of the
-prototype doc using `./deploy_igate.sh logs` in place of watching a bare
-`direwolf -c` terminal — the `[rf>ig]`, `[ig>tx]`, and periodic `IGATE`
-statistics lines all show up the same way. Test E (the negative test — a
-non-whitelisted message must **not** transmit) is the one that actually
-proves the whitelist works; don't skip it.
-
-## 8. Troubleshooting
-
-- **`up` warns a device doesn't exist**: check the radio is plugged in and
-  re-run `ls /dev/ttyUSB* /dev/ttyACM*` — Linux can renumber these if other
-  USB-serial devices are attached in a different order.
-- **rigctld can't open the serial port / PTT doesn't key**: test it standalone
-  first, outside Direwolf, using the same image:
-  ```bash
-  docker run --rm -it \
-    --device /dev/ttyUSB0:/dev/ttyUSB0 --device /dev/ttyACM0:/dev/ttyACM0 \
-    --entrypoint rigctl aprs-igate:latest \
-    -m 1035 -r /dev/ttyUSB0 -s 38400 T 1   # key
-  ```
-  (add a second run with `T 0` to unkey). If this doesn't key the radio,
-  the problem is in the CAT/PTT wiring, not Direwolf or Docker.
-- **No audio decodes**: confirm `ADEVICE` matches the card number from
-  `arecord -l` and that the FTX-1's internal APRS/TNC decode is switched off
-  (Section 6 of the prototype doc) so it isn't fighting Direwolf for the
-  audio path.
+Messages relayed from APRS-IS go out in APRS third-party format (`}`), which is
+correct and standard. **The Yaesu FT-5DR does not display them** — so SMS
+messages won't show on that radio, though direct messages will. This affects any
+iGate, not just this one. See §15 of the prototype doc for options.

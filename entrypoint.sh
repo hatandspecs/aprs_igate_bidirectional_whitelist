@@ -34,9 +34,17 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 
-# -d g: dump every raw line exchanged with the APRS-IS server (debugging aid;
-# remove for normal operation once the gate is confirmed working).
 # stdbuf -oL -eL: stdout isn't a TTY under `docker run -d`, so without this
 # Direwolf's C stdio fully-buffers output instead of flushing per line —
-# lines sit invisible in `docker logs` until the internal buffer fills.
-exec stdbuf -oL -eL direwolf -c /etc/direwolf/direwolf.conf -t 0 -d g
+# lines sit invisible in `docker logs` until the internal buffer fills, which
+# makes `deploy_igate.sh monitor` appear dead. Do not remove.
+#
+# -d i is REQUIRED, not optional debugging: Direwolf only prints the "[rx>ig]"
+# line for RF->APRS-IS gating when the iGate debug level is >= 1
+# (igate.c:1604, set from d_i_opt at direwolf.c:1129). Without it the entire
+# uplink direction is invisible and you cannot tell whether this station
+# gated a packet up or some other igate did. Keep it enabled.
+#
+# NOTE: it is "-d i", not "-d g". "-d g" is the GPS debug flag
+# (direwolf.c:222) and does nothing useful here.
+exec stdbuf -oL -eL direwolf -c /etc/direwolf/direwolf.conf -t 0 -d i

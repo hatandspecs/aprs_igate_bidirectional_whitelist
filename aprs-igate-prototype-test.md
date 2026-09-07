@@ -177,7 +177,7 @@ Run Direwolf in a terminal so you can watch the tag lines:
 direwolf -c ~/direwolf.conf
 ```
 
-The three tag lines to watch for are `[rf>ig]` (something you heard went up to the Internet), `[ig>rf]` or `[ig>tx]` (something from the Internet was transmitted), and the periodic `IGATE` statistics line that reports `LOC_CNT`.
+The three tag lines to watch for are `[rx>ig]` (something you heard went up to the Internet), `[ig>rf]` or `[ig>tx]` (something from the Internet was transmitted), and the periodic `IGATE` statistics line that reports `LOC_CNT`.
 
 ```mermaid
 sequenceDiagram
@@ -191,7 +191,7 @@ sequenceDiagram
     Note over H,P: Uplink test (RF to SMS)
     H->>R: APRS message on 144.390
     R->>D: decode
-    D->>I: gate up [rf>ig]
+    D->>I: gate up [rx>ig]
     I->>N: deliver to gateway
     N->>P: SMS to phone
 
@@ -206,7 +206,7 @@ sequenceDiagram
 
 **Test A, decode only.** With the HT, send a beacon or message on 144.390. Confirm Direwolf prints the decoded frame. If nothing decodes, fix RX audio level before anything else.
 
-**Test B, uplink gating.** Confirm the decoded frame produces an `[rf>ig]` line, then check your iGate and KD3CCO-7 appear on aprs.fi. This proves RF to Internet.
+**Test B, uplink gating.** Confirm the decoded frame produces an `[rx>ig]` line, then check your iGate and KD3CCO-7 appear on aprs.fi. This proves RF to Internet.
 
 **Test C, PTT.** Trigger a transmit (Test D will do it naturally, or use the `rigctl` keying test). Confirm the FTX-1 actually keys and the witness radio hears carrier.
 
@@ -219,7 +219,7 @@ sequenceDiagram
 ## 10. Success Criteria
 
 - [ ] Frames from KD3CCO-7 decode in the Direwolf console.
-- [ ] `[rf>ig]` appears and both stations show on aprs.fi. (The full RF-to-SMS path is already confirmed over the air; this just verifies the bench igate does the gating.)
+- [ ] `[rx>ig]` appears and both stations show on aprs.fi. (The full RF-to-SMS path is already confirmed over the air; this just verifies the bench igate does the gating.)
 - [ ] The FTX-1 keys under Direwolf control.
 - [ ] An SMS to your call comes back out on RF (`[ig>tx]`) and is received. **This is the leg you are here to close.**
 - [ ] A non-message, or a message to a non-whitelisted call, is **not** transmitted.
@@ -244,3 +244,193 @@ Once the six criteria pass, the same `direwolf.conf` moves almost verbatim to th
 - Swap the Fedora laptop for the Raspberry Pi and the FTX-1 Optima for the Kenwood TM-V71A. The `ADEVICE` and `PTT` lines change to match the Pi's sound-card interface and the TM-V71A's data connector; everything from `IGSERVER` down stays the same.
 - Uncomment `IGTXVIA 0 WIDE2-1` as the standing transmit path, since production downlink always goes out through W3YA-1 to reach you in the field.
 - Consider a fixed, deliberately rounded beacon position for the permanent site, and wrap Direwolf in a `systemd` service so it restarts on boot.
+
+---
+
+## 13. What Was Actually Built
+
+The prototype above was implemented as a containerised, config-driven deployment
+rather than a hand-edited `direwolf.conf`. Files in this repository:
+
+| File | Purpose |
+|------|---------|
+| `igate.conf` | The only file you edit. Plain `key = value`, no shell syntax. |
+| `igate.secrets` | APRS-IS passcode. Gitignored, never committed. |
+| `deploy_igate.sh` | The single entry point: `config`, `build`, `up`, `down`, `restart`, `status`, `logs`, `monitor`, `uninstall`. |
+| `Dockerfile` / `entrypoint.sh` | Builds and runs the container. |
+| `run/` | Generated at runtime: rendered `direwolf.conf`, status page, logs. Gitignored. |
+
+`deploy_igate.sh` renders `direwolf.conf` from `igate.conf` on every start, so the
+Direwolf config is a build artefact and never edited by hand.
+
+### 13.1 The two-serial-port problem
+
+Section 8's PTT ladder assumed one serial port. The FTX-1 needs **two**: CAT
+control on `/dev/ttyUSB0` (38400 baud) and PTT on `/dev/ttyACM0`. Hamlib has no
+native FTX-1 model, but the radio CAT-controls correctly as a **Yaesu FT-991
+(rigctl model 1035)**, confirmed independently via WSJT-X.
+
+Direwolf's `PTT RIG model port` directive accepts only **one** port, so it cannot
+drive this arrangement directly. The solution is `rigctld` as a bridge:
+
+```
+rigctld -m 1035 -r /dev/ttyUSB0 -s 38400 -p /dev/ttyACM0 -P RIG -t 4532 -T 127.0.0.1
+```
+
+Direwolf then talks to it as a network rig with `PTT RIG 2 localhost:4532`.
+`entrypoint.sh` starts `rigctld` bound to loopback only, then `exec`s Direwolf so
+Direwolf becomes PID 1 and receives `docker stop` directly.
+
+### 13.2 Whitelist corrections found in testing
+
+Two config lines were added beyond Section 7, both discovered by live testing:
+
+- **`IGFILTER g/KD3CCO*`** — without a server-side subscription filter, APRS-IS
+  falls back to sending only traffic involving stations heard recently on RF.
+  On a fresh iGate that set is empty, so *nothing arrives at all* and the
+  downlink silently never fires. `FILTER IG 0` alone is not sufficient: it
+  governs what may be transmitted, not what the server sends you.
+- **`IGMSP 0`** — Direwolf's "Message Sender Position" feature transmits a
+  position report from any message's sender *"regardless of any other filtering
+  rules"* (its own documentation). This was observed live: after gating SMS
+  messages, the SMS gateway's own position beacon was transmitted, bypassing the
+  whitelist. `IGMSP 0` disables it. For a project whose entire premise is that
+  nothing but whitelisted messages is ever keyed, this is mandatory.
+
+### 13.3 Container security model
+
+The container runs with `--cap-drop=ALL`, `no-new-privileges`, a read-only root
+filesystem, a PID limit, no exposed ports, and device access restricted to
+exactly the two serial nodes and `/dev/snd`. It runs as the invoking user rather
+than root. `rigctld` binds to `127.0.0.1` inside the container only.
+
+---
+
+## 14. Problems Encountered and Their Root Causes
+
+Recorded because most of these were slow to find and none are obvious.
+
+### 14.1 Audio levels — the biggest time sink
+
+The ALSA mixer defaults are wrong in **both** directions, and both fail silently:
+
+- **TX level too high (default 23/37) over-deviates.** The signal is audible and
+  visible on a waterfall but decodes nowhere. Calibrated value: **10**.
+- **RX capture gain too low (default 1/35)** to decode reliably. Use **35**.
+
+Symptoms look identical to a dozen unrelated faults. Hours went into chasing
+modulation type, timing, and receiver settings before the level was the answer.
+`deploy_igate.sh up` now re-applies both on every start (§13), because these
+reset to defaults whenever the radio's USB re-enumerates.
+
+### 14.2 `[ig>tx]` does not mean "transmitted"
+
+Direwolf prints `[ig>tx]` when a packet **arrives from APRS-IS**, before the
+whitelist runs (`igate.c:1837`, ~30 lines before the filter at `igate.c:2261`).
+The line that means *actually transmitted* is **`[0L]`**.
+
+Misreading this produced two false "whitelist bypass" alarms and two unnecessary
+shutdowns. Verified empirically: during a broken-filter incident, 25 `[ig>tx]`
+lines produced **zero** `[0L]` lines — nothing was transmitted. `pfilter()`
+returns `-1` on a parse error and igate.c drops anything that is not exactly
+`1`, so a malformed filter **fails closed**. `deploy_igate.sh monitor` exists
+specifically to present this correctly.
+
+### 14.3 RF getting into the USB cable
+
+At **5 W** with a whip indoors near the laptop, RF crashed the USB link. Because
+PTT is asserted over that same link, the unkey never arrived and **the radio
+stuck in transmit** — twice, recoverable only by physically power-cycling the
+radio. No software watchdog can fix this: when USB dies, the CAT control path
+dies with it. Mitigations: a ferrite choke on the USB cable, antenna separation,
+lower power, and **the radio's own TOT (time-out timer)**, which is the only
+backstop independent of the failed control path. Stable at **1 W** with a choke.
+
+### 14.4 Docker specifics
+
+- **Read-only rootfs + bind-mounted config**: mounting the rendered
+  `direwolf.conf` under `/home/igate` failed because that directory is mode
+  `700` owned by a different UID. Moved to `/etc/direwolf/` (mode 755).
+- **Output buffering**: under `docker run -d`, stdout is a pipe, so Direwolf's
+  C stdio block-buffers and `docker logs` appears dead. `stdbuf -oL -eL` in
+  `entrypoint.sh` fixes it and must not be removed. `gawk` needs `fflush()` for
+  the same reason in the monitor.
+
+### 14.5 The FT5D as a witness receiver
+
+Two separate quirks made the FT5D a poor choice for verifying the downlink:
+
+1. It **does not display third-party (`}`) wrapped messages** — which is the
+   format every iGate uses to deliver internet-originated traffic.
+
+   The decisive evidence came from the same correspondent on the same evening,
+   minutes apart, to the same receiving radio:
+
+   - `W3EDP-9>APY400,W3YA-1,WIDE1*,WIDE2-1::KD3CCO-7 :From cenre hall...`
+     — direct RF, digipeated, never touched this iGate. **Displayed.**
+   - `W3EDP-5>APFII0,...::KD3CCO-7 :Mobile coming from W3Edp-9` sent from
+     aprs.fi, gated by this station as
+     `KD3CCO-10>APDW18:}W3EDP-5>...` and confirmed transmitted (`[0L]`).
+     **Not displayed, never acked.**
+
+   The only variable is the `}` wrapper. Corroborated separately: a plain
+   message and its third-party echo carrying identical text were both
+   transmitted; only the plain one displayed and auto-acked. Three different
+   inner callsigns (`SMS`, a real call, `NOCALL`) all failed the same way, so
+   it is the format rather than callsign validation.
+2. Its manual states it filters packets from its own callsign, which confused
+   diagnosis early on (it turned out not to be the cause).
+
+### 14.6 The uplink was invisible, not broken
+
+Direwolf prints `[rx>ig]` when it gates an RF packet up to APRS-IS — but only
+when the iGate debug level is >= 1 (`igate.c:1604`, fed from `d_i_opt` at
+`direwolf.c:1129`). The flag for that is **`-d i`**, not `-d g`.
+
+`-d g` is the **GPS** debug option (`direwolf.c:222`). Enabling it produces no
+iGate output whatsoever. Because of that mix-up the uplink direction produced no
+log lines at all, which led to a confident but wrong conclusion that RF-to-IS
+gating was broken, and then to an elaborate theory about error-corrected packets
+being refused. Neither was true — aprs.fi showed `qAR,KD3CCO-10` on the very
+packets believed ungated.
+
+Lesson: absence of a log line is evidence about *logging*, not about behaviour.
+Confirm against an external source (aprs.fi shows which station gated a packet
+via the `qAR`/`qAO` construct) before concluding a subsystem is broken.
+`entrypoint.sh` now passes `-d i`, and `deploy_igate.sh monitor` labels these
+`RF->IS UP`.
+
+---
+
+## 15. Known Limitations and Future Work
+
+- **SMS messages do not display on the FT5D.** This is the one functional gap
+  remaining. It is a receiver limitation, not an iGate fault — Direwolf hardcodes
+  third-party format at `igate.c:2343` and that is correct, standard behaviour.
+  Options: use a non-Yaesu field radio; check for an FT5D setting covering
+  relayed traffic; or patch Direwolf to emit plain messages sourced from
+  `MYCALL`. **The patch trade-off:** the receiving station would ack to your
+  iGate rather than to the original sender, so the SMS gateway never sees an ack
+  and retries indefinitely. A patch attempt was made and abandoned — an
+  unoptimised build (no `-DCMAKE_BUILD_TYPE=Release`) produced glitchy audio
+  that decoded nowhere. If revisited, build Release.
+- **Ack relaying is not implemented.** Direwolf does not translate acks back to
+  an original third-party sender.
+- **Bare-metal mode is untested.** `deploy_igate.sh` supports
+  `DEPLOY_MODE = bare-metal`, but only docker mode has been exercised.
+- **Audio levels are not auto-calibrated.** The values in `igate.conf` were
+  found empirically for one radio at one power level. A calibration helper that
+  transmits and checks for a digipeat would be a real improvement.
+- **Mixer control names are assumed.** `apply_audio_levels` looks for
+  `Speaker Playback Volume` / `Mic Capture Volume`; a different codec will need
+  different names. It warns rather than failing.
+- **No RF-side watchdog.** Consider enabling the radio's TOT permanently.
+
+### 15.1 What is verified working
+
+| Leg | Evidence |
+|-----|----------|
+| RF → APRS-IS | Live `[rx>ig] ... qAR,KD3CCO-10` for KQ4BBR-9, NJ3T-4, KF0JZM-7, W3YA-1; messages 34-37 confirmed on aprs.fi |
+| APRS-IS → RF | Transmission digipeated by W3YA-1, gated by KB3KPP-1 and W3SWL-2 |
+| Message delivery to RF | Plain message displayed **and auto-acked** by the FT5D |
+| Strict whitelist | Verified against Direwolf source; non-matching traffic shows `[ig>tx]` with no `[0L]` |

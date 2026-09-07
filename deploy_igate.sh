@@ -12,7 +12,9 @@
 #   ./deploy_igate.sh down [file]     Stop it.
 #   ./deploy_igate.sh restart [file]  down, then up.
 #   ./deploy_igate.sh status [file]   Is it running; also writes run/status.html.
-#   ./deploy_igate.sh logs [file]     Follow the log ([rf>ig]/[ig>tx]).
+#   ./deploy_igate.sh logs [file]     Follow the raw Direwolf log.
+#   ./deploy_igate.sh monitor [file]  Follow the log annotated: what was heard,
+#                                     what was gated to RF, what was dropped.
 #   ./deploy_igate.sh uninstall [file] Tear down to a zero state. docker mode:
 #                                     stop/remove container + image. bare-metal
 #                                     mode: stop processes, remove the direwolf
@@ -310,10 +312,15 @@ gid_of() {
 # hard way: PTT rides the serial port while audio rides the USB codec, so if
 # the codec is gone (unplugged, re-enumerated) Direwolf still keys the radio
 # and transmits an unmodulated carrier — audible, but nothing can decode it.
+# Card number out of ADEVICE. Handles plughw:N,M / hw:N,M / plughw:N.
+# Empty for non-numeric card names.
+audio_card_number() {
+  sed -n 's/^[a-z]*hw:\([0-9][0-9]*\).*/\1/p' <<<"${CFG[ADEVICE]:-}"
+}
+
 require_audio_device() {
   local adev="${CFG[ADEVICE]:-}" card
-  # Handles plughw:N,M / hw:N,M / plughw:N. Non-numeric card names are skipped.
-  card="$(sed -n 's/^[a-z]*hw:\([0-9][0-9]*\).*/\1/p' <<<"$adev")"
+  card="$(audio_card_number)"
   if [[ -z "$card" ]]; then
     echo "Note: cannot parse a card number from ADEVICE='${adev}'; skipping audio device check." >&2
     return 0
@@ -324,6 +331,40 @@ require_audio_device() {
     echo "  Refusing to start: PTT would still key the radio, transmitting a carrier with no audio." >&2
     echo "  Check the USB cable, then run 'arecord -l' and update ADEVICE in igate.conf if the card number changed." >&2
     exit 1
+  fi
+}
+
+# Apply the calibrated ALSA mixer levels. These reset to device defaults every
+# time the radio's USB re-enumerates, and the defaults are wrong: the default
+# TX level over-deviates (signal is audible but nothing can decode it) and the
+# default capture gain is far too low to decode anything. Getting this wrong
+# fails silently, so `up` always sets it rather than trusting what survived.
+apply_audio_levels() {
+  local card tx rx agc
+  card="$(audio_card_number)"
+  [[ -z "$card" ]] && return 0
+  command -v amixer >/dev/null || {
+    echo "Note: amixer not found; skipping audio level setup (install alsa-utils)." >&2
+    return 0
+  }
+
+  tx="${CFG[TX_AUDIO_LEVEL]:-}"
+  rx="${CFG[RX_AUDIO_LEVEL]:-}"
+  agc="${CFG[DISABLE_AGC]:-yes}"
+
+  if [[ -n "$tx" ]]; then
+    amixer -c "$card" cset name='Speaker Playback Volume' "${tx},${tx}" >/dev/null 2>&1 \
+      && echo "Audio: TX level ${tx}" \
+      || echo "Note: could not set TX level (no 'Speaker Playback Volume' on card ${card})." >&2
+  fi
+  if [[ -n "$rx" ]]; then
+    amixer -c "$card" cset name='Mic Capture Volume' "${rx},${rx}" >/dev/null 2>&1 \
+      && echo "Audio: RX level ${rx}" \
+      || echo "Note: could not set RX level (no 'Mic Capture Volume' on card ${card})." >&2
+  fi
+  if [[ "$agc" == "yes" ]]; then
+    amixer -c "$card" cset name='Auto Gain Control' off >/dev/null 2>&1 \
+      && echo "Audio: AGC off"
   fi
 }
 
@@ -386,6 +427,7 @@ _docker_up() {
   [[ -e /dev/snd ]] || echo "Warning: /dev/snd does not exist on this host (no ALSA audio devices)." >&2
 
   require_audio_device
+  apply_audio_levels
 
   image_exists || _docker_build
 
@@ -424,7 +466,7 @@ _docker_up() {
   sleep 1
   if is_running; then
     echo "iGate up (docker). container=${CONTAINER_NAME}"
-    echo "Watch for [rf>ig] / [ig>tx] tag lines: ./deploy_igate.sh logs"
+    echo "Watch packet flow: ./deploy_igate.sh monitor"
   else
     echo "Container exited immediately — check: docker logs ${CONTAINER_NAME}" >&2
     exit 1
@@ -442,6 +484,7 @@ _bare_up() {
   [[ "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]] && echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
 
   require_audio_device
+  apply_audio_levels
 
   { command -v direwolf >/dev/null && command -v rigctld >/dev/null; } || _bare_install
 
@@ -475,7 +518,7 @@ _bare_up() {
 
   if bare_is_running; then
     echo "iGate up (bare-metal). direwolf pid=$(cat "$BARE_DIREWOLF_PID") rigctld pid=$(cat "$BARE_RIGCTLD_PID")"
-    echo "Log: ${BARE_LOG}. Watch for [rf>ig] / [ig>tx]: ./deploy_igate.sh logs"
+    echo "Log: ${BARE_LOG}. Watch packet flow: ./deploy_igate.sh monitor"
   else
     echo "direwolf exited immediately — check ${BARE_LOG}" >&2
     exit 1
@@ -554,6 +597,77 @@ cmd_logs() {
   fi
 }
 
+# Annotate Direwolf's raw output into plain-language packet flow.
+#
+# The important thing this fixes: Direwolf prints "[ig>tx]" when a packet
+# ARRIVES from APRS-IS, before the whitelist runs — NOT when it transmits.
+# The real transmit line is "[0L]". Reading "[ig>tx]" as "transmitted" makes
+# the whitelist look broken when it is working correctly. So this pairs them:
+# an [ig>tx] followed by [0L] is GATED, an [ig>tx] with nothing after is DROP.
+monitor_filter() {
+  awk -v use_color="$1" '
+    function ts()   { return strftime("%H:%M:%S") }
+    function C(c,s) { return use_color ? "\033[" c "m" s "\033[0m" : s }
+    # fflush is required: gawk block-buffers when stdout is a pipe, which
+    # would make a live monitor emit nothing until the buffer filled.
+    function emit(color, label, text) {
+      printf "%s  %s  %s\n", ts(), C(color, label), text
+      fflush()
+    }
+    function flushpending() {
+      if (pending != "") { emit("1;31", "IS DROP  ", pending); pending = "" }
+    }
+    BEGIN { pending = "" }
+    # Uplink: THIS station gated an RF packet up to APRS-IS. Only printed when
+    # Direwolf runs with -d g (igate.c:1604), which entrypoint.sh enables.
+    /^\[rx>ig\]/ { flushpending(); emit("1;35", "RF->IS UP", substr($0, 9)); next }
+    /^\[ig>tx\]/ { flushpending(); pending = substr($0, 9); next }
+    /^\[0L\]/ {
+      if (pending != "") { emit("1;32", "IS GATED ", pending); pending = "" }
+      else               { emit("1;36", "TX LOCAL ", substr($0, 6)) }
+      next
+    }
+    /^\[0\.[0-9]+\]/ {
+      flushpending(); sub(/^\[[^]]*\][ ]?/, "")
+      emit("1;34", "RF RX    ", $0); next
+    }
+    /^\[ig\]/ { flushpending(); emit("0;35", "IS SERVER", substr($0, 6)); next }
+    /[Ee]rror|ERROR|too low|too high|No such device|failed/ {
+      flushpending(); emit("1;33", "WARN     ", $0); next
+    }
+    /Now connected to IGate|Attached to KISS|Ready to accept/ {
+      flushpending(); emit("0;32", "INFO     ", $0); next
+    }
+  '
+}
+
+cmd_monitor() {
+  load_and_resolve "${1:-}"
+  local use_color=1
+  [[ -t 1 ]] || use_color=0
+
+  cat <<'LEGEND'
+Packet flow monitor.  Ctrl-C to stop.
+
+  RF RX      heard on the air and decoded
+  RF->IS UP  heard on RF and gated UP to APRS-IS by THIS station
+  IS GATED   came from APRS-IS, matched the whitelist, TRANSMITTED
+  IS DROP    came from APRS-IS, did NOT match the whitelist, dropped
+  TX LOCAL   transmitted from this station (beacon or injected packet)
+  IS SERVER  APRS-IS server chatter        WARN/INFO  problems and state
+
+LEGEND
+
+  if [[ "$MODE" == docker ]]; then
+    require_docker
+    container_exists || { echo "No container yet — run './deploy_igate.sh up' first." >&2; exit 1; }
+    docker logs -f --tail 30 "$CONTAINER_NAME" 2>&1 | monitor_filter "$use_color"
+  else
+    [[ -f "$BARE_LOG" ]] || { echo "No log yet — run './deploy_igate.sh up' first." >&2; exit 1; }
+    tail -f -n 30 "$BARE_LOG" | monitor_filter "$use_color"
+  fi
+}
+
 cmd_uninstall() {
   load_and_resolve "${1:-}"
   if [[ "$MODE" == docker ]]; then
@@ -593,9 +707,10 @@ case "${1:-}" in
   restart) cmd_down "${2:-}"; cmd_up "${2:-}" ;;
   status) cmd_status "${2:-}" ;;
   logs) cmd_logs "${2:-}" ;;
+  monitor) cmd_monitor "${2:-}" ;;
   uninstall) cmd_uninstall "${2:-}" ;;
   *)
-    echo "Usage: $0 {config|build|up|down|restart|status|logs|uninstall} [config-file]" >&2
+    echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|uninstall} [config-file]" >&2
     exit 1
     ;;
 esac
