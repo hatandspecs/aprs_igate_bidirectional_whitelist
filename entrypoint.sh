@@ -36,4 +36,7 @@ done
 
 # -d g: dump every raw line exchanged with the APRS-IS server (debugging aid;
 # remove for normal operation once the gate is confirmed working).
-exec direwolf -c /etc/direwolf/direwolf.conf -t 0 -d g
+# stdbuf -oL -eL: stdout isn't a TTY under `docker run -d`, so without this
+# Direwolf's C stdio fully-buffers output instead of flushing per line —
+# lines sit invisible in `docker logs` until the internal buffer fills.
+exec stdbuf -oL -eL direwolf -c /etc/direwolf/direwolf.conf -t 0 -d g

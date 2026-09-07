@@ -182,7 +182,22 @@ PTT RIG 2 localhost:4532
 IGSERVER ${CFG[IGSERVER]}
 IGLOGIN  ${CFG[IGLOGIN_CALL]} ${CFG[IGLOGIN_PASSCODE]}
 
+# Server-side subscription filter: without this, APRS-IS falls back to
+# sending only traffic involving stations we've heard on RF recently — which
+# is empty until this iGate has decoded something. IGFILTER asks the server
+# to forward matching traffic regardless of RF-heard history.
+IGFILTER  ${filter}
+
 FILTER    IG 0 ${filter}
+
+# Direwolf's "Message Sender Position" feature transmits a position report
+# from a message's sender "regardless of any other filtering rules" (see
+# Successful-APRS-IGate-Operation.pdf) — a documented bypass of FILTER IG,
+# observed live: the SMS gateway's own beacon was transmitted after we gated
+# its messages. IGMSP 0 disables it; this project's whitelist has no
+# exceptions, courtesy or otherwise.
+IGMSP     0
+
 IGTXVIA   ${CFG[IGTXVIA]}
 IGTXLIMIT ${CFG[IGTXLIMIT]}
 EOF
@@ -291,6 +306,27 @@ gid_of() {
   getent group "$1" 2>/dev/null | cut -d: -f3
 }
 
+# Refuse to start if the ALSA card named by ADEVICE isn't present. Learned the
+# hard way: PTT rides the serial port while audio rides the USB codec, so if
+# the codec is gone (unplugged, re-enumerated) Direwolf still keys the radio
+# and transmits an unmodulated carrier — audible, but nothing can decode it.
+require_audio_device() {
+  local adev="${CFG[ADEVICE]:-}" card
+  # Handles plughw:N,M / hw:N,M / plughw:N. Non-numeric card names are skipped.
+  card="$(sed -n 's/^[a-z]*hw:\([0-9][0-9]*\).*/\1/p' <<<"$adev")"
+  if [[ -z "$card" ]]; then
+    echo "Note: cannot parse a card number from ADEVICE='${adev}'; skipping audio device check." >&2
+    return 0
+  fi
+  if [[ ! -e "/dev/snd/controlC${card}" ]]; then
+    echo "ERROR: ADEVICE='${adev}' refers to ALSA card ${card}, but /dev/snd/controlC${card} does not exist." >&2
+    echo "  The radio's USB audio codec is not connected (or re-enumerated to a different card)." >&2
+    echo "  Refusing to start: PTT would still key the radio, transmitting a carrier with no audio." >&2
+    echo "  Check the USB cable, then run 'arecord -l' and update ADEVICE in igate.conf if the card number changed." >&2
+    exit 1
+  fi
+}
+
 bare_is_running() {
   [[ -f "$BARE_DIREWOLF_PID" ]] && kill -0 "$(cat "$BARE_DIREWOLF_PID")" 2>/dev/null
 }
@@ -349,6 +385,8 @@ _docker_up() {
   [[ "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]] && echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
   [[ -e /dev/snd ]] || echo "Warning: /dev/snd does not exist on this host (no ALSA audio devices)." >&2
 
+  require_audio_device
+
   image_exists || _docker_build
 
   render_conf
@@ -402,6 +440,8 @@ _bare_up() {
   local cat_device="${CFG[CAT_DEVICE]}" ptt_device="${CFG[PTT_DEVICE]}"
   [[ -e "$cat_device" ]] || echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
   [[ "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]] && echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
+
+  require_audio_device
 
   { command -v direwolf >/dev/null && command -v rigctld >/dev/null; } || _bare_install
 
