@@ -256,7 +256,7 @@ rather than a hand-edited `direwolf.conf`. Files in this repository:
 |------|---------|
 | `igate.conf` | The only file you edit. Plain `key = value`, no shell syntax. |
 | `igate.secrets` | APRS-IS passcode. Gitignored, never committed. |
-| `deploy_igate.sh` | The single entry point: `config`, `build`, `up`, `down`, `restart`, `status`, `logs`, `monitor`, `uninstall`. |
+| `deploy_igate.sh` | The single entry point: `config`, `build`, `up`, `down`, `restart`, `status`, `logs`, `monitor`, `uninstall`. Applies audio levels and sets radio frequency/mode on every `up`. |
 | `Dockerfile` / `entrypoint.sh` | Builds and runs the container. |
 | `run/` | Generated at runtime: rendered `direwolf.conf`, status page, logs. Gitignored. |
 
@@ -356,30 +356,58 @@ backstop independent of the failed control path. Stable at **1 W** with a choke.
   `entrypoint.sh` fixes it and must not be removed. `gawk` needs `fflush()` for
   the same reason in the monitor.
 
-### 14.5 The FT5D as a witness receiver
+### 14.5 The radio mode — the single root cause
 
-Two separate quirks made the FT5D a poor choice for verifying the downlink:
+The FTX-1 must be in **D-FM (data FM)**, not plain FM. In plain FM the radio
+modulates from the **microphone input**, not the USB codec — so Direwolf keys
+the radio and transmits a clean carrier with no data on it. Every symptom
+follows from this:
 
-1. It **does not display third-party (`}`) wrapped messages** — which is the
-   format every iGate uses to deliver internet-originated traffic.
+- The transmission is audible and visible on a waterfall, but decodes nowhere.
+- Sweeping the transmit audio level changes nothing (the audio never reaches
+  the modulator regardless of level).
+- No digipeater repeats it; no receiver acks it.
+- PTT, SWR, frequency, and audio levels all check out, so the obvious
+  diagnostics all come back clean.
 
-   The decisive evidence came from the same correspondent on the same evening,
-   minutes apart, to the same receiving radio:
+Verified via CAT: `rigctl M FM` reports `FM`, `rigctl M PKTFM` reports `FM-D`.
+`deploy_igate.sh up` now sets frequency and mode on every start and warns
+loudly if the radio reports plain `FM`.
 
-   - `W3EDP-9>APY400,W3YA-1,WIDE1*,WIDE2-1::KD3CCO-7 :From cenre hall...`
-     — direct RF, digipeated, never touched this iGate. **Displayed.**
-   - `W3EDP-5>APFII0,...::KD3CCO-7 :Mobile coming from W3Edp-9` sent from
-     aprs.fi, gated by this station as
-     `KD3CCO-10>APDW18:}W3EDP-5>...` and confirmed transmitted (`[0L]`).
-     **Not displayed, never acked.**
+This one setting accounted for essentially the entire downlink investigation.
+Several elaborate theories were built on top of it — over-deviation, error
+correction suppressing uplink gating, and the third-party theory below — and
+all of them dissolved once the mode was corrected.
 
-   The only variable is the `}` wrapper. Corroborated separately: a plain
-   message and its third-party echo carrying identical text were both
-   transmitted; only the plain one displayed and auto-acked. Three different
-   inner callsigns (`SMS`, a real call, `NOCALL`) all failed the same way, so
-   it is the format rather than callsign validation.
-2. Its manual states it filters packets from its own callsign, which confused
-   diagnosis early on (it turned out not to be the cause).
+### 14.5.1 A wrong conclusion worth recording: third-party format
+
+For a long stretch this document asserted that the FT5DR could not display
+third-party (`}`) wrapped messages, and a whole compatibility bridge was built
+around that belief. **That was wrong.**
+
+The evidence looked strong but was confounded twice over:
+
+- Every "working" test carried a `WIDE1-1,WIDE2-1` digipeat path; every failing
+  third-party test had none (`IGTXVIA 0`). Format and path were perfectly
+  correlated, so neither was isolated.
+- All of it ran while the radio was in plain FM, i.e. while *nothing* this
+  station transmitted was decodable by anyone.
+
+Retested properly — D-FM, stock third-party gating, no path — the result was
+unambiguous:
+
+```
+[0.4] KD3CCO-7>APY05D,WIDE1-1,WIDE2-1::SMS      :ack15961
+"KD3CCO-7" ACKnowledged message number "15961" from "SMS", Yaesu FT5D
+```
+
+The radio received it, unwrapped the third-party header, identified the real
+sender, and acked **to `SMS`** — the original sender, per spec. That ack was
+then gated back up to APRS-IS, closing the loop properly.
+
+Lesson: when two variables change together, the experiment proves nothing about
+either. Confirm the transmit path is known-good *before* drawing conclusions
+about packet formats.
 
 ### 14.6 The uplink was invisible, not broken
 
@@ -404,18 +432,14 @@ via the `qAR`/`qAO` construct) before concluding a subsystem is broken.
 
 ## 15. Known Limitations and Future Work
 
-- **SMS messages do not display on the FT5D.** This is the one functional gap
-  remaining. It is a receiver limitation, not an iGate fault — Direwolf hardcodes
-  third-party format at `igate.c:2343` and that is correct, standard behaviour.
-  Options: use a non-Yaesu field radio; check for an FT5D setting covering
-  relayed traffic; or patch Direwolf to emit plain messages sourced from
-  `MYCALL`. **The patch trade-off:** the receiving station would ack to your
-  iGate rather than to the original sender, so the SMS gateway never sees an ack
-  and retries indefinitely. A patch attempt was made and abandoned — an
-  unoptimised build (no `-DCMAKE_BUILD_TYPE=Release`) produced glitchy audio
-  that decoded nowhere. If revisited, build Release.
-- **Ack relaying is not implemented.** Direwolf does not translate acks back to
-  an original third-party sender.
+- **A plain-format downlink bridge was built and then removed.** It relayed
+  IS->RF messages without the third-party wrapper, for radios believed unable
+  to display third-party packets. The FT5DR turned out to handle them correctly
+  (§14.5.1), so the bridge solved a problem that did not exist — and would have
+  made things worse, since the receiving radio would then ack to `MYCALL`
+  instead of the original sender and the SMS gateway would retry forever.
+  Deleted. Recorded here so the idea is not re-invented without first checking
+  §14.5.
 - **Bare-metal mode is untested.** `deploy_igate.sh` supports
   `DEPLOY_MODE = bare-metal`, but only docker mode has been exercised.
 - **Audio levels are not auto-calibrated.** The values in `igate.conf` were
@@ -432,5 +456,5 @@ via the `qAR`/`qAO` construct) before concluding a subsystem is broken.
 |-----|----------|
 | RF → APRS-IS | Live `[rx>ig] ... qAR,KD3CCO-10` for KQ4BBR-9, NJ3T-4, KF0JZM-7, W3YA-1; messages 34-37 confirmed on aprs.fi |
 | APRS-IS → RF | Transmission digipeated by W3YA-1, gated by KB3KPP-1 and W3SWL-2 |
-| Message delivery to RF | Plain message displayed **and auto-acked** by the FT5D |
+| Message delivery to RF | SMS gateway message displayed on the FT5DR **and auto-acked to `SMS`**, ack relayed back up to APRS-IS — full round trip |
 | Strict whitelist | Verified against Direwolf source; non-matching traffic shows `[ig>tx]` with no `[0L]` |

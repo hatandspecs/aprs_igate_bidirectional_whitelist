@@ -3,3 +3,4 @@ igate.secrets
 
 # Generated at runtime: rendered direwolf.conf, container logs, etc.
 run/
+__pycache__/

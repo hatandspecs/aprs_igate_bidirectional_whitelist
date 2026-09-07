@@ -8,7 +8,7 @@ people's traffic — is silently dropped.
 Runs as a locked-down Docker container driven by one editable config file.
 The design rationale is in [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md);
 sections 13–15 there cover what was actually built, the problems hit along the
-way, and known limitations.
+way, and the corrections made when earlier conclusions turned out to be wrong.
 
 ## Quickstart
 
@@ -31,7 +31,7 @@ return to a freshly-cloned state.
 |---|---|
 | `config` | Parse and validate `igate.conf`, print resolved settings (passcode masked) |
 | `build` | Build the container image |
-| `up` | Render `direwolf.conf`, apply audio levels, start |
+| `up` | Render `direwolf.conf`, apply audio levels, set radio freq/mode, start |
 | `down` | Stop and remove the container |
 | `restart` | `down` then `up` |
 | `status` | Running or not; also writes `run/status.html` |
@@ -103,6 +103,31 @@ that arrived and were correctly refused. Seeing them is the whitelist working.
 at `866-352-4096`. It should appear as `IS GATED`. From RF, address a message to
 `SMS` with body `@<your-number> <message>`.
 
+## Radio setup — the one that matters
+
+Set the FTX-1 to **D-FM (data FM)**, not plain FM. `deploy_igate.sh up` now
+enforces this over CAT on every start, and warns if the radio reports plain FM.
+
+This is worth understanding rather than just trusting: in plain FM the radio
+modulates from the **microphone input**, not the USB codec. Direwolf keys the
+radio and transmits a clean carrier with nothing in it. PTT works, SWR is fine,
+a signal shows on the waterfall — and no receiver on earth can decode it. It
+cost most of a bring-up session to find, because every obvious diagnostic comes
+back healthy.
+
+Verified via CAT: `rigctl M FM` -> `FM`, `rigctl M PKTFM` -> `FM-D`. The
+relevant `igate.conf` settings:
+
+```
+RADIO_SET_ON_UP = yes
+RADIO_FREQ = 144390000
+RADIO_MODE = PKTFM        # hamlib's name for the radio's FM-D
+RADIO_PASSBAND = 16000
+```
+
+Also confirm the radio's **USB MOD GAIN** (under its data-mode settings) is
+sane, since that governs transmit deviation from the USB audio.
+
 ## Configuration
 
 `igate.conf` is plain `key = value`. Key settings:
@@ -137,7 +162,7 @@ DISABLE_AGC = yes
 
 These reset to (wrong) device defaults whenever the radio's USB re-enumerates,
 and both failure modes are **silent**. `up` re-applies them every start. If you
-change radios, recalibrate: raise TX until the digipeat test in §2 stops
+change radios, recalibrate: raise TX until the digipeat test above stops
 working, then back off.
 
 ## Safety notes
@@ -170,10 +195,3 @@ gone.
 `IGATE_MODE=bare-metal`. Docker mode runs with all capabilities dropped, a
 read-only root filesystem, no exposed ports, and access to only the two serial
 devices and `/dev/snd`. **Bare-metal mode is implemented but untested.**
-
-## Known limitation
-
-Messages relayed from APRS-IS go out in APRS third-party format (`}`), which is
-correct and standard. **The Yaesu FT-5DR does not display them** — so SMS
-messages won't show on that radio, though direct messages will. This affects any
-iGate, not just this one. See §15 of the prototype doc for options.

@@ -86,8 +86,10 @@ resolve_mode() {
   esac
 }
 
+CONFIG_IN_USE=""
 load_and_resolve() {
   local file="${1:-$DEFAULT_CONFIG}"
+  CONFIG_IN_USE="$file"
   load_config "$file"
   apply_secrets
   resolve_mode
@@ -368,6 +370,46 @@ apply_audio_levels() {
   fi
 }
 
+
+
+# Put the radio on the right frequency and mode via CAT, after rigctld is up.
+#
+# This exists because a mode slip is silent and catastrophic: in plain FM the
+# FTX-1 modulates from the MIC input rather than the USB codec, so Direwolf
+# keys the radio and transmits a clean carrier with no data in it. Everything
+# looks correct — PTT works, the waterfall shows a signal — but nothing on
+# earth can decode it. PKTFM is hamlib's name for the radio's FM-D mode.
+apply_radio_settings() {
+  [[ "${CFG[RADIO_SET_ON_UP]:-yes}" == "yes" ]] || return 0
+  local freq="${CFG[RADIO_FREQ]:-}" mode="${CFG[RADIO_MODE]:-PKTFM}"
+  local pb="${CFG[RADIO_PASSBAND]:-16000}"
+  [[ -z "$freq" ]] && return 0
+
+  local rc=(rigctl -m 2 -r 127.0.0.1:4532)
+  [[ "$MODE" == docker ]] && rc=(docker exec "$CONTAINER_NAME" rigctl -m 2 -r 127.0.0.1:4532)
+
+  # rigctld needs a moment after container start before it answers.
+  local i
+  for i in $(seq 1 10); do
+    timeout 5 "${rc[@]}" f >/dev/null 2>&1 && break
+    sleep 1
+  done
+
+  if timeout 5 "${rc[@]}" F "$freq" >/dev/null 2>&1 \
+     && timeout 5 "${rc[@]}" M "$mode" "$pb" >/dev/null 2>&1; then
+    local got_f got_m
+    got_f="$(timeout 5 "${rc[@]}" f 2>/dev/null | head -1)"
+    got_m="$(timeout 5 "${rc[@]}" m 2>/dev/null | head -1)"
+    echo "Radio: ${got_f} Hz, mode ${got_m}"
+    if [[ "$got_m" == "FM" ]]; then
+      echo "  WARNING: radio reports plain FM, not data-FM. Transmit audio comes" >&2
+      echo "  from the mic instead of USB — transmissions will NOT decode." >&2
+    fi
+  else
+    echo "Note: could not set radio frequency/mode via CAT (is rigctld up?)." >&2
+  fi
+}
+
 bare_is_running() {
   [[ -f "$BARE_DIREWOLF_PID" ]] && kill -0 "$(cat "$BARE_DIREWOLF_PID")" 2>/dev/null
 }
@@ -466,6 +508,7 @@ _docker_up() {
   sleep 1
   if is_running; then
     echo "iGate up (docker). container=${CONTAINER_NAME}"
+    apply_radio_settings
     echo "Watch packet flow: ./deploy_igate.sh monitor"
   else
     echo "Container exited immediately — check: docker logs ${CONTAINER_NAME}" >&2
@@ -518,6 +561,7 @@ _bare_up() {
 
   if bare_is_running; then
     echo "iGate up (bare-metal). direwolf pid=$(cat "$BARE_DIREWOLF_PID") rigctld pid=$(cat "$BARE_RIGCTLD_PID")"
+    apply_radio_settings
     echo "Log: ${BARE_LOG}. Watch packet flow: ./deploy_igate.sh monitor"
   else
     echo "direwolf exited immediately — check ${BARE_LOG}" >&2
@@ -605,7 +649,7 @@ cmd_logs() {
 # the whitelist look broken when it is working correctly. So this pairs them:
 # an [ig>tx] followed by [0L] is GATED, an [ig>tx] with nothing after is DROP.
 monitor_filter() {
-  awk -v use_color="$1" '
+  awk -v use_color="$1" -v show_detail="$2" '
     function ts()   { return strftime("%H:%M:%S") }
     function C(c,s) { return use_color ? "\033[" c "m" s "\033[0m" : s }
     # fflush is required: gawk block-buffers when stdout is a pipe, which
@@ -614,37 +658,67 @@ monitor_filter() {
       printf "%s  %s  %s\n", ts(), C(color, label), text
       fflush()
     }
+    # Direwolf prints the human-readable decode BETWEEN the received frame and
+    # the "gated up" line. Buffer it so the output reads in a sensible order:
+    #   RF RX  ->  RF->IS UP  ->  decoded
+    function flushdetail(   i) {
+      for (i = 1; i <= ndetail; i++) {
+        if (show_detail) { printf "                       %s\n", C("0;90", detail[i]) }
+      }
+      ndetail = 0
+      fflush()
+    }
     function flushpending() {
       if (pending != "") { emit("1;31", "IS DROP  ", pending); pending = "" }
     }
-    BEGIN { pending = "" }
-    # Uplink: THIS station gated an RF packet up to APRS-IS. Only printed when
-    # Direwolf runs with -d g (igate.c:1604), which entrypoint.sh enables.
-    /^\[rx>ig\]/ { flushpending(); emit("1;35", "RF->IS UP", substr($0, 9)); next }
-    /^\[ig>tx\]/ { flushpending(); pending = substr($0, 9); next }
+    BEGIN { pending = ""; ndetail = 0; collecting = 0 }
+
+    # --- noise ---
+    /^\[rx>ig\] #/                                { next }   # APRS-IS keepalive
+    /^Rx IGate: Truncated information part at CR/ { next }
+
+    # --- events ---
+    /^\[rx>ig\]/ {
+      flushpending(); emit("1;35", "RF->IS UP", substr($0, 9))
+      collecting = 0; flushdetail(); next
+    }
+    /^\[ig>tx\]/ { flushdetail(); collecting = 0; flushpending(); pending = substr($0, 9); next }
     /^\[0L\]/ {
+      flushdetail(); collecting = 0
       if (pending != "") { emit("1;32", "IS GATED ", pending); pending = "" }
       else               { emit("1;36", "TX LOCAL ", substr($0, 6)) }
       next
     }
     /^\[0\.[0-9]+\]/ {
-      flushpending(); sub(/^\[[^]]*\][ ]?/, "")
-      emit("1;34", "RF RX    ", $0); next
+      flushdetail(); flushpending()
+      sub(/^\[[^]]*\][ ]?/, "")
+      emit("1;34", "RF RX    ", $0)
+      collecting = 1; next
     }
-    /^\[ig\]/ { flushpending(); emit("0;35", "IS SERVER", substr($0, 6)); next }
-    /[Ee]rror|ERROR|too low|too high|No such device|failed/ {
-      flushpending(); emit("1;33", "WARN     ", $0); next
+    /^\[ig\]/ { flushdetail(); collecting = 0; flushpending(); emit("0;35", "IS SERVER", substr($0, 6)); next }
+
+    # --- state and problems ---
+    /Audio input level is too low|Audio input level is too high|[Ee]rror|ERROR|No such device|failed/ {
+      flushdetail(); collecting = 0; flushpending(); emit("1;33", "WARN     ", $0); next
     }
     /Now connected to IGate|Attached to KISS|Ready to accept/ {
-      flushpending(); emit("0;32", "INFO     ", $0); next
+      flushdetail(); collecting = 0; flushpending(); emit("0;32", "INFO     ", $0); next
+    }
+
+    # --- decode detail belonging to the frame above ---
+    /^[[:space:]]*$/ { flushdetail(); collecting = 0; next }
+    {
+      if (collecting && ndetail < 12) { detail[++ndetail] = $0 }
     }
   '
 }
 
 cmd_monitor() {
   load_and_resolve "${1:-}"
-  local use_color=1
+  local use_color=1 show_detail=1
   [[ -t 1 ]] || use_color=0
+  # "monitor raw" hides Direwolf's decoded interpretation of each frame.
+  [[ "${2:-}" == "raw" || "${1:-}" == "raw" ]] && show_detail=0
 
   cat <<'LEGEND'
 Packet flow monitor.  Ctrl-C to stop.
@@ -656,15 +730,18 @@ Packet flow monitor.  Ctrl-C to stop.
   TX LOCAL   transmitted from this station (beacon or injected packet)
   IS SERVER  APRS-IS server chatter        WARN/INFO  problems and state
 
+  Indented grey lines are Direwolf's decode of the frame above
+  ("monitor raw" hides them).
+
 LEGEND
 
   if [[ "$MODE" == docker ]]; then
     require_docker
     container_exists || { echo "No container yet — run './deploy_igate.sh up' first." >&2; exit 1; }
-    docker logs -f --tail 30 "$CONTAINER_NAME" 2>&1 | monitor_filter "$use_color"
+    docker logs -f --tail 30 "$CONTAINER_NAME" 2>&1 | monitor_filter "$use_color" "$show_detail"
   else
     [[ -f "$BARE_LOG" ]] || { echo "No log yet — run './deploy_igate.sh up' first." >&2; exit 1; }
-    tail -f -n 30 "$BARE_LOG" | monitor_filter "$use_color"
+    tail -f -n 30 "$BARE_LOG" | monitor_filter "$use_color" "$show_detail"
   fi
 }
 
