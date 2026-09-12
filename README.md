@@ -5,7 +5,10 @@ APRS-IS, and **only** APRS *messages* addressed to whitelisted callsigns are
 ever transmitted back onto RF. Everything else — positions, telemetry, other
 people's traffic — is silently dropped.
 
-Runs as a locked-down Docker container driven by one editable config file.
+Runs as a locked-down Docker container, or bare-metal, driven by one editable
+config file. `build_pi_image.sh` also builds a headless Raspberry Pi SD card
+image that boots straight into it — see "Running it on a Raspberry Pi".
+
 The design rationale is in [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md);
 sections 13–15 there cover what was actually built, the problems hit along the
 way, and the corrections made when earlier conclusions turned out to be wrong.
@@ -79,6 +82,10 @@ no following `[0L]` was dropped, not sent.**
 Without that flag the entire uplink direction is invisible in the log — note it
 is `-d i`, not `-d g`, which is the unrelated GPS debug option.
 
+`monitor` requires **gawk** — it uses `strftime()`, which mawk (the default
+`awk` on Debian-family systems) does not have. Bare-metal installs pull it in;
+if it is missing, `monitor` says so rather than showing an empty screen.
+
 `./deploy_igate.sh status` also writes `run/status.html` — a static page showing
 state, whitelist, and resolved filter. Open with `xdg-open run/status.html`.
 
@@ -92,9 +99,14 @@ radio — send a packet with a digipeat path and see if a digipeater repeats it
 back to you:
 
 ```bash
+# Requires KISS_PORT = 8001 in igate.conf (default 0 = off), then a restart.
 echo 'KD3CCO-10>APDW18,WIDE1-1,WIDE2-1::KD3CCO-7 :test{01' \
-  | docker exec -i aprs-igate kissutil
+  | docker exec -i aprs-igate kissutil      # docker mode
+echo 'KD3CCO-10>APDW18,WIDE1-1,WIDE2-1::KD3CCO-7 :test{01' \
+  | kissutil                                # bare-metal mode
 ```
+
+Set `KISS_PORT` back to `0` when you're done — see Local control ports below.
 
 Watch `monitor`. You'll see `TX LOCAL` immediately. If within ~30 seconds you
 also see the same message come back as `RF RX` or `IS GATED` with a digipeater
@@ -160,6 +172,93 @@ same as `CAT_DEVICE`.
 Multiple whitelisted calls: `WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9`.
 Only *messages* addressed to these are ever transmitted.
 
+### Forcing a digipeat path
+
+`TX_VIA` sets the AX.25 digipeat path on everything this station transmits —
+gated messages and the RF beacon alike. Blank means direct, with no digipeater.
+
+```
+TX_VIA =                  # direct
+TX_VIA = W3YA-1           # force every transmission through that digipeater
+TX_VIA = WIDE2-1          # generic single hop via whatever answers WIDE2
+TX_VIA = W3YA-1,WIDE2-1   # that digi first, then one more generic hop
+```
+
+Naming a digipeater explicitly is the deterministic choice: a digipeater repeats
+any packet carrying its own callsign in the path, regardless of which `WIDEn-N`
+aliases it answers to. The generic form depends on that digi's configuration —
+W3YA-1 answers `WIDE2`, not `WIDE1`, so `WIDE1-1` would never reach it.
+
+`RX_VIA` is the mirror image, and it is a **test knob**. There is no way to
+force how other stations route *to* you — that's their path setting — but you
+can restrict what you gate up:
+
+```
+RX_VIA =                  # gate everything heard (normal operation)
+RX_VIA = W3YA-1           # gate ONLY packets W3YA-1 actually repeated
+RX_VIA = W3YA-1,N3KTX-4   # either of them
+```
+
+This renders `FILTER 0 IG d/W3YA-1` — the RF→APRS-IS direction, the reverse of
+the whitelist's `FILTER IG 0`. Direwolf's `d/` checks the AX.25 has-been-used
+bit, so it matches packets genuinely relayed by that station rather than ones
+merely listing it in the path.
+
+It also makes your station less useful to the network, since everything else you
+hear stops being gated. Set it back to blank when the test is done. Both settings
+are reported by `./deploy_igate.sh config`:
+
+```
+TX_VIA = via W3YA-1
+RX_VIA = ONLY gate packets digipeated by W3YA-1
+```
+
+### Station beacon
+
+Off by default — a beacon is the only thing besides a whitelisted message this
+station ever transmits, so it's a deliberate choice.
+
+```
+BEACON_TO      = off        # off | IG | RF | BOTH
+BEACON_EVERY   = 30:00
+BEACON_GRID    = FN10cs     # Maidenhead locator, 4 or 6 characters
+BEACON_LAT     =            # decimal degrees, used only if GRID is blank
+BEACON_LON     =
+BEACON_OVERLAY = R
+BEACON_COMMENT = RX iGate | TX whitelist only
+```
+
+`IG` sends the beacon to APRS-IS over the internet and **never keys the radio** —
+the station appears on aprs.fi with a position at no cost in airtime. `RF`
+transmits it on 144.390, which is what local operators see on their own radios;
+it only reaches aprs.fi if a neighbouring iGate hears and gates it. `BOTH` does
+each, which is the combination to use if you want local visibility *and*
+guaranteed presence on the map.
+
+**Give the position as a grid square.** A 6-character Maidenhead locator is
+about 4 km by 6 km, so it is rounded by construction rather than by remembering
+to round; `deploy_igate.sh` converts it to the centre of the square. Four
+characters (`FN10`) is coarser still, roughly 111 km by 156 km. `BEACON_LAT` and
+`BEACON_LON` remain available for a precise position and are used only when
+`BEACON_GRID` is blank — round them yourself if you use them, because the
+position goes into a permanent, public, worldwide database with no delete
+button.
+
+`BEACON_OVERLAY` is the character APRS puts on the `&` gateway symbol to say
+what kind of gate this is: `R` receive-only, `I` generic, `T` transmitting with
+a 1-hop path, `2` with a 2-hop path. **`R` is the honest default for this
+project.** The transmit path is whitelist-only, so from any other operator's
+point of view this gate receives and never relays to them; advertising `T` or
+`2` invites someone to rely on delivery that will not happen.
+
+`./deploy_igate.sh config` reports the resolved setting, including the
+coordinates a grid square resolved to, and says plainly when a beacon will be
+transmitted on RF:
+
+```
+BEACON = every 30:00 TRANSMITTED ON RF and to APRS-IS at FN10CS (40.7708, -77.7917), overlay R
+```
+
 ### The passcode
 
 `igate.conf` is meant to be committed, so the passcode goes elsewhere. Resolved
@@ -211,7 +310,8 @@ gone.
 ## Deployment modes
 
 `DEPLOY_MODE = docker` (default) or `bare-metal`; override per-run with
-`IGATE_MODE=bare-metal`. **Bare-metal mode is implemented but untested.**
+`IGATE_MODE=bare-metal`. **Bare-metal mode has not yet been run on the air** —
+the Raspberry Pi build below is its first intended deployment.
 
 Docker mode is locked down to the minimum that still works — all capabilities
 dropped (verified: `CapEff` and `CapBnd` both zero), `no-new-privileges`,
@@ -223,6 +323,24 @@ single ALSA card (`controlC1`, `pcmC1D0c`, `pcmC1D0p`, `timer`). Notably it does
 *not* get the whole `/dev/snd` directory, which the common recipe passes and
 which would include the laptop's built-in microphone.
 
+### Local control ports
+
+Direwolf can listen for AGW clients (Xastir, APRSIS32) and KISS TCP clients
+(`kissutil`). It binds both to `0.0.0.0` and authenticates nothing, so anything
+that can reach the KISS port can transmit arbitrary packets under `MYCALL`.
+Direwolf has no bind-address setting, so off is the only way to make them
+unreachable.
+
+```
+AGW_PORT  = 0    # 0 disables; 8000 is Direwolf's default
+KISS_PORT = 0    # 0 disables; 8001 is Direwolf's default
+```
+
+Both default to `0`. Docker mode concealed the exposure by publishing no ports;
+bare-metal mode has no such boundary, which matters most for a headless station
+on a shared network. Enable `KISS_PORT` only while injecting test packets, and
+check with `ss -tln | grep -E '8000|8001'`.
+
 Outbound traffic is restricted to DNS and the APRS-IS port via a dedicated
 docker network filtered in the `DOCKER-USER` iptables chain. This needs `sudo`;
 without it `up` warns and continues with unrestricted egress rather than
@@ -232,3 +350,86 @@ Note that `monitor` redacts the APRS-IS passcode, which Direwolf echoes in its
 login line. Raw `logs` does not — prefer `monitor` when sharing output.
 
 Full detail and remaining gaps are in §13.4 of the design doc.
+
+## Running it on a Raspberry Pi
+
+`build_pi_image.sh` produces a Raspberry Pi OS SD card image that boots
+straight into this gateway: joins WiFi, enables SSH, installs Direwolf and
+hamlib, and starts the iGate — no keyboard or monitor needed at any point.
+
+The image is customised offline, on this machine, by loop-mounting the
+downloaded Raspberry Pi OS image and writing into its two partitions. No Pi is
+involved in the build.
+
+```bash
+cp pi.secrets.example pi.secrets
+$EDITOR pi.secrets            # Pi login password + WiFi SSIDs and PSKs
+$EDITOR pi.conf               # hostname, user, country, SSH key
+
+./build_pi_image.sh check     # validate before downloading ~500 MB
+./build_pi_image.sh build     # download, customise, write pi-build/aprs-igate-pi.img
+./build_pi_image.sh flash /dev/sdX
+```
+
+`build` needs `sudo` for the loop mount. `flash` refuses anything that is not a
+whole removable/hotplug disk or that has mounted partitions, and asks you to
+type the device name a second time. Raspberry Pi Imager works too — choose
+"Use custom" and pick `pi-build/aprs-igate-pi.img`.
+
+Then, after a few minutes on first boot:
+
+```bash
+ssh igate@aprs-igate.local
+cd aprs-igate && ./deploy_igate.sh monitor
+```
+
+Step-by-step, from blank SD card to a gateway on the air, is in
+[PI-SETUP.md](PI-SETUP.md).
+
+### What ends up on the card
+
+| Written | Purpose |
+|---|---|
+| `ssh`, `userconf.txt` on the boot partition | Enables sshd and creates `PI_USER` with a SHA-512 password hash |
+| `/etc/igate/authorized_keys` | Key-based login, if `PI_SSH_PUBKEY` is set; moved into the home directory on first boot |
+| One `.nmconnection` per WiFi network, mode 600 | NetworkManager profiles; network 1 has the highest autoconnect priority |
+| `/etc/modprobe.d/cfg80211-regdom.conf`, `/etc/default/crda`, `igate-wifi-country.service` | WiFi regulatory domain, three ways (see below) |
+| The whole project in `/opt/aprs-igate` | With `DEPLOY_MODE = bare-metal` rewritten in the installed copy; symlinked to `~/aprs-igate` on first boot |
+| `igate-firstboot.service` | Installs `direwolf libhamlib-utils alsa-utils avahi-daemon`, adds the user to `dialout` and `audio` |
+| `aprs-igate.service` | `deploy_igate.sh up` at boot, if `PI_AUTOSTART = yes` |
+
+`pi.secrets` is **not** copied to the card — the WiFi keys it holds are already
+in the NetworkManager profiles. `igate.secrets` **is** copied, mode 600: the Pi
+cannot log in to APRS-IS without the passcode. `build` refuses to run if
+`igate.secrets` is missing, since a headless Pi gives no easy way to notice.
+
+### Why the WiFi country is set three ways
+
+Raspberry Pi OS keeps the WiFi radio rfkill-blocked until a regulatory domain
+is set — but first boot needs the network to install Direwolf. So the country
+has to be in place *before* NetworkManager starts, and the mechanism that does
+that has moved between OS releases. The builder sets the `cfg80211` kernel
+module parameter (applied as the driver loads), the legacy `REGDOMAIN` default,
+and an early oneshot ordered `Before=NetworkManager.service` that runs `rfkill
+unblock wifi` and `raspi-config nonint do_wifi_country`. Any one of them
+suffices; together they survive an OS release changing its mind.
+
+### Before trusting it on the air
+
+`ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` are copied from the build host, and the
+Pi enumerates its own hardware. The installed `igate.conf` carries a comment
+saying so. Check on the Pi with `arecord -l` and `ls /dev/ttyUSB* /dev/ttyACM*`,
+then `./deploy_igate.sh restart`.
+
+Two other things worth knowing about the 3A+ specifically: it has one USB-A
+port, so a radio and anything else need a hub, and 512 MB of RAM, which is why
+`pi.conf` defaults to the 32-bit (`armhf`) Lite image and why the Pi runs
+bare-metal rather than under Docker.
+
+### Settings
+
+`pi.conf` (committed) holds hostname, user, image variant, locale, install
+directory and autostart. `pi.secrets` (gitignored) holds `PI_USER_PASSWORD` and
+`WIFI_<n>_SSID` / `WIFI_<n>_PSK` / `WIFI_<n>_HIDDEN`, numbered from 1 — the
+builder reads until a number is missing. `PI_IMAGE_PATH` points at an image
+already on disk to skip the download.

@@ -32,6 +32,15 @@ Prototype platform: Fedora laptop + Yaesu FTX-1 Optima (USB-C)
   - [14.4 Container filesystem constraints](#144-container-filesystem-constraints)
 - [15. Limitations and future work](#15-limitations-and-future-work)
   - [15.1 Verified behaviour](#151-verified-behaviour)
+- [16. Headless Raspberry Pi deployment](#16-headless-raspberry-pi-deployment)
+  - [16.1 Offline image customisation](#161-offline-image-customisation)
+  - [16.2 Access without a console](#162-access-without-a-console)
+  - [16.3 WiFi](#163-wifi)
+  - [16.4 First boot and service startup](#164-first-boot-and-service-startup)
+  - [16.5 Local control ports](#165-local-control-ports)
+  - [16.6 Deployment mode and hardware constraints](#166-deployment-mode-and-hardware-constraints)
+  - [16.7 Secrets on the card](#167-secrets-on-the-card)
+  - [16.8 Writing the card](#168-writing-the-card)
 
 ---
 
@@ -309,7 +318,8 @@ expect:
   (§13.1), and check whether it presents CAT and PTT on one port or two
   (§13.2).
 - Uncomment `IGTXVIA 0 WIDE2-1` as the standing transmit path, since production downlink goes out via a digipeater to reach a distant field station.
-- Consider a fixed, deliberately rounded beacon position for the permanent site, and wrap Direwolf in a `systemd` service so it restarts on boot.
+- Consider a fixed, deliberately rounded beacon position for the permanent site.
+- A permanent station is normally headless. `build_pi_image.sh` covers that case for a Raspberry Pi host, including the `systemd` units that start the gateway at boot (§16).
 
 ---
 
@@ -574,10 +584,17 @@ Under `docker run -d` stdout is a pipe, so Direwolf's C stdio block-buffers and
 
 ## 15. Limitations and future work
 
-- **Outbound network is unrestricted.** The container may reach any host, not
-  only APRS-IS. Plain Docker cannot express that constraint; it requires a
-  custom network with firewall rules or an egress proxy. This is the largest
-  remaining gap in the security model.
+- **The egress restriction degrades open, and has not been verified in place.**
+  The `DOCKER-USER` rules of §13.4 need `sudo`; without it `up` warns and starts
+  with unrestricted outbound rather than refusing. Only that fallback path has
+  been exercised. Confirming the rules themselves requires a host where the
+  rules can be installed:
+
+  ```
+  sudo iptables -L DOCKER-USER -n --line-numbers
+  docker exec aprs-igate sh -c 'timeout 3 bash -c "</dev/tcp/1.1.1.1/443" \
+    && echo LEAK || echo blocked'
+  ```
 - **The base image is not pinned by digest.** `FROM fedora:43` floats. Pinning
   would make builds reproducible and resist a compromised upstream tag, at the
   cost of no longer receiving updates automatically.
@@ -585,8 +602,9 @@ Under `docker run -d` stdout is a pipe, so Direwolf's C stdio block-buffers and
   removes this and accepts the same `Dockerfile` and flags.
 - **No custom seccomp profile.** The default blocks approximately 44 syscalls; a
   Direwolf-specific allowlist would be tighter but requires ongoing maintenance.
-- **Bare-metal mode is untested.** `DEPLOY_MODE = bare-metal` is implemented but
-  only docker mode has been exercised.
+- **Bare-metal mode has not been run on the air.** `DEPLOY_MODE = bare-metal` is
+  implemented and is what the Raspberry Pi image of §16 deploys, but only docker
+  mode has carried live traffic.
 - **Audio levels are not self-calibrating.** The values in `igate.conf` were
   determined empirically for one radio at one power level. A calibration routine
   that transmits and checks for a digipeat would remove the manual step.
@@ -601,3 +619,158 @@ Under `docker run -d` stdout is a pipe, so Direwolf's C stdio block-buffers and
 | APRS-IS → RF | Gated messages transmit (`[0L]`) and are repeated by a digipeater |
 | Message delivery | SMS-gateway messages display on the receiving radio and are acknowledged to the original sender; the acknowledgement is gated back to APRS-IS |
 | Strict whitelist | Non-matching traffic produces `[ig>tx]` with no `[0L]` |
+
+---
+
+## 16. Headless Raspberry Pi deployment
+
+The prototype runs on a laptop with a keyboard attached. A permanent station
+does not, so `build_pi_image.sh` produces a Raspberry Pi OS SD card image that
+reaches a working, reachable gateway with no console session at any point: the
+Pi joins WiFi, accepts SSH, installs its dependencies, and starts the gateway on
+first boot.
+
+### 16.1 Offline image customisation
+
+The image is customised on the build host, not on the Pi. `losetup --partscan`
+attaches the decompressed image; its two partitions — FAT boot, ext4 root — are
+mounted and written to directly. A cleanup trap unmounts and detaches on any
+exit path, including interrupt.
+
+This matters because the alternative — boot the Pi, configure it interactively,
+image the result — needs the console and network access that the configuration
+is supposed to provide. Writing offline breaks that circularity.
+
+| File | Purpose |
+|------|---------|
+| `pi.conf` | Hostname, user, image variant, locale, install directory, autostart. Committed. |
+| `pi.secrets` | Pi login password and WiFi pre-shared keys. Gitignored. |
+| `build_pi_image.sh` | `check`, `build`, `flash <device>`. |
+| `pi-build/` | Downloaded and generated images. Gitignored. |
+
+### 16.2 Access without a console
+
+SSH is enabled by an empty `ssh` file on the boot partition. Raspberry Pi OS has
+shipped without a default user since 2022, so the account is named by
+`userconf.txt`, holding `user:hash` with a SHA-512 hash from `openssl passwd -6`
+— the plaintext password never reaches the card.
+
+Nothing is written under `/home` at build time. Raspberry Pi OS applies
+`userconf.txt` with `usermod -m -d /home/<name>`, which refuses to run when the
+destination directory already exists; pre-creating the home directory would
+therefore break account setup on first boot. An optional public key is staged at
+`/etc/igate/authorized_keys` and installed into the home directory by the
+first-boot script, after `userconf.service` has put it in its final place.
+
+The host is reachable as `<PI_HOSTNAME>.local`; `avahi-daemon` is installed at
+first boot so the name resolves without knowing the DHCP lease.
+
+### 16.3 WiFi
+
+Each network in `pi.secrets` becomes a NetworkManager `.nmconnection` profile at
+mode 600 — NetworkManager refuses to load a profile that is group or world
+readable. Networks are numbered from 1 and translate to descending
+`autoconnect-priority`, so the first is preferred where several are in range.
+`WIFI_<n>_HIDDEN = yes` sets `hidden=true`, making the Pi probe for the SSID
+rather than wait for a beacon.
+
+The regulatory domain needs more care than it appears to. Raspberry Pi OS keeps
+the WiFi radio rfkill-blocked until a country is set, and first boot needs the
+network to install Direwolf — so the country must be in place before
+NetworkManager starts, and the mechanism that does that has changed between OS
+releases. Three independent mechanisms are written, any one of which suffices:
+
+1. `/etc/modprobe.d/cfg80211-regdom.conf` sets `ieee80211_regdom` as the driver
+   loads, before userspace exists.
+2. `/etc/default/crda` carries `REGDOMAIN`, still read on older releases.
+3. `igate-wifi-country.service`, ordered `Before=NetworkManager.service`, runs
+   `rfkill unblock wifi`, `iw reg set`, and `raspi-config nonint
+   do_wifi_country`.
+
+### 16.4 First boot and service startup
+
+Two ordered oneshot units bring the gateway up.
+
+`igate-firstboot.service` waits for `network-online.target` and
+`userconf.service`, then installs `direwolf`, `libhamlib-utils`, `alsa-utils`
+and `avahi-daemon`, and adds the service account to `dialout` and `audio` so it
+can open the radio's serial ports and audio device without root, and to `sudo`
+so the gateway can be managed over SSH. It installs the staged public key,
+symlinks the install directory into the home directory, and is guarded by
+`ConditionPathExists` on a marker file, so it is a genuine first-boot action
+rather than a per-boot one. Package installation cannot be done offline in the
+image because the packages are architecture-specific and the build host is
+x86-64.
+
+`aprs-igate.service` then runs `deploy_igate.sh up` as the service account.
+`deploy_igate.sh` launches Direwolf in the background and returns, so the unit is
+`Type=oneshot` with `RemainAfterExit=yes`. `Restart=` is deliberately absent:
+systemd rejects it on `Type=oneshot` units. A gateway whose radio was not
+connected at boot is started with `systemctl start aprs-igate` once it is.
+
+Set `PI_AUTOSTART = no` to install the unit without enabling it, for a card that
+should come up idle.
+
+### 16.5 Local control ports
+
+Direwolf listens for AGW clients on 8000 and KISS TCP clients on 8001 by
+default, binds both to `0.0.0.0`, and authenticates neither. Anything that can
+reach the KISS port can submit frames for transmission under `MYCALL`.
+
+Docker mode concealed this: the container published no ports, so the listeners
+existed but were unreachable from the network. Bare-metal mode has no such
+boundary, and a headless station on a shared wireless network is precisely the
+case where it matters. Direwolf exposes no bind-address option, so binding them
+to loopback is not available; disabling is.
+
+`deploy_igate.sh` therefore emits `AGWPORT` and `KISSPORT` explicitly rather
+than inheriting Direwolf's defaults, from `AGW_PORT` and `KISS_PORT` in
+`igate.conf`, both defaulting to `0`. A config file predating these keys also
+renders as disabled, so the failure mode is closed rather than open. `config`
+reports an enabled port as `LISTENING ON ALL INTERFACES` rather than printing a
+bare number that reads like an ordinary setting.
+
+The cost is that `kissutil` packet injection — the transmit test of §9 —
+requires enabling `KISS_PORT` for its duration.
+
+### 16.6 Deployment mode and hardware constraints
+
+The project is installed to `/opt/aprs-igate`, outside `/home` for the reason in
+§16.2, and symlinked to `~/aprs-igate` on first boot so that it is one `cd` away
+after logging in. The Pi runs bare-metal; `build_pi_image.sh` rewrites
+`DEPLOY_MODE = bare-metal` into the installed copy of `igate.conf` and leaves the
+working copy untouched.
+On a Pi 3A+ the case for the container is weak: 512 MB of RAM is not much to
+spend on a container runtime, and the isolation argument is weaker on a
+single-purpose appliance that has nothing else to be isolated from. The same
+reasoning drives the 32-bit `armhf` image default.
+
+The 3A+ has one USB-A port, so a radio plus anything else needs a hub.
+
+`ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` are copied from the build host and will
+not generally match the Pi, which enumerates its own hardware. The installed
+`igate.conf` is prefixed with a comment recording this. They are left as copied
+rather than blanked so that the file remains valid and the correct shape is
+visible.
+
+### 16.7 Secrets on the card
+
+`igate.secrets` is copied at mode 600 — a headless Pi that cannot log in to
+APRS-IS gives no obvious symptom, so `build` refuses to run without it.
+`pi.secrets` is excluded: the WiFi keys it holds are already in the
+NetworkManager profiles, and the Pi has no use for a second copy.
+
+Both the SD card and the built image hold WiFi pre-shared keys and an APRS-IS
+passcode in recoverable form. Raspberry Pi OS has no disk encryption by default
+and the card is removable, so physical possession of either is equivalent to
+possession of those credentials.
+
+### 16.8 Writing the card
+
+`flash` requires the target to be a whole disk that `lsblk` reports as removable
+or hotplug, refuses any device with a mounted partition, prints `lsblk` for the
+target, and requires the device name to be typed a second time. The check reads
+`lsblk` rather than `/sys/block`, because deriving a base device name by
+stripping trailing digits yields `mmcblk` from `mmcblk0p1` — not a device — and
+built-in card readers commonly report non-removable while still being hotplug. Raspberry Pi Imager accepts the same image via "Use
+custom".

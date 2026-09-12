@@ -7,7 +7,7 @@
 #   ./deploy_igate.sh config [file]   Parse, validate, and print the resolved
 #                                     config (like `docker-compose config`).
 #   ./deploy_igate.sh build [file]    docker mode: build the image.
-#                                     bare-metal mode: dnf install direwolf/hamlib.
+#                                     bare-metal mode: install direwolf/hamlib.
 #   ./deploy_igate.sh up [file]       Render direwolf.conf and start it.
 #   ./deploy_igate.sh down [file]     Stop it.
 #   ./deploy_igate.sh restart [file]  down, then up.
@@ -124,6 +124,136 @@ validate_config() {
 
 # WHITELIST_CALLS is comma-separated in the config file; render as the
 # slash-chained addressee filter Direwolf expects: g/KD3CCO*/W3XYZ*
+# A position beacon so the station appears on aprs.fi. Deliberately optional and
+# off by default: this project's premise is transmitting as little as possible.
+#
+# BEACON_TO = IG sends it to APRS-IS over the internet and never keys the radio,
+# which is what puts the station on the map without using airtime. BEACON_TO = RF
+# transmits it on 144.390 as well, which is a real cost on a shared national
+# channel and should be a considered choice.
+# The digipeat path applied to everything this station transmits: gated
+# messages and beacons alike. Blank means direct, with no digipeater.
+#
+# Naming a digipeater explicitly is the deterministic choice, because a
+# digipeater repeats any packet carrying its own callsign in the path whatever
+# WIDEn-N aliases it answers to. The generic form depends on that digi's alias
+# configuration — W3YA-1 answers WIDE2, not WIDE1.
+build_tx_via() {
+  local via="${CFG[TX_VIA]:-}"
+  if [[ -z "$via" ]]; then
+    # Legacy: IGTXVIA carried the channel and the path together ("0 WIDE2-1").
+    # Keep honouring the path part of an older config file.
+    local legacy="${CFG[IGTXVIA]:-}"
+    legacy="${legacy#0}"
+    via="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$legacy")"
+  fi
+  # Commas are the natural separator to write; AX.25 wants spaces.
+  tr ',' ' ' <<<"$via" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//'
+}
+
+# Maidenhead grid square -> decimal degrees, at the centre of the square.
+# Deliberately the preferred way to give a beacon position: a 6-character grid
+# is about 4 x 6 km, so it is rounded by construction rather than by remembering
+# to round. Plain awk, not gawk — no strftime here, so mawk is fine.
+grid_to_latlon() {
+  local g="${1^^}" n="${#1}"
+  [[ "$g" =~ ^[A-R][A-R][0-9][0-9]([A-X][A-X])?$ ]] || return 1
+  awk -v g="$g" -v n="$n" '
+    BEGIN {
+      F = index("ABCDEFGHIJKLMNOPQR", substr(g,1,1)) - 1
+      S = index("ABCDEFGHIJKLMNOPQR", substr(g,2,1)) - 1
+      lon = -180 + F * 20
+      lat =  -90 + S * 10
+      lon += substr(g,3,1) * 2
+      lat += substr(g,4,1) * 1
+      if (n >= 6) {
+        lon += (index("ABCDEFGHIJKLMNOPQRSTUVWX", substr(g,5,1)) - 1) * (5/60)
+        lat += (index("ABCDEFGHIJKLMNOPQRSTUVWX", substr(g,6,1)) - 1) * (2.5/60)
+        lon += (5/60)/2; lat += (2.5/60)/2
+      } else {
+        lon += 1; lat += 0.5
+      }
+      printf "%.4f %.4f\n", lat, lon
+    }'
+}
+
+build_beacon() {
+  local to="${CFG[BEACON_TO]:-off}"
+  local lat="${CFG[BEACON_LAT]:-}" lon="${CFG[BEACON_LON]:-}"
+  local every="${CFG[BEACON_EVERY]:-30:00}"
+  local comment="${CFG[BEACON_COMMENT]:-}"
+
+  [[ "$to" == "off" || -z "$to" ]] && return 0
+
+  # A grid square, if given, is authoritative — it is the rounded form.
+  local grid="${CFG[BEACON_GRID]:-}"
+  if [[ -n "$grid" ]]; then
+    local derived
+    if ! derived="$(grid_to_latlon "$grid")"; then
+      echo "Warning: BEACON_GRID='${grid}' is not a valid Maidenhead locator (e.g. FN10cs); no beacon." >&2
+      return 0
+    fi
+    read -r lat lon <<<"$derived"
+  fi
+
+  if [[ -z "$lat" || -z "$lon" ]]; then
+    echo "Warning: BEACON_TO=${to} but no position is set (BEACON_GRID or BEACON_LAT/BEACON_LON); no beacon." >&2
+    return 0
+  fi
+
+  # Overlay character on the "&" gateway symbol, which is how APRS advertises
+  # what kind of gate this is:
+  #   R  receive-only iGate      I  generic iGate
+  #   T  transmitting iGate, 1-hop path    2  transmitting iGate, 2-hop path
+  # R is the default here because it describes what this station does for
+  # everybody else: the transmit path is whitelist-only, so no other operator's
+  # messages are ever relayed to RF. Advertising T would invite someone to rely
+  # on delivery this gate will not perform.
+  local overlay="${CFG[BEACON_OVERLAY]:-R}"
+
+  # via= applies only to the RF beacon; a digipeat path is meaningless on the
+  # copy sent straight to APRS-IS over the internet.
+  local txvia; txvia="$(build_tx_via)"
+  _emit_beacon() {
+    printf 'PBEACON %sdelay=%s every=%s overlay=%s symbol="igate" lat=%s long=%s' \
+      "$1" "$2" "$every" "$overlay" "$lat" "$lon"
+    [[ -n "$comment" ]] && printf ' comment="%s"' "$comment"
+    [[ -z "$1" && -n "$txvia" ]] && printf ' via="%s"' "${txvia// /,}"
+    printf '\n'
+  }
+
+  case "$to" in
+    IG)   _emit_beacon "sendto=IG " "0:30" ;;
+    RF)   _emit_beacon "" "1:00" ;;
+    # Both paths: the RF beacon is what local stations see on their radios, and
+    # the IS beacon guarantees the station appears on aprs.fi even when no
+    # neighbouring iGate happens to hear and gate the RF one.
+    BOTH) _emit_beacon "sendto=IG " "0:30"; _emit_beacon "" "1:00" ;;
+    *)    echo "Warning: BEACON_TO='${to}' is not IG, RF, BOTH or off; no beacon." >&2; return 0 ;;
+  esac
+}
+
+# Optional restriction on what gets gated UP. "FILTER 0 IG" is the RF->APRS-IS
+# direction (the reverse of "FILTER IG 0"), and d/ matches packets that were
+# actually repeated by the named digipeater — Direwolf checks the AX.25
+# has-been-used bit, not merely the presence of the callsign in the path.
+#
+# This narrows the station's usefulness to the network, so it is off by default
+# and belongs in a test, not in normal operation.
+build_rx_filter() {
+  local via="${CFG[RX_VIA]:-}"
+  [[ -z "$via" ]] && return 0
+  local IFS=',' call
+  local -a calls=()
+  for call in $via; do
+    call="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$call")"
+    [[ -n "$call" ]] && calls+=("$call")
+  done
+  [[ ${#calls[@]} -eq 0 ]] && return 0
+  local joined; IFS=/ joined="${calls[*]}"
+  echo "FILTER    0 IG d/${joined}"
+}
+
 build_filter() {
   local raw="${CFG[WHITELIST_CALLS]}"
   local call trimmed
@@ -141,6 +271,47 @@ mask_secret() {
   local val="$1" n=${#1}
   if (( n <= 2 )); then printf '%s' "***"; return; fi
   printf '***%s' "${val: -2}"
+}
+
+# A bare "0" in the config listing reads like a port number, not like "off".
+via_desc() {
+  local v; v="$(build_tx_via)"
+  if [[ -z "$v" ]]; then echo "direct (no digipeater)"; else echo "via ${v}"; fi
+}
+
+rx_via_desc() {
+  local v="${CFG[RX_VIA]:-}"
+  if [[ -z "$v" ]]; then
+    echo "gate everything heard"
+  else
+    echo "ONLY gate packets digipeated by ${v}"
+  fi
+}
+
+beacon_desc() {
+  local to="${CFG[BEACON_TO]:-off}"
+  local where=""
+  if [[ -n "${CFG[BEACON_GRID]:-}" ]]; then
+    local d
+    if d="$(grid_to_latlon "${CFG[BEACON_GRID]}")"; then
+      where=" at ${CFG[BEACON_GRID]^^} (${d% *}, ${d#* })"
+    else
+      where=" at INVALID GRID '${CFG[BEACON_GRID]}'"
+    fi
+  elif [[ -n "${CFG[BEACON_LAT]:-}" && -n "${CFG[BEACON_LON]:-}" ]]; then
+    where=" at ${CFG[BEACON_LAT]}, ${CFG[BEACON_LON]}"
+  fi
+  case "$to" in
+    off|"") echo "off" ;;
+    IG)   echo "every ${CFG[BEACON_EVERY]:-30:00} to APRS-IS only (no RF)${where}, overlay ${CFG[BEACON_OVERLAY]:-R}" ;;
+    RF)   echo "every ${CFG[BEACON_EVERY]:-30:00} TRANSMITTED ON RF${where}, overlay ${CFG[BEACON_OVERLAY]:-R}" ;;
+    BOTH) echo "every ${CFG[BEACON_EVERY]:-30:00} TRANSMITTED ON RF and to APRS-IS${where}, overlay ${CFG[BEACON_OVERLAY]:-R}" ;;
+    *)    echo "invalid BEACON_TO='${to}'" ;;
+  esac
+}
+
+port_desc() {
+  if [[ "${1:-0}" == "0" ]]; then echo "0 (disabled)"; else echo "$1 (LISTENING ON ALL INTERFACES)"; fi
 }
 
 print_config() {
@@ -161,8 +332,12 @@ IGSERVER         = ${CFG[IGSERVER]}
 IGLOGIN_CALL     = ${CFG[IGLOGIN_CALL]}
 IGLOGIN_PASSCODE = $(mask_secret "${CFG[IGLOGIN_PASSCODE]}")
 WHITELIST_CALLS  = ${CFG[WHITELIST_CALLS]}
-IGTXVIA          = ${CFG[IGTXVIA]}
-IGTXLIMIT        = ${CFG[IGTXLIMIT]}
+TX_VIA           = $(via_desc)
+RX_VIA           = $(rx_via_desc)
+BEACON           = $(beacon_desc)
+AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
+KISS_PORT        = $(port_desc "${CFG[KISS_PORT]:-0}")
+IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}
 
 Resolved Direwolf FILTER: IG 0 ${filter}
 EOF
@@ -185,6 +360,15 @@ MODEM    ${CFG[MODEM]}
 # just talks to it over loopback. See README.md.
 PTT RIG 2 localhost:4532
 
+# Direwolf listens for AGW and KISS TCP clients and binds them to 0.0.0.0, with
+# no authentication of any kind — anything that can reach the KISS port can
+# transmit arbitrary packets under MYCALL. Docker mode concealed this by
+# publishing no ports; bare-metal mode does not, so both are disabled unless
+# deliberately enabled in igate.conf. Direwolf has no bind-address option, so
+# "off" is the only way to make them unreachable.
+AGWPORT   ${CFG[AGW_PORT]:-0}
+KISSPORT  ${CFG[KISS_PORT]:-0}
+
 IGSERVER ${CFG[IGSERVER]}
 IGLOGIN  ${CFG[IGLOGIN_CALL]} ${CFG[IGLOGIN_PASSCODE]}
 
@@ -195,6 +379,7 @@ IGLOGIN  ${CFG[IGLOGIN_CALL]} ${CFG[IGLOGIN_PASSCODE]}
 IGFILTER  ${filter}
 
 FILTER    IG 0 ${filter}
+$(build_rx_filter)
 
 # Direwolf's "Message Sender Position" feature transmits a position report
 # from a message's sender "regardless of any other filtering rules" (see
@@ -204,8 +389,10 @@ FILTER    IG 0 ${filter}
 # exceptions, courtesy or otherwise.
 IGMSP     0
 
-IGTXVIA   ${CFG[IGTXVIA]}
-IGTXLIMIT ${CFG[IGTXLIMIT]}
+IGTXVIA   0 $(build_tx_via)
+IGTXLIMIT ${CFG[IGTXLIMIT]:-6 10}
+
+$(build_beacon)
 EOF
   chmod 600 "$RENDERED_CONF"
   echo "Wrote ${RENDERED_CONF} (whitelist filter: ${filter})"
@@ -273,7 +460,8 @@ render_status_html() {
 <tr><td>Audio device</td><td><code>${CFG[ADEVICE]:-}</code></td></tr>
 <tr><td>CAT device</td><td><code>${CFG[CAT_DEVICE]:-}</code></td></tr>
 <tr><td>PTT device</td><td><code>${CFG[PTT_DEVICE]:-}</code></td></tr>
-<tr><td>TX via</td><td>${CFG[IGTXVIA]:-}</td></tr>
+<tr><td>TX via</td><td>$(via_desc)</td></tr>
+<tr><td>RX gating</td><td>$(rx_via_desc)</td></tr>
 <tr><td>TX rate limit</td><td>${CFG[IGTXLIMIT]:-}</td></tr>
 <tr><td>Direwolf FILTER</td><td><code>IG 0 ${filter}</code></td></tr>
 </table>
@@ -481,11 +669,31 @@ bare_stop() {
   fi
 }
 
+# Package names differ by distribution. The hamlib CLI tools (rigctl, rigctld)
+# ship as "hamlib" on Fedora but "libhamlib-utils" on Debian and Raspberry Pi OS.
 _bare_install() {
-  echo "Installing direwolf, hamlib, alsa-utils (you may be prompted for your sudo password)..."
-  sudo dnf install -y direwolf hamlib alsa-utils
+  local mgr pkgs
+  if command -v apt-get >/dev/null; then
+    mgr="apt"; pkgs="direwolf libhamlib-utils alsa-utils gawk"
+  elif command -v dnf >/dev/null; then
+    mgr="dnf"; pkgs="direwolf hamlib alsa-utils gawk"
+  else
+    echo "No supported package manager found (apt or dnf)." >&2
+    echo "Install manually: direwolf, the hamlib CLI tools, alsa-utils." >&2
+    return 1
+  fi
+
+  echo "Installing ${pkgs} via ${mgr} (sudo password may be required)..."
+  if [[ "$mgr" == apt ]]; then
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs
+  else
+    sudo dnf install -y $pkgs
+  fi
+
   echo
-  echo "First time only: make sure your user can open the serial/audio devices, then log out and back in:"
+  echo "First time only: allow this user to open the serial and audio devices,"
+  echo "then log out and back in:"
   echo "  sudo usermod -aG dialout,audio \$USER"
 }
 
@@ -630,7 +838,10 @@ _bare_up() {
     sleep 0.5
   done
 
-  nohup direwolf -c "$RENDERED_CONF" -t 0 >> "$BARE_LOG" 2>&1 &
+  # -d i and stdbuf for the same reasons as the container path: without -d i the
+  # RF->APRS-IS direction is invisible in the log, and without stdbuf the log is
+  # block-buffered so `monitor` lags behind reality.
+  nohup stdbuf -oL -eL direwolf -c "$RENDERED_CONF" -t 0 -d i >> "$BARE_LOG" 2>&1 &
   echo $! > "$BARE_DIREWOLF_PID"
   sleep 1
 
@@ -723,8 +934,25 @@ cmd_logs() {
 # The real transmit line is "[0L]". Reading "[ig>tx]" as "transmitted" makes
 # the whitelist look broken when it is working correctly. So this pairs them:
 # an [ig>tx] followed by [0L] is GATED, an [ig>tx] with nothing after is DROP.
+# gawk specifically, not whatever "awk" happens to be. strftime() is a gawk
+# extension and Debian-family systems (Raspberry Pi OS included) ship mawk as
+# the default awk, which rejects the program at parse time and silently emits
+# nothing — a monitor that shows no packets looks like a dead gateway.
+require_gawk() {
+  command -v gawk >/dev/null && return 0
+  echo "monitor requires gawk (the default 'awk' on this system lacks strftime)." >&2
+  if command -v apt-get >/dev/null; then
+    echo "  Install it with: sudo apt-get install -y gawk" >&2
+  elif command -v dnf >/dev/null; then
+    echo "  Install it with: sudo dnf install -y gawk" >&2
+  fi
+  echo "  Meanwhile './deploy_igate.sh logs' shows the raw, unannotated log" >&2
+  echo "  (note that it does NOT redact the APRS-IS passcode)." >&2
+  exit 1
+}
+
 monitor_filter() {
-  awk -v use_color="$1" -v show_detail="$2" '
+  gawk -v use_color="$1" -v show_detail="$2" '
     function ts()   { return strftime("%H:%M:%S") }
     function C(c,s) { return use_color ? "\033[" c "m" s "\033[0m" : s }
     # fflush is required: gawk block-buffers when stdout is a pipe, which
@@ -753,6 +981,7 @@ monitor_filter() {
     # text. Never render it: the whole point of igate.secrets is to keep that
     # value out of sight. (It is still present in the raw `logs` output.)
     /pass [0-9]+/ {
+      flushdetail(); collecting = 0; flushpending()
       sub(/pass [0-9]+/, "pass ****")
       emit("0;35", "IS LOGIN ", $0)
       next
@@ -792,6 +1021,10 @@ monitor_filter() {
 
     # --- decode detail belonging to the frame above ---
     /^[[:space:]]*$/ { flushdetail(); collecting = 0; next }
+
+    # An [ig>tx] is only known to be a DROP once a line arrives that is not the
+    # matching [0L]. Without this the final one is never reported at all.
+    END { flushdetail(); flushpending() }
     {
       if (collecting && ndetail < 12) { detail[++ndetail] = $0 }
     }
@@ -800,6 +1033,7 @@ monitor_filter() {
 
 cmd_monitor() {
   load_and_resolve "${1:-}"
+  require_gawk
   local use_color=1 show_detail=1
   [[ -t 1 ]] || use_color=0
   # "monitor raw" hides Direwolf's decoded interpretation of each frame.

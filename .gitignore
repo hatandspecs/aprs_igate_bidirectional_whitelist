@@ -4,3 +4,9 @@ igate.secrets
 # Generated at runtime: rendered direwolf.conf, container logs, etc.
 run/
 __pycache__/
+
+# Pi login password and WiFi pre-shared keys. Never commit this.
+pi.secrets
+
+# Downloaded and generated Raspberry Pi images.
+pi-build/
