@@ -971,17 +971,63 @@ monitor_filter() {
       ndetail = 0
       fflush()
     }
-    function flushpending() {
-      if (pending != "") { emit("1;31", "IS DROP  ", pending); pending = "" }
+    # Pairing [ig>tx] with [0L] cannot assume they alternate. Direwolf accepts
+    # packets from APRS-IS as they arrive but transmits under IGTXLIMIT, so the
+    # real log looks like  ig>tx, 0L, ig>tx, ig>tx, 0L, 0L  — and matching by
+    # position labels a gated packet as dropped and vice versa. Match on the
+    # payload instead, and keep a queue rather than one slot.
+    #
+    # The two forms carry the same payload in different wrappers:
+    #   [ig>tx] SMS>APOSMS,TCPIP*,qAC,WA7BF::KD3CCO-7 :hello{50
+    #   [0L]    KD3CCO-10>APDW17:}SMS>APOSMS,TCPIP,KD3CCO-10*::KD3CCO-7 :hello{50
+    # Strip the AX.25 header, then the third-party "}" wrapper and its header,
+    # and both reduce to  :KD3CCO-7 :hello{50
+    function payload(s,   i, rest) {
+      i = index(s, ":"); if (i == 0) return s
+      rest = substr(s, i + 1)
+      if (substr(rest, 1, 1) == "}") {
+        rest = substr(rest, 2)
+        i = index(rest, ":")
+        if (i > 0) rest = substr(rest, i + 1)
+      }
+      return rest
     }
-    BEGIN { pending = ""; ndetail = 0; collecting = 0 }
+    function addpending(text) {
+      ptail++
+      pkey[ptail] = payload(text); ptext[ptail] = text; ptime[ptail] = systime()
+    }
+    # A packet is only known to have been dropped by the absence of a [0L], so
+    # it can only be declared after waiting longer than the transmit queue could
+    # plausibly hold it. Too short and a gated packet is reported as dropped.
+    function expirepending(   i) {
+      for (i = phead; i <= ptail; i++) {
+        if (pkey[i] == "") continue
+        if (systime() - ptime[i] >= drop_after) {
+          emit("1;31", "IS DROP  ", ptext[i]); pkey[i] = ""; ptext[i] = ""
+        }
+      }
+      while (phead <= ptail && pkey[phead] == "") phead++
+    }
+    function matchpending(text,   k, i) {
+      k = payload(text)
+      for (i = phead; i <= ptail; i++) {
+        if (pkey[i] == k) { matched = ptext[i]; pkey[i] = ""; ptext[i] = ""; return 1 }
+      }
+      return 0
+    }
+    function flushallpending(   i) {
+      for (i = phead; i <= ptail; i++)
+        if (pkey[i] != "") emit("1;31", "IS DROP  ", ptext[i])
+      phead = ptail + 1
+    }
+    BEGIN { ndetail = 0; collecting = 0; phead = 1; ptail = 0; drop_after = 15 }
 
     # --- redaction ---
     # Direwolf echoes its APRS-IS login, which contains the passcode in clear
     # text. Never render it: the whole point of igate.secrets is to keep that
     # value out of sight. (It is still present in the raw `logs` output.)
     /pass [0-9]+/ {
-      flushdetail(); collecting = 0; flushpending()
+      flushdetail(); collecting = 0; expirepending()
       sub(/pass [0-9]+/, "pass ****")
       emit("0;35", "IS LOGIN ", $0)
       next
@@ -993,38 +1039,37 @@ monitor_filter() {
 
     # --- events ---
     /^\[rx>ig\]/ {
-      flushpending(); emit("1;35", "RF->IS UP", substr($0, 9))
+      expirepending(); emit("1;35", "RF->IS UP", substr($0, 9))
       collecting = 0; flushdetail(); next
     }
-    /^\[ig>tx\]/ { flushdetail(); collecting = 0; flushpending(); pending = substr($0, 9); next }
+    /^\[ig>tx\]/ { flushdetail(); collecting = 0; expirepending(); addpending(substr($0, 9)); next }
     /^\[0L\]/ {
       flushdetail(); collecting = 0
-      if (pending != "") { emit("1;32", "IS GATED ", pending); pending = "" }
-      else               { emit("1;36", "TX LOCAL ", substr($0, 6)) }
-      next
+      if (matchpending(substr($0, 6))) { emit("1;32", "IS GATED ", matched) }
+      else                             { emit("1;36", "TX LOCAL ", substr($0, 6)) }
+      expirepending(); next
     }
     /^\[0\.[0-9]+\]/ {
-      flushdetail(); flushpending()
+      flushdetail(); expirepending()
       sub(/^\[[^]]*\][ ]?/, "")
       emit("1;34", "RF RX    ", $0)
       collecting = 1; next
     }
-    /^\[ig\]/ { flushdetail(); collecting = 0; flushpending(); emit("0;35", "IS SERVER", substr($0, 6)); next }
+    /^\[ig\]/ { flushdetail(); collecting = 0; expirepending(); emit("0;35", "IS SERVER", substr($0, 6)); next }
 
     # --- state and problems ---
     /Audio input level is too low|Audio input level is too high|[Ee]rror|ERROR|No such device|failed/ {
-      flushdetail(); collecting = 0; flushpending(); emit("1;33", "WARN     ", $0); next
+      flushdetail(); collecting = 0; expirepending(); emit("1;33", "WARN     ", $0); next
     }
     /Now connected to IGate|Attached to KISS|Ready to accept/ {
-      flushdetail(); collecting = 0; flushpending(); emit("0;32", "INFO     ", $0); next
+      flushdetail(); collecting = 0; expirepending(); emit("0;32", "INFO     ", $0); next
     }
 
     # --- decode detail belonging to the frame above ---
     /^[[:space:]]*$/ { flushdetail(); collecting = 0; next }
 
-    # An [ig>tx] is only known to be a DROP once a line arrives that is not the
-    # matching [0L]. Without this the final one is never reported at all.
-    END { flushdetail(); flushpending() }
+    # Anything still queued at end of input never got its [0L], so it was dropped.
+    END { flushdetail(); flushallpending() }
     {
       if (collecting && ndetail < 12) { detail[++ndetail] = $0 }
     }

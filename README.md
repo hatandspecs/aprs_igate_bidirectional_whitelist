@@ -82,6 +82,14 @@ no following `[0L]` was dropped, not sent.**
 Without that flag the entire uplink direction is invisible in the log — note it
 is `-d i`, not `-d g`, which is the unrelated GPS debug option.
 
+`IS GATED` and `IS DROP` are decided by pairing each `[ig>tx]` with the `[0L]`
+that transmits it. Direwolf accepts packets from APRS-IS as they arrive but
+transmits under `IGTXLIMIT`, so those lines interleave rather than alternate —
+`monitor` matches them on the packet payload, not on position. A drop is only
+knowable by the *absence* of a transmission, so `IS DROP` is reported about 15
+seconds after the packet arrived. That delay is deliberate: report it sooner and
+a packet merely waiting in the transmit queue gets labelled as dropped.
+
 `monitor` requires **gawk** — it uses `strftime()`, which mawk (the default
 `awk` on Debian-family systems) does not have. Bare-metal installs pull it in;
 if it is missing, `monitor` says so rather than showing an empty screen.
