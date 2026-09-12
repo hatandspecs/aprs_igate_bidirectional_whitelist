@@ -587,9 +587,14 @@ apply_radio_settings() {
 
   if timeout 5 "${rc[@]}" F "$freq" >/dev/null 2>&1 \
      && timeout 5 "${rc[@]}" M "$mode" "$pb" >/dev/null 2>&1; then
+    # rigctl against a network rig prints rigctld's version banner before the
+    # answer, so the banner has to be filtered out. Taking the first line
+    # captured the banner instead of the value, which made this log line
+    # meaningless and — far worse — silently disabled the plain-FM check below,
+    # since the banner never equals "FM".
     local got_f got_m
-    got_f="$(timeout 5 "${rc[@]}" f 2>/dev/null | head -1)"
-    got_m="$(timeout 5 "${rc[@]}" m 2>/dev/null | head -1)"
+    got_f="$(timeout 5 "${rc[@]}" f 2>/dev/null | grep -v '^rigctld:' | head -1)"
+    got_m="$(timeout 5 "${rc[@]}" m 2>/dev/null | grep -v '^rigctld:' | head -1)"
     echo "Radio: ${got_f} Hz, mode ${got_m}"
     if [[ "$got_m" == "FM" ]]; then
       echo "  WARNING: radio reports plain FM, not data-FM. Transmit audio comes" >&2
@@ -1110,8 +1115,34 @@ LEGEND
   fi
 }
 
+# run/ is a tmpfs mount point on the Raspberry Pi image. "rm -rf" on a mount
+# point empties it and then fails with EBUSY trying to unlink the directory,
+# which aborts the rest of an uninstall. The mount belongs to /etc/fstab, not to
+# this script, so empty it and leave it.
+_clear_run_dir() {
+  [[ -d "$RUN_DIR" ]] || return 0
+  local dev parent_dev
+  dev="$(stat -c %d "$RUN_DIR" 2>/dev/null || echo x)"
+  parent_dev="$(stat -c %d "$(dirname "$RUN_DIR")" 2>/dev/null || echo y)"
+  if [[ "$dev" != "$parent_dev" ]]; then
+    find "$RUN_DIR" -mindepth 1 -delete 2>/dev/null || true
+    echo "Emptied ${RUN_DIR} (it is a separate mount; left mounted)."
+  else
+    rm -rf "$RUN_DIR"
+  fi
+}
+
 cmd_uninstall() {
   load_and_resolve "${1:-}"
+  # The Raspberry Pi image installs systemd units that this script did not
+  # create and will not remove; without saying so, an uninstall looks complete
+  # while the gateway still starts itself at the next boot.
+  if [[ -f /etc/systemd/system/aprs-igate.service ]]; then
+    echo "Note: systemd units from the Pi image are present and are NOT removed here." >&2
+    echo "  To stop it starting at boot as well:" >&2
+    echo "    sudo systemctl disable --now aprs-igate igate-firstboot igate-logrotate.timer" >&2
+    echo >&2
+  fi
   if [[ "$MODE" == docker ]]; then
     require_docker
     is_running && docker stop "$CONTAINER_NAME" >/dev/null
@@ -1120,12 +1151,12 @@ cmd_uninstall() {
       docker rmi "$IMAGE_NAME" >/dev/null
       echo "Removed image ${IMAGE_NAME}."
     fi
-    rm -rf "$RUN_DIR"
+    _clear_run_dir
     echo "Uninstalled (docker mode) — back to a freshly-cloned state."
     echo "(The fedora:43 base layers stay in Docker's cache; harmless, and reused if you rebuild.)"
   else
     bare_stop
-    rm -rf "$RUN_DIR"
+    _clear_run_dir
     if rpm -q direwolf >/dev/null 2>&1; then
       echo "Removing the direwolf package (installed specifically for this project)..."
       sudo dnf remove -y direwolf

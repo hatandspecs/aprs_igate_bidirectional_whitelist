@@ -361,8 +361,91 @@ install_project() {
   rm -f "$hdr"
 
   sudo chmod 600 "${dest}/igate.secrets"
+  # The tmpfs needs an existing directory to mount over; rsync excluded run/.
+  sudo mkdir -p "${dest}/run"
   note "installed to /opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
   note "DEPLOY_MODE set to bare-metal in the installed copy"
+}
+
+# The pi-gate is unplugged rather than shut down, so the design goal is that
+# nothing writes to the SD card during normal operation. Three routine writers
+# exist; this removes two of them (the third, swap, is handled at first boot).
+harden_against_power_loss() {
+  step "Reducing SD card writes"
+
+  local dir="/opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
+  local size="${CFG[PI_RUN_TMPFS_SIZE]:-32M}"
+  local log="${dir}/run/direwolf.log"
+
+  # 1. run/ on tmpfs. Everything in it is regenerated on each start —
+  #    direwolf.conf, status.html, the pidfiles — and direwolf.log is the only
+  #    thing on the system writing continuously. In RAM it cannot corrupt
+  #    anything, and it is capped so it cannot exhaust 512 MB either.
+  #    fstab rather than a .mount unit: no unit-name escaping to get wrong.
+  local fstab="${ROOT_MNT}/etc/fstab"
+  if ! sudo grep -q "${dir}/run" "$fstab" 2>/dev/null; then
+    printf 'tmpfs %s/run tmpfs defaults,noatime,nosuid,nodev,noexec,size=%s,mode=0755,uid=1000,gid=1000 0 0\n' \
+      "$dir" "$size" | sudo tee -a "$fstab" >/dev/null
+  fi
+  note "run/ mounted as ${size} tmpfs (regenerated content only)"
+
+  # 2. Rotate the log so a long-running gateway cannot fill that tmpfs. Kept
+  #    out of /etc/logrotate.d and given its own state file so the daily system
+  #    logrotate does not also act on it; a dedicated hourly timer runs it,
+  #    because daily is too coarse for a busy band.
+  local tmp; tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+${log} {
+    size 8M
+    rotate 2
+    copytruncate
+    compress
+    missingok
+    notifempty
+}
+EOF
+  sudo mkdir -p "${ROOT_MNT}/etc/igate"
+  sudo cp "$tmp" "${ROOT_MNT}/etc/igate/logrotate.conf"
+  sudo chmod 644 "${ROOT_MNT}/etc/igate/logrotate.conf"
+
+  cat > "$tmp" <<'EOF'
+[Unit]
+Description=Rotate the APRS iGate packet log
+Documentation=man:logrotate(8)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate /etc/igate/logrotate.conf --state /var/lib/igate-logrotate.state
+EOF
+  sudo cp "$tmp" "${ROOT_MNT}/etc/systemd/system/igate-logrotate.service"
+  sudo chmod 644 "${ROOT_MNT}/etc/systemd/system/igate-logrotate.service"
+
+  cat > "$tmp" <<'EOF'
+[Unit]
+Description=Hourly rotation of the APRS iGate packet log
+
+[Timer]
+OnCalendar=hourly
+Persistent=false
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+  sudo cp "$tmp" "${ROOT_MNT}/etc/systemd/system/igate-logrotate.timer"
+  sudo chmod 644 "${ROOT_MNT}/etc/systemd/system/igate-logrotate.timer"
+
+  # 3. The journal. Storage=volatile keeps it in /run, so systemd stops writing
+  #    to the card too. The cost is that logs do not survive a reboot — an
+  #    acceptable trade for an appliance, and unavoidable anyway once run/ is
+  #    tmpfs, since the packet log does not survive either.
+  sudo mkdir -p "${ROOT_MNT}/etc/systemd/journald.conf.d"
+  printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' \
+    | sudo tee "${ROOT_MNT}/etc/systemd/journald.conf.d/volatile.conf" >/dev/null
+  note "journal kept in RAM, capped at 16M"
+  note "log rotated hourly at 8M, 2 generations kept"
+
+  rm -f "$tmp"
 }
 
 install_services() {
@@ -383,7 +466,7 @@ Description=First-boot setup for the APRS iGate
 # here may touch /home before it has run.
 After=network-online.target userconf.service
 Wants=network-online.target
-ConditionPathExists=!${dir}/run/.firstboot-done
+ConditionPathExists=!/var/lib/igate-firstboot-done
 
 [Service]
 Type=oneshot
@@ -398,13 +481,40 @@ EOF
   sudo cp "$tmp" "${sysd}/igate-firstboot.service"
   sudo chmod 644 "${sysd}/igate-firstboot.service"
 
+  # If first-boot setup fails — an archive outage, a mirror mid-sync, WiFi not up
+  # in time — the gateway is blocked behind it and stays blocked. On an
+  # unattended appliance that has to heal itself rather than wait for a human,
+  # so retry periodically. Once the marker exists the service's condition skips
+  # it, and each later firing is a no-op.
+  cat > "$tmp" <<'EOF'
+[Unit]
+Description=Retry APRS iGate first-boot setup until it succeeds
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=10min
+Unit=igate-firstboot.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  sudo cp "$tmp" "${sysd}/igate-firstboot.timer"
+  sudo chmod 644 "${sysd}/igate-firstboot.timer"
+
   cat > "$tmp" <<EOF
 [Unit]
 Description=Bidirectional APRS iGate (strict whitelist)
 After=network-online.target igate-firstboot.service
 Wants=network-online.target
-Requires=igate-firstboot.service
+# Wants, not Requires: a failed first-boot attempt must not permanently block
+# the gateway. igate-firstboot.timer keeps retrying, and the gateway's own
+# preflight refuses to start without a working audio device anyway.
+Wants=igate-firstboot.service
 ConditionPathExists=/opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}/deploy_igate.sh
+
+# run/ is a tmpfs (see /etc/fstab); without this the gateway can start before it
+# is mounted and write its pidfiles to the underlying directory instead.
+RequiresMountsFor=${dir}/run
 
 [Service]
 Type=oneshot
@@ -448,24 +558,38 @@ for i in \$(seq 1 30); do
   sleep 5
 done
 
-# Retry rather than abort: first-boot networking is the flakiest moment in the
-# life of this machine, and there is nobody watching the console.
-retry() {
-  local n
-  for n in 1 2 3 4 5; do
-    "\$@" && return 0
-    echo "  attempt \$n of 5 failed: \$*" >&2
-    sleep \$((n * 10))
-  done
-  return 1
-}
-
-retry apt-get update -qq
 # direwolf is the modem; libhamlib-utils supplies rigctl/rigctld (Debian splits
 # these out of the library package); alsa-utils supplies arecord and amixer.
 # gawk is not optional: the monitor uses strftime(), a gawk extension, and
 # Debian ships mawk as the default awk.
-retry apt-get install -y direwolf libhamlib-utils alsa-utils avahi-daemon gawk
+PKGS="direwolf libhamlib-utils alsa-utils avahi-daemon gawk"
+
+# Retry the whole update-then-install cycle, not just the install.
+#
+# The image carries an apt index from whenever it was built, so by first boot it
+# is weeks stale and may name package versions that have since been removed from
+# the pool — which surfaces as "404 Not Found" on a .deb. Retrying the same
+# install cannot fix that, and neither can a single apt-get update if the mirror
+# node happens to be mid-sync. Refreshing the index each round, and discarding
+# the cached lists entirely from the second round on, is what actually recovers.
+apt_install() {
+  local n
+  for n in 1 2 3 4 5; do
+    if [ "\$n" -gt 1 ]; then
+      echo "  discarding cached package lists before attempt \$n..."
+      rm -rf /var/lib/apt/lists/*
+    fi
+    apt-get update -qq -o Acquire::Retries=3 || true
+    if apt-get install -y -o Acquire::Retries=3 \$PKGS; then
+      return 0
+    fi
+    echo "  attempt \$n of 5 failed to install: \$PKGS" >&2
+    sleep \$((n * 15))
+  done
+  return 1
+}
+
+apt_install
 
 # Device access without root, and sudo so the gateway can be managed over SSH.
 # On Raspberry Pi OS the first user is in sudo already; this covers the case
@@ -489,13 +613,21 @@ if [[ -n "\$HOME_DIR" && ! -e "\$HOME_DIR/\$(basename "\$INSTALL_DIR")" ]]; then
   chown -h "\$USER_NAME:\$USER_NAME" "\$HOME_DIR/\$(basename "\$INSTALL_DIR")"
 fi
 
-# Compile the locale selected at build time. Without this every login shell
-# warns about an invalid locale, and SSH sessions warn once per shell.
-if command -v raspi-config >/dev/null; then
-  raspi-config nonint do_change_locale "${CFG[PI_LOCALE]:-en_US.UTF-8}" || true
-elif command -v locale-gen >/dev/null; then
-  locale-gen || true
-fi
+# Compile the locale selected at build time, unless it is one glibc already
+# carries, in which case there is nothing to do.
+IGATE_LOCALE="${CFG[PI_LOCALE]:-C.UTF-8}"
+case "\$IGATE_LOCALE" in
+  C|C.UTF-8|C.utf8|POSIX)
+    echo "  locale \$IGATE_LOCALE is built into glibc; nothing to generate"
+    ;;
+  *)
+    if command -v raspi-config >/dev/null; then
+      raspi-config nonint do_change_locale "\$IGATE_LOCALE" || true
+    elif command -v locale-gen >/dev/null; then
+      locale-gen || true
+    fi
+    ;;
+esac
 
 # Set the WiFi regulatory domain in the running system as well as the config,
 # so the radio is usable without a further reboot.
@@ -503,10 +635,29 @@ if command -v raspi-config >/dev/null; then
   raspi-config nonint do_wifi_country "${CFG[PI_WIFI_COUNTRY]}" || true
 fi
 
-mkdir -p "\$INSTALL_DIR/run"
+# Swap only matters here if it lives on the SD card. dphys-swapfile does — it is
+# a file on the root filesystem — so remove it where it is in use.
+#
+# Raspberry Pi OS Trixie does not use it: swap is zram, a compressed block
+# device in RAM. That writes nothing to the card, so it is left alone
+# deliberately. On a 512 MB machine it is actively useful, trading a little CPU
+# for effective memory, and removing it would make things worse rather than
+# safer. "swapon --show" reporting /dev/zram0 is therefore the expected result,
+# not a leftover.
+if command -v dphys-swapfile >/dev/null; then
+  dphys-swapfile swapoff || true
+  dphys-swapfile uninstall || true
+  systemctl disable --now dphys-swapfile.service 2>/dev/null || true
+  echo "  removed dphys-swapfile (swap file on the SD card)"
+else
+  echo "  no dphys-swapfile; zram swap lives in RAM and is left in place"
+fi
+
 chown -R "\$USER_NAME:\$USER_NAME" "\$INSTALL_DIR"
-touch "\$INSTALL_DIR/run/.firstboot-done"
-chown "\$USER_NAME:\$USER_NAME" "\$INSTALL_DIR/run/.firstboot-done"
+
+# Outside the install directory on purpose: run/ is a tmpfs and does not
+# survive a reboot, and a marker that vanishes would re-run this every boot.
+touch /var/lib/igate-firstboot-done
 
 echo "First-boot setup complete."
 EOF
@@ -521,6 +672,14 @@ EOF
   sudo ln -sf /etc/systemd/system/igate-firstboot.service "${wants}/igate-firstboot.service"
   note "igate-wifi-country.service enabled (runs before NetworkManager)"
   note "igate-firstboot.service enabled"
+
+  sudo mkdir -p "${ROOT_MNT}/etc/systemd/system/timers.target.wants"
+  sudo ln -sf /etc/systemd/system/igate-logrotate.timer \
+    "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-logrotate.timer"
+  sudo ln -sf /etc/systemd/system/igate-firstboot.timer \
+    "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-firstboot.timer"
+  note "igate-logrotate.timer enabled"
+  note "igate-firstboot.timer enabled (retries setup every 10 min until it succeeds)"
 
   if [[ "${CFG[PI_AUTOSTART]:-yes}" == "yes" ]]; then
     sudo ln -sf /etc/systemd/system/aprs-igate.service "${wants}/aprs-igate.service"
@@ -545,15 +704,36 @@ configure_locale() {
   fi
   if [[ -n "${CFG[PI_LOCALE]:-}" ]]; then
     echo "LANG=${CFG[PI_LOCALE]}" | sudo tee "${ROOT_MNT}/etc/default/locale" >/dev/null
-    # Setting LANG is not sufficient on its own — the locale must also be
-    # compiled, which only locale-gen on the Pi can do. Uncomment it here so
-    # that first-boot setup has something to generate; otherwise every shell
-    # warns "cannot change locale", including over SSH, where the client
-    # forwards its own LC_* variables.
-    if [[ -f "${ROOT_MNT}/etc/locale.gen" ]]; then
-      sudo sed -i "s/^# *\(${CFG[PI_LOCALE]} UTF-8\)/\1/" "${ROOT_MNT}/etc/locale.gen"
-    fi
-    note "locale ${CFG[PI_LOCALE]} (generated on first boot)"
+    case "${CFG[PI_LOCALE]}" in
+      C|C.UTF-8|C.utf8|POSIX)
+        # Compiled into glibc, so there is nothing to generate and no window in
+        # which the configured locale does not yet exist.
+        note "locale ${CFG[PI_LOCALE]} (built into glibc; nothing to generate)"
+        ;;
+      *)
+        # Setting LANG is not sufficient on its own — the locale must also be
+        # compiled, and only locale-gen on the Pi can do that. Uncomment it here
+        # so first-boot setup has something to generate. Note that until it
+        # does, every shell warns "cannot change locale", which is why
+        # C.UTF-8 is the default.
+        if [[ -f "${ROOT_MNT}/etc/locale.gen" ]]; then
+          sudo sed -i "s/^# *\(${CFG[PI_LOCALE]} UTF-8\)/\1/" "${ROOT_MNT}/etc/locale.gen"
+        fi
+        note "locale ${CFG[PI_LOCALE]} (generated during first-boot setup)"
+        ;;
+    esac
+  fi
+
+  # Do not import the client's locale over SSH. Debian enables
+  # "AcceptEnv LANG LC_*", so an ssh session arrives carrying whatever the
+  # laptop uses — and a locale this appliance has never generated makes every
+  # shell emit setlocale warnings. AcceptEnv is additive, so a drop-in cannot
+  # subtract it; the main config has to be edited. The Pi then uses its own
+  # LANG, which is the deterministic behaviour an appliance wants anyway.
+  local sshd="${ROOT_MNT}/etc/ssh/sshd_config"
+  if [[ -f "$sshd" ]]; then
+    sudo sed -i 's/^\(AcceptEnv[[:space:]].*\)$/#\1   # disabled: appliance uses its own locale/' "$sshd"
+    note "sshd no longer imports the client's LANG/LC_* variables"
   fi
 }
 
@@ -570,6 +750,7 @@ cmd_build() {
   configure_wifi
   configure_locale
   install_project
+  harden_against_power_loss
   install_services
 
   step "Finalising"

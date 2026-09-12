@@ -5,13 +5,48 @@ APRS-IS, and **only** APRS *messages* addressed to whitelisted callsigns are
 ever transmitted back onto RF. Everything else — positions, telemetry, other
 people's traffic — is silently dropped.
 
-Runs as a locked-down Docker container, or bare-metal, driven by one editable
-config file. `build_pi_image.sh` also builds a headless Raspberry Pi SD card
-image that boots straight into it — see "Running it on a Raspberry Pi".
+One editable config file drives everything, in either of two deployment modes.
 
-The design rationale is in [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md);
-sections 13–15 there cover what was actually built, the problems hit along the
-way, and the corrections made when earlier conclusions turned out to be wrong.
+| Mode | Runs as | Intended host |
+|---|---|---|
+| `docker` (default) | A locked-down container: all capabilities dropped, read-only rootfs, non-root, filtered egress, only the radio's own device nodes | A workstation that does other things too, where isolating the gateway is worth the overhead |
+| `bare-metal` | Direwolf and `rigctld` directly on the host, under `systemd` | A single-purpose appliance — nothing to isolate it from, and no RAM to spend on a container runtime |
+
+Both have carried live traffic in both directions. Switch with `DEPLOY_MODE` in
+`igate.conf`, or per-run with `IGATE_MODE=bare-metal`.
+
+## The pi-gate
+
+The bare-metal target this was built for is a **Raspberry Pi 3A+** — a "pi-gate":
+a box you plug in and forget, with no keyboard, no monitor, and no Ethernet port.
+
+`build_pi_image.sh` builds the SD card image for it. Set your WiFi credentials
+and callsign on your laptop, write the card, and the Pi comes up on its own:
+joins WiFi, enables SSH, installs Direwolf and hamlib, and starts gating — with
+no console session at any point. You manage it entirely over the network.
+
+```bash
+./build_pi_image.sh check     # validate settings
+./build_pi_image.sh build     # produce the image
+./build_pi_image.sh flash /dev/sdX
+```
+
+**[PI-SETUP.md](PI-SETUP.md) is the full walkthrough**, blank card to gateway on
+the air, written for someone who has never used a Raspberry Pi. It also covers
+running the monitor and editing the whitelist over SSH, and has an appendix on
+how the image is customised offline by loop-mounting it (no Raspberry Pi Imager
+involved).
+
+## Documents in this repo
+
+| File | What it is |
+|---|---|
+| [README.md](README.md) | This file: what the gateway does, how to configure and operate it, both modes |
+| [PI-SETUP.md](PI-SETUP.md) | Step-by-step pi-gate build, from SD card to on-air, plus day-to-day operation over SSH |
+| [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md) | Design document. §13 what was built, §14 constraints of Direwolf and the radio that the design has to work around, §15 limitations and future work, §16 the headless Pi deployment |
+| `igate.conf` | The operator-editable configuration |
+| `igate.test.conf` | A ready-made forced-digipeat-path test that leaves `igate.conf` alone |
+| `pi.conf`, `pi.secrets.example` | Image build settings and the credential template |
 
 ## Quickstart
 
@@ -39,7 +74,7 @@ return to a freshly-cloned state.
 | `restart` | `down` then `up` |
 | `status` | Running or not; also writes `run/status.html` |
 | `logs` | Follow the raw Direwolf log |
-| `monitor` | Follow the log **annotated** — recommended. `monitor raw` omits decode detail |
+| `monitor` | Follow the log **annotated** — recommended. `monitor raw` omits decode detail. Needs `gawk` |
 | `uninstall` | Tear down to a zero state |
 
 All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
@@ -177,6 +212,29 @@ single-port `PTT RIG` directive can't drive — so `rigctld` bridges them and
 Direwolf talks to it over loopback. Single-port radios: set `PTT_DEVICE` the
 same as `CAT_DEVICE`.
 
+### Device names: use `by-id` for serial, numbers for audio
+
+For an unattended station, prefer stable serial paths over enumeration order:
+
+```bash
+ls -l /dev/serial/by-id/
+```
+
+`CAT_DEVICE` and `PTT_DEVICE` are passed straight to `rigctld` and only ever
+tested for existence, so a `/dev/serial/by-id/usb-...` symlink works identically
+and survives re-enumeration. That matters when one chip presents two ports — the
+FTX-1's CP2105 gives `ttyUSB0` and `ttyUSB1`, and nothing guarantees which is
+which across boots.
+
+**`ADEVICE` is the opposite: keep it numeric.** ALSA accepts
+`plughw:CARD=Device`, but `deploy_igate.sh` parses a card *number* out of
+`ADEVICE` for two jobs — `amixer -c N` when applying your audio levels, and the
+preflight check that `/dev/snd/controlCN` exists. A name-based value makes both
+degrade silently, including the guard that refuses to start when the codec is
+absent. That guard is what stops the radio being keyed into an unmodulated
+carrier, so it is worth keeping index-based and letting `up` fail loudly if the
+card ever renumbers.
+
 Multiple whitelisted calls: `WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9`.
 Only *messages* addressed to these are ever transmitted.
 
@@ -213,8 +271,28 @@ bit, so it matches packets genuinely relayed by that station rather than ones
 merely listing it in the path.
 
 It also makes your station less useful to the network, since everything else you
-hear stops being gated. Set it back to blank when the test is done. Both settings
-are reported by `./deploy_igate.sh config`:
+hear stops being gated — and it costs you gating races, because discarding the
+direct copy means waiting about a second for the digipeated one, which is long
+enough for a neighbouring iGate to get there first. Set it back to blank when the
+test is done.
+
+`igate.test.conf` is a ready-made version of exactly this test, differing from
+`igate.conf` in four settings and leaving the production file untouched:
+
+```bash
+sudo systemctl stop aprs-igate
+./deploy_igate.sh config igate.test.conf
+./deploy_igate.sh up     igate.test.conf
+# ... test ...
+./deploy_igate.sh down   igate.test.conf
+sudo systemctl start aprs-igate
+```
+
+The `down` is not optional: without it, `systemctl start` finds the test
+instance's pidfiles, reports "already running", and leaves systemd showing
+`active` while the test config is still in force.
+
+Both settings are reported by `./deploy_igate.sh config`:
 
 ```
 TX_VIA = via W3YA-1
@@ -244,8 +322,15 @@ each, which is the combination to use if you want local visibility *and*
 guaranteed presence on the map.
 
 **Give the position as a grid square.** A 6-character Maidenhead locator is
-about 4 km by 6 km, so it is rounded by construction rather than by remembering
-to round; `deploy_igate.sh` converts it to the centre of the square. Four
+2.5′ of latitude by 5′ of longitude — about 4.6 km north-south, and 7 km
+east-west at 40° N (the east-west width narrows toward the poles). It is
+rounded by construction rather than by remembering to round.
+
+`deploy_igate.sh` converts the locator to the **centre** of the square, so
+expect the beacon to plot up to ~2.3 km north or south and ~3.5 km east or west
+of where you actually are. That displacement is the privacy, not a defect: what
+an observer learns is "somewhere in this box", and where the marker sits inside
+it is incidental. Four
 characters (`FN10`) is coarser still, roughly 111 km by 156 km. `BEACON_LAT` and
 `BEACON_LON` remain available for a precise position and are used only when
 `BEACON_GRID` is blank — round them yourself if you use them, because the
@@ -310,6 +395,17 @@ working, then back off.
 ./deploy_igate.sh uninstall  # also remove the image and run/ — back to a fresh clone
 ```
 
+On a Raspberry Pi built by `build_pi_image.sh`, `uninstall` does **not** remove
+the systemd units — it did not create them — so the gateway would still start
+itself at the next boot. It says so, and prints the command:
+
+```bash
+sudo systemctl disable --now aprs-igate igate-firstboot igate-logrotate.timer
+```
+
+It also leaves `run/` mounted there, since that tmpfs belongs to `/etc/fstab`
+rather than to this script; the contents are cleared.
+
 In bare-metal mode `uninstall` also removes the `direwolf` package, but
 deliberately leaves `hamlib` and `alsa-utils` alone — other ham radio software
 (WSJT-X among them) depends on hamlib. It prints the command if you want them
@@ -318,8 +414,8 @@ gone.
 ## Deployment modes
 
 `DEPLOY_MODE = docker` (default) or `bare-metal`; override per-run with
-`IGATE_MODE=bare-metal`. **Bare-metal mode has not yet been run on the air** —
-the Raspberry Pi build below is its first intended deployment.
+`IGATE_MODE=bare-metal`. Both modes have carried live traffic in both
+directions — bare-metal on a Raspberry Pi 3A+ built by `build_pi_image.sh`.
 
 Docker mode is locked down to the minimum that still works — all capabilities
 dropped (verified: `CapEff` and `CapBnd` both zero), `no-new-privileges`,
@@ -359,10 +455,11 @@ login line. Raw `logs` does not — prefer `monitor` when sharing output.
 
 Full detail and remaining gaps are in §13.4 of the design doc.
 
-## Running it on a Raspberry Pi
+## Running it on a Raspberry Pi (the pi-gate)
 
-`build_pi_image.sh` produces a Raspberry Pi OS SD card image that boots
-straight into this gateway: joins WiFi, enables SSH, installs Direwolf and
+Full step-by-step instructions are in [PI-SETUP.md](PI-SETUP.md); this section is
+the summary. `build_pi_image.sh` produces a Raspberry Pi OS SD card image that
+boots straight into this gateway: joins WiFi, enables SSH, installs Direwolf and
 hamlib, and starts the iGate — no keyboard or monitor needed at any point.
 
 The image is customised offline, on this machine, by loop-mounting the
@@ -391,8 +488,9 @@ ssh igate@aprs-igate.local
 cd aprs-igate && ./deploy_igate.sh monitor
 ```
 
-Step-by-step, from blank SD card to a gateway on the air, is in
-[PI-SETUP.md](PI-SETUP.md).
+Why a Pi 3A+ runs bare-metal rather than in the container, how the image is
+customised offline, and what the first-boot units do is in §16 of the
+[design document](aprs-igate-prototype-test.md).
 
 ### What ends up on the card
 
@@ -405,6 +503,24 @@ Step-by-step, from blank SD card to a gateway on the air, is in
 | The whole project in `/opt/aprs-igate` | With `DEPLOY_MODE = bare-metal` rewritten in the installed copy; symlinked to `~/aprs-igate` on first boot |
 | `igate-firstboot.service` | Installs `direwolf libhamlib-utils alsa-utils avahi-daemon`, adds the user to `dialout` and `audio` |
 | `aprs-igate.service` | `deploy_igate.sh up` at boot, if `PI_AUTOSTART = yes` |
+
+### Built to be unplugged
+
+A pi-gate gets pulled from the wall, not shut down, so the image removes
+everything that routinely writes to the SD card: `run/` is a 32 MB tmpfs (all of
+it is regenerated on each start), the packet log is rotated hourly so it cannot
+fill that tmpfs, and the systemd journal is volatile. Any `dphys-swapfile` swap
+file is removed at first boot; Raspberry Pi OS Trixie instead uses zram, which is
+compressed RAM and never touches the card, so that is left in place — on 512 MB
+it is worth having. What is left is a card written only when you deliberately
+change something.
+
+The trade is that nothing in `run/` survives a reboot — the packet log starts
+empty and `journalctl` cannot show a previous boot. The remaining risk is the
+radio rather than the card: PTT rides the USB serial link, so power lost
+mid-transmission leaves the radio keyed with only its time-out timer to end it.
+See §16.8 of the design document, and §15 for the read-only-root and battery-HAT
+options that would close the rest.
 
 `pi.secrets` is **not** copied to the card — the WiFi keys it holds are already
 in the NetworkManager profiles. `igate.secrets` **is** copied, mode 600: the Pi

@@ -1,7 +1,7 @@
-# Raspberry Pi Setup — Blank Card to Gateway on the Air
+# Pi-Gate Setup — Blank Card to Gateway on the Air
 
-Step-by-step build of a headless Raspberry Pi 3A+ running the whitelisted
-bidirectional iGate. Written assuming this is your first Raspberry Pi; the
+Step-by-step build of the **pi-gate**: a headless Raspberry Pi 3A+ running the
+whitelisted bidirectional iGate. Written assuming this is your first Raspberry Pi; the
 Linux, radio and networking side assumes you know what you're doing.
 
 Everything is done from your laptop. You never attach a keyboard or monitor to
@@ -23,6 +23,7 @@ the Pi.
 - [Editing the whitelist](#editing-the-whitelist)
 - [Managing the service](#managing-the-service)
 - [Changing WiFi networks later](#changing-wifi-networks-later)
+- [Prove it survives a reboot](#prove-it-survives-a-reboot)
 - [Shutting down and powering off](#shutting-down-and-powering-off)
 - [Troubleshooting](#troubleshooting)
 - [Starting over](#starting-over)
@@ -368,6 +369,11 @@ packets being decoded off the air. If nothing appears while there's audible
 activity on 144.390, your RX gain is wrong; see the audio levels section in the
 main README.
 
+`igate.test.conf` in the project directory is a ready-made test that forces
+every transmission through a named digipeater and gates only what that
+digipeater repeated. It leaves `igate.conf` alone — see "Forcing a digipeat
+path" in [README.md](README.md), and the instructions in the file's own header.
+
 For the full set of on-air tests — proving your transmitted signal is
 decodable, proving the whitelist drops what it should, and the round trip
 through the SMS gateway — follow **Testing it** in
@@ -626,6 +632,26 @@ Rebuilding the card from scratch also works and is often faster: update
 
 ---
 
+## Prove it survives a reboot
+
+First boot and everyday running are different code paths. `igate-firstboot` only
+runs once — on later boots its `ConditionPathExists` marker exists, so systemd
+skips it — and a skipped condition counts as success, so `aprs-igate` starts
+normally behind it. The marker lives in `/var/lib/`, deliberately outside the
+`run/` tmpfs that would lose it. That is worth proving on your own hardware
+rather than discovering during a power cut:
+
+```bash
+sudo reboot
+# wait a couple of minutes
+ssh igate@aprs-igate.local
+systemctl status aprs-igate --no-pager
+cd aprs-igate && ./deploy_igate.sh status
+```
+
+`active (exited)` and two PIDs means unattended restarts work. Do this once,
+deliberately, while you are sitting in front of it.
+
 ## Shutting down and powering off
 
 ```bash
@@ -633,7 +659,38 @@ sudo shutdown -h now
 ```
 
 Wait for the green LED to stop flickering and go dark, then pull the power.
-Yanking power from a running Pi is the other main cause of corrupted SD cards.
+
+**Can you just pull the plug instead?** Largely yes — the image is built for it.
+
+The card is only at risk while something is writing to it, so the build removes
+the routine writers:
+
+| Writer | What the image does |
+|---|---|
+| `run/` — `direwolf.log`, `direwolf.conf`, `status.html`, pidfiles | Mounted as a 32 MB **tmpfs**. All of it is regenerated on each start, so it lives in RAM and never touches the card |
+| The packet log growing without bound | Rotated hourly at 8 MB, 2 generations, so it cannot exhaust that tmpfs |
+| The systemd journal | `Storage=volatile` — kept in `/run`, capped at 16 MB |
+| Swap | A `dphys-swapfile` swap **file on the card** is removed at first boot. Trixie instead uses **zram** — compressed swap in RAM, which writes nothing to the card — so that is left alone. `swapon --show` reporting `/dev/zram0` is expected |
+
+What remains is a card that is written when you deliberately change something,
+and essentially never otherwise.
+
+**Two consequences to know about.** Nothing in `run/` survives a reboot, so the
+packet log starts empty each time and `journalctl` cannot show you a previous
+boot. For an appliance that is the right trade, but it does mean a post-mortem
+after an unexpected power cut has little to work with.
+
+**The remaining risk is the radio, not the card.** PTT rides the USB serial link,
+so if the Pi loses power mid-transmission the unkey command is never sent and
+**the radio can stay keyed**. Transmissions are rare and brief on a
+whitelist-only gate, so the window is small — but it is the same failure mode as
+an RF-induced USB crash, and the radio's time-out timer is the only thing that
+ends it. Keep the TOT set, and if you are unplugging deliberately, glance at
+`monitor` first to confirm nothing is transmitting.
+
+Making the card literally immune (a read-only overlay root) and getting a clean
+shutdown on unplug (a supercapacitor or battery HAT) are both recorded as future
+work in §15 of the [design document](aprs-igate-prototype-test.md).
 
 ---
 
@@ -647,37 +704,59 @@ there's no way in to check, so pull the card and inspect it on your laptop:
 sudo mount /dev/sdX2 /mnt
 sudo cat /mnt/etc/NetworkManager/system-connections/*.nmconnection   # SSID and PSK correct?
 sudo cat /mnt/etc/modprobe.d/cfg80211-regdom.conf                    # country set?
-sudo ls /mnt/opt/aprs-igate/run/                                     # .firstboot-done present?
+sudo ls -l /mnt/var/lib/igate-firstboot-done                         # setup completed?
 sudo umount /mnt
 ```
 
-If `.firstboot-done` exists, the Pi did boot and did reach the network at least
+If `/var/lib/igate-firstboot-done` exists, the Pi did boot and did reach the network at least
 once — so the problem is name resolution, not the Pi. Look for it by IP.
 
 **SSH says the host key changed.** You reflashed the card. `ssh-keygen -R
 aprs-igate.local` and reconnect.
 
 **`Dependency failed for aprs-igate.service`, and it shows `inactive (dead)`.**
-The gateway never tried to start — its `Requires=igate-firstboot.service` failed,
-so systemd skipped it. The real failure is upstream:
+Seen on cards built before `aprs-igate.service` was changed to depend on
+first-boot setup with `Wants=` rather than `Requires=`: the gateway never tried
+to start, because the unit it required had failed. Newer cards start anyway and
+fail on their own merits instead. Either way the real failure is upstream:
 
 ```bash
 journalctl -u igate-firstboot -n 60 --no-pager
 ```
 
-Almost always this is `apt` at boot. `network-online.target` means
-NetworkManager obtained an address, which doesn't guarantee DNS is answering
-yet. The first-boot script is idempotent and safe to re-run by hand, which also
-shows you the error live rather than through the journal:
+Almost always this is `apt`. The first-boot script is idempotent and safe to
+re-run by hand, which also shows you the error live rather than through the
+journal:
 
 ```bash
 sudo /usr/local/sbin/igate-firstboot.sh
 sudo systemctl start aprs-igate
 ```
 
-A reboot fixes it too — the marker file is only written on success, so the unit
-retries on the next boot. Cards built after this was addressed wait for DNS and
-retry `apt` up to five times with backoff.
+Two distinct `apt` failures show up here.
+
+**`404 Not Found` on a `.deb`.** The image carries a package index from whenever
+it was built, so by the time you boot it may name versions that have since been
+removed from the archive. Retrying the install cannot fix that — the index has
+to be refreshed:
+
+```bash
+sudo rm -rf /var/lib/apt/lists/*
+sudo apt-get update
+sudo apt-get install -y direwolf libhamlib-utils alsa-utils avahi-daemon gawk
+sudo /usr/local/sbin/igate-firstboot.sh
+```
+
+**Network not ready.** `network-online.target` means NetworkManager obtained an
+address, which doesn't guarantee DNS is answering. Confirm with
+`ping -c2 deb.debian.org`.
+
+Cards built after this was addressed handle both: they wait for DNS, then retry
+the whole *update-then-install* cycle five times, discarding the cached index
+from the second attempt onward. They also carry `igate-firstboot.timer`, which
+re-runs setup every 10 minutes until it succeeds, and depend on it with `Wants=`
+rather than `Requires=` — so a failed attempt no longer blocks the gateway
+indefinitely, and an archive outage heals itself without anyone logging in.
 
 **`systemctl status aprs-igate` shows `failed`.**
 
@@ -757,25 +836,49 @@ Cards built after this was addressed install `gawk` during first-boot setup, and
 `monitor` now calls `gawk` explicitly and says so plainly if it is missing rather
 than printing an empty screen.
 
-**`cannot change locale (en_US.UTF-8)` on every SSH login.** Cosmetic, and
-harmless to the gateway. Your SSH client forwards its own `LC_*` variables
-(`SendEnv LANG LC_*` is on by default in most distributions), and the Pi can
-only honour a locale that has been *compiled*, not merely named. Cards built
-before this was fixed name `en_US.UTF-8` in `/etc/default/locale` without
-generating it. One command, then log out and back in:
+**`cannot change locale` warnings on every SSH login.** Cosmetic, and harmless
+to the gateway — Direwolf, the whitelist and the radio are unaffected.
+
+Two things combine to cause it. Your SSH client forwards its own locale
+(`SendEnv LANG LC_*` is default in most distributions) and Debian's sshd accepts
+it (`AcceptEnv LANG LC_*`), so the session arrives asking for a locale the Pi
+may not have. And a locale only exists once it has been *compiled* by
+`locale-gen` — naming it in `/etc/default/locale` is not enough.
+
+Cards built with `PI_LOCALE = C.UTF-8` (the default) do not have this problem at
+all: `C.UTF-8` is compiled into glibc, so it exists from the first second of the
+first boot, and the build also stops sshd importing the client's variables.
+
+Cards built with a generated locale such as `en_US.UTF-8` will warn until
+`igate-firstboot` compiles it — which is *after* the package install, so an early
+first login sees the warnings and they clear themselves a few minutes later. To
+fix an existing card immediately:
 
 ```bash
-sudo raspi-config nonint do_change_locale en_US.UTF-8
+sudo sed -i 's/^\(AcceptEnv[[:space:]].*\)$/#\1/' /etc/ssh/sshd_config
+echo 'LANG=C.UTF-8' | sudo tee /etc/default/locale
+exit
 ```
 
-Or, if `raspi-config` won't cooperate:
+Then reconnect. If the warnings persist, `sudo systemctl restart ssh` and
+reconnect again.
 
-```bash
-sudo sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen
-sudo locale-gen
-```
+**Timestamps look wrong — files dated months ago, `systemctl status` saying
+"since" a date in the past.** The Pi has no battery-backed clock. It starts from
+`fake-hwclock`, which restores the time of the last shutdown — on a fresh card,
+the date the OS image was built — and NTP corrects it once the network is up.
+Anything created before that keeps the wrong stamp, so device nodes and unit
+start times can read months old on a machine that booted five minutes ago.
+Confirm the clock caught up with `timedatectl`; you want `System clock
+synchronized: yes`. Nothing needs fixing, and APRS is unaffected.
 
-Newly built cards generate the locale during first-boot setup.
+**`arecord -l` shows `Subdevices: 0/1`.** That means zero of one subdevice is
+*free* — Direwolf has the capture device open, which is exactly what you want
+while the gateway is running. It reads `1/1` when the gateway is stopped.
+
+**`swapon --show` reports `/dev/zram0`.** Expected. Raspberry Pi OS Trixie swaps
+to compressed RAM rather than to a file on the card, so it writes nothing to the
+card and is left in place deliberately — on 512 MB it is worth having.
 
 **Everything is slow.** It's a 512 MB single-board computer. `nano` on a config
 file is fine; don't expect to run a browser.

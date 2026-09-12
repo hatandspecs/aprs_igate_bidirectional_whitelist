@@ -25,11 +25,15 @@ Prototype platform: Fedora laptop + Yaesu FTX-1 Optima (USB-C)
   - [13.3 APRS-IS gating configuration](#133-aprs-is-gating-configuration)
   - [13.4 Container security model](#134-container-security-model)
   - [13.5 Operational tooling](#135-operational-tooling)
+  - [13.6 Transmit path, receive filter, and beacon](#136-transmit-path-receive-filter-and-beacon)
 - [14. Operating constraints](#14-operating-constraints)
   - [14.1 Log tags do not mean what they appear to](#141-log-tags-do-not-mean-what-they-appear-to)
   - [14.2 Uplink logging requires `-d i`](#142-uplink-logging-requires--d-i)
   - [14.3 RF coupling into USB](#143-rf-coupling-into-usb)
   - [14.4 Container filesystem constraints](#144-container-filesystem-constraints)
+  - [14.5 `rigctl` prefixes its answer with rigctld's banner](#145-rigctl-prefixes-its-answer-with-rigctlds-banner)
+  - [14.6 Gated and dropped packets do not alternate in the log](#146-gated-and-dropped-packets-do-not-alternate-in-the-log)
+  - [14.7 Gating races with neighbouring iGates](#147-gating-races-with-neighbouring-igates)
 - [15. Limitations and future work](#15-limitations-and-future-work)
   - [15.1 Verified behaviour](#151-verified-behaviour)
 - [16. Headless Raspberry Pi deployment](#16-headless-raspberry-pi-deployment)
@@ -40,7 +44,8 @@ Prototype platform: Fedora laptop + Yaesu FTX-1 Optima (USB-C)
   - [16.5 Local control ports](#165-local-control-ports)
   - [16.6 Deployment mode and hardware constraints](#166-deployment-mode-and-hardware-constraints)
   - [16.7 Secrets on the card](#167-secrets-on-the-card)
-  - [16.8 Writing the card](#168-writing-the-card)
+  - [16.8 Surviving power removal](#168-surviving-power-removal)
+  - [16.9 Writing the card](#169-writing-the-card)
 
 ---
 
@@ -187,7 +192,7 @@ IGLOGIN  KD3CCO 123456       # APRS-IS passcode
 IGFILTER  g/KD3CCO*          # what the server SENDS to this station
 FILTER    IG 0 g/KD3CCO*     # what this station may TRANSMIT
 IGMSP     0                  # no courtesy position reports
-IGTXVIA   0                  # bench: direct. Field: 0 WIDE2-1
+IGTXVIA   0                  # digipeat path, or none; rendered from TX_VIA
 IGTXLIMIT 6 10
 ```
 
@@ -203,9 +208,8 @@ Three of these lines carry the whitelist guarantee, and all three are needed:
 - **`IGMSP 0`** disables Direwolf's courtesy position report, which otherwise
   transmits a position from any message sender regardless of other filtering.
 
-Presence beacons (`PBEACON`/`IBEACON`) are omitted deliberately. On the path
-line, `IGTXVIA 0` transmits direct for bench work and `IGTXVIA 0 WIDE2-1` is the
-field path; `WIDE1-1` is also answered locally.
+The transmit path and the presence beacon are both rendered from `igate.conf`
+rather than written here; §13.6 covers them.
 
 ---
 
@@ -317,8 +321,12 @@ expect:
   transmit audio from the host interface rather than the microphone input
   (§13.1), and check whether it presents CAT and PTT on one port or two
   (§13.2).
-- Uncomment `IGTXVIA 0 WIDE2-1` as the standing transmit path, since production downlink goes out via a digipeater to reach a distant field station.
-- Consider a fixed, deliberately rounded beacon position for the permanent site.
+- Set `TX_VIA` to a standing transmit path if the downlink has to reach a field
+  station beyond direct range (§13.6). Naming a digipeater explicitly is
+  deterministic; a generic `WIDEn-N` alias depends on that digipeater's
+  configuration.
+- Decide whether the station announces itself, and at what position resolution
+  (§13.6).
 - A permanent station is normally headless. `build_pi_image.sh` covers that case for a Raspberry Pi host, including the `systemd` units that start the gateway at boot (§16).
 
 ---
@@ -516,6 +524,48 @@ Direwolf echoes its APRS-IS login line, which contains the passcode in clear
 text. `monitor` redacts it. The raw `logs` output does not, so prefer `monitor`
 when sharing terminal output or screenshots.
 
+### 13.6 Transmit path, receive filter, and beacon
+
+Three settings govern what leaves this station and what it forwards. All three
+default to the most conservative value, so each is a deliberate choice rather
+than something inherited.
+
+**`TX_VIA`** is the AX.25 digipeat path applied to everything transmitted —
+gated messages and the RF beacon alike — and renders as `IGTXVIA 0 <path>`.
+Blank transmits direct. Naming a digipeater explicitly is the deterministic
+form, because a digipeater repeats any frame carrying its own callsign whatever
+`WIDEn-N` aliases it answers to; the generic form depends on that digipeater's
+configuration, and a local digipeater answering `WIDE2` but not `WIDE1` will
+never see a `WIDE1-1` path.
+
+**`RX_VIA`** restricts what is gated **up**, rendering as `FILTER 0 IG d/<call>`
+— the RF→APRS-IS direction, the reverse of the whitelist's `FILTER IG 0`.
+Direwolf's `d/` matches on the AX.25 has-been-used bit, so it passes only frames
+a named digipeater actually repeated rather than ones merely listing it. There is
+no way to constrain how other stations route *toward* this station, so this
+verifies rather than routes. It also narrows the station's usefulness to the
+network and costs it gating races (§14.7), so it belongs in a test and returns to
+blank afterwards.
+
+**The beacon** is what makes the station discoverable. `BEACON_TO` selects
+`IG` (sent to APRS-IS over the internet, nothing transmitted on RF), `RF`
+(transmitted, and reaching APRS-IS only if a neighbouring iGate gates it), or
+both. `delay=` gives a beacon shortly after every start, which is also the only
+way to force one; the delay is load-bearing, because `apply_radio_settings`
+configures frequency and mode *after* Direwolf launches, and a beacon fired
+immediately could transmit before the radio was placed in data mode.
+
+Position is given as a Maidenhead locator in preference to coordinates: a
+six-character locator is roughly 4 km by 6 km, so it is rounded by construction
+rather than by remembering to round, which matters because the position enters a
+permanent public archive.
+
+`BEACON_OVERLAY` sets the character APRS places on the `&` gateway symbol, and
+the honest value for this design is `R`, receive-only. The station is
+transmit-capable, but its transmit path is whitelist-only, so it will never
+relay another operator's message. Advertising `T` or `2` would invite someone to
+rely on delivery that does not happen.
+
 ---
 
 ## 14. Operating constraints
@@ -582,6 +632,81 @@ Under `docker run -d` stdout is a pipe, so Direwolf's C stdio block-buffers and
 
 ---
 
+### 14.5 `rigctl` prefixes its answer with rigctld's banner
+
+Queried against a network rig (`-m 2`), `rigctl` prints rigctld's version banner
+before the value:
+
+```
+$ rigctl -m 2 -r 127.0.0.1:4532 m
+rigctld: Hamlib 4.6.2 2025-02-09T21:03:50Z SHA=870364 32-bit
+FM-D
+16000
+```
+
+Reading the first line therefore captures the banner rather than the answer. The
+consequence was worse than a malformed log line: `apply_radio_settings` compared
+that first line against `FM` to warn when the radio is in plain FM rather than
+data FM, so the check could never fire — the guard against the failure of §13.1,
+which transmits a carrier with no data in it, was silently inert while appearing
+to be present. The banner has to be filtered out explicitly.
+
+A check that cannot fail is indistinguishable from a check that passes, which is
+the general form of this problem: the log line that looked merely untidy was the
+visible symptom of a safety check that had stopped working.
+
+### 14.6 Gated and dropped packets do not alternate in the log
+
+`[ig>tx]` marks a packet arriving from APRS-IS and `[0L]` marks a transmission,
+so it is tempting to read them as a pair. They are not sequential. Direwolf
+accepts packets from APRS-IS as fast as they arrive but transmits under
+`IGTXLIMIT`, so a real log interleaves:
+
+```
+[ig>tx] SMS>...::KD3CCO-7 :...{16408      arrives
+[0L]    KD3CCO-10>...:}SMS>...{16408      transmitted
+[ig>tx] SMS>...::KD3CCO-7 :...{16408      sender retried
+[ig>tx] SMS>...::KD3CCO-7 :ack50          ack arrives before the retry is sent
+[0L]    KD3CCO-10>...:}SMS>...{16408
+[0L]    KD3CCO-10>...:}SMS>...:ack50
+```
+
+Pairing by position mislabels: a transmitted packet is reported as dropped, a
+`[0L]` is attributed to the wrong packet, and the last transmission appears to
+have no origin. `monitor_filter` therefore matches on the packet payload, which
+survives the third-party wrapper — stripping the AX.25 header and the `}` header
+reduces both forms to the same `:ADDRESSEE :text{id`.
+
+A drop can only be recognised by the absence of a transmission, so it is
+reported after a delay long enough that a packet still queued behind
+`IGTXLIMIT` is not mistaken for one that was refused.
+
+### 14.7 Gating races with neighbouring iGates
+
+APRS-IS deduplicates, so when two iGates hear the same frame only the first
+copy is kept and the second station receives no credit for it. Observed live:
+a neighbouring receive-only iGate gated a message one second before this
+station did, and the record on APRS-IS attributes it to that station.
+
+This has no effect on message delivery, because `IGFILTER` subscribes this
+station to all traffic addressed to the whitelisted calls regardless of which
+iGate placed it on APRS-IS. Losing an uplink race does not cost the downlink.
+
+The q-construct distinguishes the two cases and is worth reading in any
+diagnostic: `qAR` is a packet gated from RF by a station that **can** deliver
+messages back to RF, and `qAO` is one gated from RF by a station that cannot —
+the APRS-IS specification notes that receive-only iGates use `qAO` exclusively.
+A neighbour showing `qAO` can hear a field station perfectly and is
+structurally unable to answer it, which is the gap a transmit-capable gate
+fills.
+
+Note that a receive-side path filter (`RX_VIA`, §13.6) makes this station lose
+races it would otherwise win (§14.7), since it discards the direct copy and waits for
+the digipeated one that arrives about a second later. That is one more reason it
+belongs only in a test.
+
+---
+
 ## 15. Limitations and future work
 
 - **The egress restriction degrades open, and has not been verified in place.**
@@ -602,15 +727,46 @@ Under `docker run -d` stdout is a pipe, so Direwolf's C stdio block-buffers and
   removes this and accepts the same `Dockerfile` and flags.
 - **No custom seccomp profile.** The default blocks approximately 44 syscalls; a
   Direwolf-specific allowlist would be tighter but requires ongoing maintenance.
-- **Bare-metal mode has not been run on the air.** `DEPLOY_MODE = bare-metal` is
-  implemented and is what the Raspberry Pi image of §16 deploys, but only docker
-  mode has carried live traffic.
+- **Audio levels read low on the Raspberry Pi.** Direwolf reports received
+  audio around 6–8 where roughly 50 is ideal. Decoding works, but weak stations
+  are likely being missed. `RX_AUDIO_LEVEL` was calibrated on a different host
+  and has not been re-tuned for this one.
 - **Audio levels are not self-calibrating.** The values in `igate.conf` were
   determined empirically for one radio at one power level. A calibration routine
   that transmits and checks for a digipeat would remove the manual step.
 - **Mixer control names are assumed.** `apply_audio_levels` looks for
   `Speaker Playback Volume` and `Mic Capture Volume`; other codecs will differ.
-  It warns rather than failing.
+  It warns rather than failing. A different radio and interface will very likely
+  need different names, which is the main thing standing between the current
+  configuration and a second supported radio.
+- **The SD card is write-avoiding, not read-only.** §16.8 removes the routine
+  writers, so power removal has almost nothing to interrupt, but a deliberate
+  configuration change still writes to the card and the window is non-zero. A
+  read-only overlay root (`raspi-config` → Performance → Overlay File System)
+  would make the card physically immune. It is a larger operational change:
+  nothing persists, so altering `igate.conf` becomes disable-overlay, edit,
+  re-enable, reboot. It also requires the tmpfs work of §16.8 to exist first,
+  since the packet log would otherwise have nowhere to go.
+- **Power removal cannot be made graceful in software.** The only way to convert
+  an unplug into a clean shutdown is hardware that holds the machine up long
+  enough to perform one — a supercapacitor or battery HAT that signals loss of
+  input power and triggers `shutdown -h now`. This would also close the last
+  radio-side risk, since a clean stop releases PTT. Not evaluated.
+- **PTT by CAT command cannot fail safe.** With `PTT_TYPE = RIG` the radio holds
+  transmit until told to stop, so a host that dies mid-transmission leaves it
+  keyed with only the radio's time-out timer to end it. Hardware PTT on a serial
+  control line (`RTS`/`DTR`) is inherently fail-safe: losing power drops the
+  line and the radio unkeys itself. That is a point in favour of an interface
+  that keys this way, alongside supporting a second radio.
+- **Only one radio and interface combination is supported.** The configuration
+  assumes a transceiver presenting its own USB audio codec and two serial ports.
+  A handheld driven through an external sound-card interface is a different
+  shape: audio on a separate USB device, and PTT typically by serial control
+  line rather than by CAT command, with no CAT channel at all on radios that
+  have none. `PTT_TYPE` already accepts `RTS` and `DTR`, and `RADIO_SET_ON_UP`
+  can be turned off, so the pieces are present; what is untested is the
+  combination. A Yaesu VX-6R with a DigiRig Lite is the candidate for evaluating
+  this and has not been attempted.
 ### 15.1 Verified behaviour
 
 | Function | Evidence |
@@ -619,6 +775,11 @@ Under `docker run -d` stdout is a pipe, so Direwolf's C stdio block-buffers and
 | APRS-IS → RF | Gated messages transmit (`[0L]`) and are repeated by a digipeater |
 | Message delivery | SMS-gateway messages display on the receiving radio and are acknowledged to the original sender; the acknowledgement is gated back to APRS-IS |
 | Strict whitelist | Non-matching traffic produces `[ig>tx]` with no `[0L]` |
+| Bare-metal mode | Carries live traffic in both directions on a Raspberry Pi 3A+, from an image built by `build_pi_image.sh` |
+| Headless deployment | Pi joins WiFi, installs its dependencies, and starts the gateway on first boot with no console attached |
+| Unattended restart | After a reboot, first-boot setup is condition-skipped on its relocated marker, the `run/` tmpfs remounts from `fstab` before the service starts, and the gateway is gating 14 seconds later with no intervention |
+| Forced digipeat path | `TX_VIA` places the named digipeater in the transmitted path; a round trip completes through it in both directions |
+| Receive path filter | With `RX_VIA` set, the same frame heard twice — once direct, once repeated — is refused and gated respectively, one second apart |
 
 ---
 
@@ -665,6 +826,19 @@ first-boot script, after `userconf.service` has put it in its final place.
 The host is reachable as `<PI_HOSTNAME>.local`; `avahi-daemon` is installed at
 first boot so the name resolves without knowing the DHCP lease.
 
+Two locale-related settings are made here rather than left to defaults, because
+together they otherwise produce a wall of `setlocale` warnings on every login.
+Debian's sshd accepts `LANG` and `LC_*` from the client, so a session arrives
+requesting whatever locale the operator's workstation uses; and a locale only
+exists once `locale-gen` has compiled it, which on an appliance means waiting for
+first-boot setup to finish. The image therefore disables `AcceptEnv` — additive
+in `sshd_config`, so a drop-in cannot subtract it and the main file is edited —
+and defaults `PI_LOCALE` to `C.UTF-8`, which glibc carries built in and which
+consequently exists from the first second of the first boot. UTF-8 handling is
+identical to a generated locale; only collation differs, which nothing in this
+design depends on. A generated locale remains available by setting `PI_LOCALE` to
+one, at the cost of warnings until first-boot setup compiles it.
+
 ### 16.3 WiFi
 
 Each network in `pi.secrets` becomes a NetworkManager `.nmconnection` profile at
@@ -701,6 +875,25 @@ symlinks the install directory into the home directory, and is guarded by
 rather than a per-boot one. Package installation cannot be done offline in the
 image because the packages are architecture-specific and the build host is
 x86-64.
+
+Package installation is the least reliable step in the machine's life, and it
+fails in two ways that look alike and are not. DNS may not be answering yet, even
+though `network-online.target` has been reached — that only means an address was
+obtained. And the index shipped in the image is stale by construction: it dates
+from when the image was built, so it can name package versions already removed
+from the archive, which surfaces as `404 Not Found` on a `.deb`. The second case
+is the instructive one, because retrying the install cannot fix it; only
+refreshing the index can. First-boot setup therefore waits for DNS to resolve,
+then retries the whole *update-then-install* cycle rather than the install alone,
+discarding the cached lists from the second attempt onward so a mirror caught
+mid-sync is not consulted twice.
+
+Neither precaution is sufficient on its own, because an archive can simply be
+unavailable. `igate-firstboot.timer` re-runs setup every ten minutes until the
+marker appears, and `aprs-igate.service` depends on first-boot setup with
+`Wants=` rather than `Requires=`. A failed attempt therefore degrades to a delay
+rather than to a dead appliance, which matters when the machine is unattended and
+the alternative is waiting for someone to notice.
 
 `aprs-igate.service` then runs `deploy_igate.sh up` as the service account.
 `deploy_igate.sh` launches Direwolf in the background and returns, so the unit is
@@ -765,7 +958,44 @@ passcode in recoverable form. Raspberry Pi OS has no disk encryption by default
 and the card is removable, so physical possession of either is equivalent to
 possession of those credentials.
 
-### 16.8 Writing the card
+### 16.8 Surviving power removal
+
+A pi-gate is unplugged rather than shut down. That makes the SD card the
+principal fragility: an interrupted write corrupts a filesystem, and the
+corruption usually surfaces later as a machine that boots strangely rather than
+as an obvious failure. The design goal is therefore that nothing writes to the
+card during normal operation, which removes the exposure rather than reducing
+it.
+
+Three routine writers exist on a stock installation, and the image eliminates
+all three:
+
+| Writer | Treatment |
+|--------|-----------|
+| `run/` — rendered `direwolf.conf`, `status.html`, pidfiles, and the packet log | Mounted as a size-capped `tmpfs`. Every file in it is regenerated on each start, so none of it needs to persist |
+| The packet log growing without bound | Rotated hourly at 8 MB, two generations kept, so it cannot exhaust the tmpfs on a 512 MB machine |
+| The systemd journal | `Storage=volatile`, capped, so systemd writes to `/run` rather than the card |
+| Swap | Only relevant when it lives on the card. `dphys-swapfile` does and is removed; Raspberry Pi OS Trixie instead uses zram, a compressed block device in RAM that writes nothing to the card, and which on a 512 MB machine is worth keeping |
+
+The tmpfs is declared in `/etc/fstab` rather than as a `.mount` unit, to avoid
+depending on getting systemd's unit-name escaping right for a configurable path,
+and `aprs-igate.service` carries `RequiresMountsFor` so it cannot start before
+the mount exists and write pidfiles into the underlying directory.
+
+One consequence shaped an earlier decision: the first-boot completion marker
+cannot live in `run/`. On a tmpfs it would vanish at every reboot, and since
+`aprs-igate.service` requires `igate-firstboot.service`, the Pi would reinstall
+its packages on every boot and refuse to gate until a network was available. The
+marker is `/var/lib/igate-firstboot-done`.
+
+The residual risks are not the card. Nothing in `run/` survives a reboot, so the
+packet log starts empty and the journal cannot show a previous boot — acceptable
+for an appliance, but it leaves little for a post-mortem after an unexpected
+outage. And PTT rides the USB serial link, so power lost mid-transmission means
+the unkey command is never sent and the radio can remain keyed; the radio's
+time-out timer is the only thing that ends that.
+
+### 16.9 Writing the card
 
 `flash` requires the target to be a whole disk that `lsblk` reports as removable
 or hotplug, refuses any device with a mounted partition, prints `lsblk` for the
