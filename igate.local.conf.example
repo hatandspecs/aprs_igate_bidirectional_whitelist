@@ -10,7 +10,8 @@
 #   1. radios/<RADIO>.conf   how to drive the radio      hardware keys only
 #   2. igate.conf            the station                 any key
 #   3. igate.local.conf      THIS FILE: one machine      DEPLOY_MODE, RADIO,
-#                                                        WEB_*, hardware keys only
+#                                                        WEB_*, DEVICE_WAIT,
+#                                                        hardware keys only
 #   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
 #   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
 #
@@ -20,6 +21,8 @@
 #   WEB_MONITOR     yes | no — whether `up` starts the LAN web monitor here
 #   WEB_PORT        its port (default 8080)
 #   WEB_BIND        its listening address (default 0.0.0.0, every interface)
+#   DEVICE_WAIT     seconds `up` waits for the radio's devices to appear before
+#                   refusing (default 0: no wait). The Pi image sets 60
 #   hardware keys   anything a radio profile may set: CAT, PTT_METHOD, RIG_MODEL,
 #                   CAT_DEVICE, CAT_BAUD, PTT_DEVICE, PTT_TYPE, CM108_DEVICE,
 #                   CM108_GPIO, ACHANNELS, ADEVICE, MIXER_TX_CONTROL, MIXER_RX_CONTROL,

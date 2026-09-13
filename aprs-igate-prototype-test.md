@@ -726,7 +726,7 @@ the keys it sets.
 |-------|------|-----------|---------|
 | 1 | `radios/<RADIO>.conf` | how to drive one radio | hardware keys |
 | 2 | `igate.conf`, or a config named on the command line | the station | any key |
-| 3 | `igate.local.conf` | one machine | `DEPLOY_MODE`, `RADIO`, `WEB_MONITOR`, `WEB_PORT`, `WEB_BIND`, hardware keys |
+| 3 | `igate.local.conf` | one machine | `DEPLOY_MODE`, `RADIO`, `WEB_MONITOR`, `WEB_PORT`, `WEB_BIND`, `DEVICE_WAIT`, hardware keys |
 | 4 | `igate.secrets` | the APRS-IS passcode | `IGLOGIN_PASSCODE` |
 | 5 | environment | one invocation | `IGATE_MODE`, `IGATE_PASSCODE` |
 
@@ -1005,15 +1005,16 @@ belongs only in a test.
   rather than with benchmarks. Note also that better demodulation would not
   address the current low-audio symptom, which is mixer gain (§13.5) and free to
   correct.
-- **The VX-6R has not run bare-metal on a Pi.** It has carried traffic in docker
-  mode on the laptop (§15.1). That run settled the four questions only the
-  hardware could answer: the Digirig keys the VX-6R through Digirig's cable, the
-  profile's mixer control names exist on the Digirig Lite, transmit at 50% decodes,
-  and SELinux on Fedora lets the container open the passed hidraw node. A Pi
-  differs in two respects. It runs Direwolf 1.7, whose CM108 parsing matches 1.8.1
-  in source but has not been exercised. It also depends on the image's udev rule
-  and first-boot group membership rather than a hand-installed rule. The 50% levels
-  are a working start, not a fine calibration.
+- **On a Pi 3A+ the Digirig Lite needs a powered USB hub, and the cause was not
+  isolated.** Connected directly, it produced no USB attach event. Through an
+  unpowered hub the Pi reported under-voltage and the Digirig did not appear.
+  Through the same hub on its own supply it enumerated and carried traffic (§16.6).
+  The Pi's supply, the port, and the voltage drop across the USB-A-to-C adapter
+  chain were not separated, so a stronger supply or a direct cable might also
+  work. Whether the stock USB driver suffices with the powered hub is untested: the
+  card that worked also carried a hand-applied `dwc2` host-mode overlay, although
+  that overlay alone had not made the Digirig appear. The 50% audio levels remain
+  a working start rather than a fine calibration.
 - **A radio without CAT cannot be verified from software.** For the VX-6R,
   frequency and power are front-panel state. A retuned or switched-off radio leaves
   the gateway running and hearing nothing, and `up` can only print a reminder. A
@@ -1041,6 +1042,8 @@ belongs only in a test.
 | Web monitor lifecycle | In docker mode on the laptop, `up` against a running gateway started only the monitor, and the page, status endpoint and event stream answered on the LAN address. In isolation: a second `up` is a no-op; `down` leaves no server and no `monitor` pipeline, and so does Ctrl+C; a busy port is reported with the cause, leaves no pidfile, and does not fail `up`; a pidfile naming an unrelated live process is neither reported as the monitor nor signalled; `WEB_MONITOR = no` starts nothing; `WEB_BIND = 127.0.0.1` listens on loopback only; invalid `WEB_MONITOR` and `WEB_PORT` values are refused |
 | Radio without CAT, CM108 PTT (without the radio) | With every external command stubbed, the VX-6R profile starts in both modes with no `rigctld`. The container receives only the ALSA nodes and one hidraw node, with `CAT=none`, and the rendered configuration carries `PTT CM108 3 <node>`. That configuration parses in the packaged Direwolf 1.8.1, which reports using the node on GPIO 3. In the rebuilt image the entrypoint starts no `rigctld` for `CAT = none`, `rigctld` without PTT arguments for CAT with CM108, and the unchanged FTX-1 command line for `rig` or for unset variables. It refuses a missing PTT setting or an invalid `CAT`. Against a fake sysfs tree, the node lookup returns only the audio card's own USB device, never a device on a hub port below it, a PCI card, or another C-Media device. `up` refuses a missing node, a root-only node, a bare-metal user outside the node's group, a missing explicit device, a GPIO outside 1–8, a non-`/dev/hidraw` path and a named `ADEVICE`, and warns on an explicit node that is not the card's own. `PI_RADIO` is checked against `radios/` and lands in the Pi's generated `igate.local.conf`, where `config` credits `RADIO` to it, with the udev rule installed beside it |
 | VX-6R on the air (laptop, docker) | A Yaesu VX-6R on a Digirig Lite, selected by `RADIO = vx6r` in the laptop's `igate.local.conf`, carried a full SMS round trip in docker mode. Direwolf used `/dev/hidraw7` on GPIO 3, found automatically on the same USB device as ALSA card 1; the udev rule gave the node group `audio`, and the container opened it without a permission error. APRS-IS to RF: the gated message was transmitted, and a Yaesu FT5D displayed and acknowledged it. The acknowledgement was heard both directly and via W3YA-1, and gated up. RF to APRS-IS: the FT5D's message was decoded and gated, and its acknowledgement was transmitted back over RF. Received levels were 57–86 at the profile's 50% capture gain (18 of 35), with no clipping; transmit at 50% (18 of 37) decoded. All three mixer control names in the profile exist on the Digirig Lite |
+| VX-6R on a pi-gate | On a Pi 3A+ built with `PI_RADIO = vx6r`, the VX-6R on a Digirig Lite carried a full SMS round trip in bare-metal mode on Direwolf 1.7. The FT5D's message was decoded and gated up, and the SMS gateway's acknowledgement was transmitted back. A message from the SMS gateway was transmitted and acknowledged by the FT5D, and that acknowledgement was heard and gated. `config` credited `RADIO` to the generated `igate.local.conf` and found `/dev/hidraw0` on the Digirig's card, in group `audio` from the image's udev rule. It needed a powered USB hub (§16.6) and `ADEVICE = plughw:2,0`: the Digirig was plugged in after boot, and HDMI audio held card 1. The image now disables HDMI audio |
+| Waiting for late radio devices (without the Pi) | With `DEVICE_WAIT` set, `up` polls until the radio's devices are present and returns as soon as they are (devices appearing on the fourth check end the wait after 3 s). If they never appear it gives up after the limit and hands over to the usual refusals, and unset or 0 never polls. Values from 0 to 600 are accepted and anything else refused, and `igate.local.conf` may set the key. Against this laptop with no Digirig attached, a missing card and CM108 node are both reported. The generated `aprs-igate.service` carries `Restart=on-failure`, `RestartSec=30`, `StartLimitIntervalSec=0` and `TimeoutStartSec=180`, and passes `systemd-analyze verify`. The Pi's generated `igate.local.conf` sets `DEVICE_WAIT = 60`. Every FTX-1 start path is unchanged against the previous commit. A late radio on real hardware and the retry after a failed start have not yet been exercised on a Pi |
 | FTX-1 unchanged by CM108 support | Against the previous commit, with every external command stubbed, each FTX-1 start path — docker and bare-metal, with a host device override, and the forced-path test config — renders a byte-identical `direwolf.conf` and prints identical output apart from one image-rebuild notice. The calls issued differ only by the image-label check and rebuild, and by `CAT=hamlib` and `PTT_METHOD=rig` added to `docker run` |
 
 ---
@@ -1159,9 +1162,32 @@ the alternative is waiting for someone to notice.
 
 `aprs-igate.service` then runs `deploy_igate.sh up` as the service account.
 `deploy_igate.sh` launches Direwolf in the background and returns, so the unit is
-`Type=oneshot` with `RemainAfterExit=yes`. `Restart=` is deliberately absent:
-systemd rejects it on `Type=oneshot` units. A gateway whose radio was not
-connected at boot is started with `systemctl start aprs-igate` once it is.
+`Type=oneshot` with `RemainAfterExit=yes`.
+
+A USB radio does not always exist when that unit runs. At boot the service can
+start while a hub is still bringing the radio up; one Digirig Lite behind a
+powered hub enumerated only after the hub had retried its port. A radio switched
+on after the Pi appears later still. Two mechanisms cover this.
+
+`DEVICE_WAIT = 60` in the Pi's generated `igate.local.conf` makes `up` poll for up
+to a minute for the radio's devices. Those are the ALSA card, and the CAT and PTT
+serial ports or the CM108 node, which only counts as present once udev has given
+it its group. The poll ends before the checks that refuse to start, so a device
+that arrives in time never produces a refusal.
+
+If the devices do not arrive, `up` fails, and the unit retries. `Restart=` is
+permitted on a oneshot for `on-failure`; systemd rejects only `always` and
+`on-success` there, which `systemd-analyze verify` confirms. `RestartSec=30`,
+`StartLimitIntervalSec=0` and `TimeoutStartSec=180` make the retry indefinite, and
+leave room for the wait inside the start timeout. After a failed start systemd
+stops what remains in the unit's cgroup, and `up` also stops `rigctld` itself when
+Direwolf exits immediately, so a retry does not find port 4532 held. The retry
+covers only a failed start: a gateway that started and later lost Direwolf stays
+`active` until restarted by hand.
+
+`DEVICE_WAIT` is unset elsewhere, which means no wait. An interactive `up` on a
+workstation should refuse at once when the radio is unplugged, rather than
+appear to hang.
 
 Set `PI_AUTOSTART = no` to install the unit without enabling it, for a card that
 should come up idle.
@@ -1200,7 +1226,7 @@ spend on a container runtime, and the isolation argument is weaker on a
 single-purpose appliance that has nothing else to be isolated from. The same
 reasoning drives the 32-bit `armhf` image default.
 
-The 3A+ has one USB-A port, so a radio plus anything else needs a hub.
+The 3A+ has one USB-A port; what that means for each radio is described below.
 
 Device names come from the radio profile and will not necessarily match the Pi,
 which enumerates its own hardware. The generated `igate.local.conf` records this
@@ -1213,6 +1239,28 @@ would otherwise surface only as a gateway that does not start on a machine with 
 screen. The udev rule for CM108 PTT is installed into `/etc/udev/rules.d`
 whichever radio is selected. It is therefore in place before the interface is first
 plugged in, and a later change of radio needs no root access.
+
+The single USB port is driven directly by the SoC's USB controller, with no hub
+chip; the kernel reports a root hub with one port. Radios differ in what they
+present to it. The FTX-1 contains its own USB hub (`05e3:0610`), with its CAT
+bridge, PTT interface and codec behind it, and it works plugged in directly. The
+Digirig Lite, which draws its power from the port, did not. Plugged in directly it
+produced no attach event at all. Through an unpowered hub the Pi logged
+`Undervoltage detected!` as the hub connected, and the Digirig still did not
+appear. Through the same hub on its own supply it enumerated, after one port retry,
+and carried traffic. A powered hub is therefore a hardware requirement for that
+radio on this board (§15).
+
+ALSA card numbers on the Pi are not fixed by the hardware. The vc4 display driver
+registers an HDMI audio device about nine seconds into boot, and a USB sound card
+takes whichever number is free when it enumerates. The FTX-1, attached at boot,
+was card 1. The Digirig, plugged in after boot, was card 2 and needed
+`ADEVICE = plughw:2,0`. Because `ADEVICE` names a number, the gateway's start then
+depended on timing. The image adds `noaudio` to the `vc4-kms-v3d` overlay in
+`config.txt`, a parameter documented in the image's own overlay README. That
+leaves the onboard headphone output as card 0 and the radio's codec as card 1. A
+headless appliance has no use for HDMI audio. If a future release loads the
+overlay differently, the build leaves the line alone and warns rather than guess.
 
 ### 16.7 Secrets on the card
 
@@ -1235,15 +1283,14 @@ as an obvious failure. The design goal is therefore that nothing writes to the
 card during normal operation, which removes the exposure rather than reducing
 it.
 
-Three routine writers exist on a stock installation, and the image eliminates
-all three:
+The routine writers on a stock installation, and the image's treatment of each:
 
 | Writer | Treatment |
 |--------|-----------|
 | `run/` — rendered `direwolf.conf`, `status.html`, pidfiles, and the packet log | Mounted as a size-capped `tmpfs`. Every file in it is regenerated on each start, so none of it needs to persist |
 | The packet log growing without bound | Rotated hourly at 8 MB, two generations kept, so it cannot exhaust the tmpfs on a 512 MB machine |
 | The systemd journal | `Storage=volatile`, capped, so systemd writes to `/run` rather than the card |
-| Swap | Only relevant when it lives on the card. `dphys-swapfile` does and is removed; Raspberry Pi OS Trixie instead uses zram, a compressed block device in RAM that writes nothing to the card, and which on a 512 MB machine is worth keeping |
+| Swap | On the card in two forms. One is `dphys-swapfile`, which first boot removes. The other is the `/var/swap` writeback file of rpi-swap's default mechanism (`auto`, currently `zram+file`), to which `rpi-zram-writeback` periodically moves idle zram pages; the Pi's boot log shows it as `zram: setup backing device /dev/disk/by-backingfile/var-swap`. The image sets `Mechanism=zram` in `/etc/rpi/swap.conf.d/50-igate.conf`: compressed swap in RAM, worth keeping on 512 MB, and per `swap.conf(5)` no file. Images built before this change keep the default |
 
 The tmpfs is declared in `/etc/fstab` rather than as a `.mount` unit, to avoid
 depending on getting systemd's unit-name escaping right for a configurable path,

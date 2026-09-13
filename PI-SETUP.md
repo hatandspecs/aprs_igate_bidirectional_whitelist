@@ -64,15 +64,17 @@ can override what.
 | microSD card, 8 GB or larger | Class 10 / A1 or better. Card quality is the single most common cause of a Pi that boots unreliably — buy a name brand |
 | microSD reader for your laptop | Built-in slot is fine |
 | 5 V 2.5 A micro-USB supply | **Not** a phone charger you had lying around. An underpowered Pi browns out under load, and on this project that means the USB link to the radio dropping mid-transmission — the exact failure that sticks the radio in TX |
-| The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, and Digirig's VX-6R audio/PTT cable |
+| The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, Digirig's VX-6R audio/PTT cable, **and a powered USB hub** (with its own power supply) between the Pi and the Digirig |
 | The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README. A VX-6R left running needs DC power (Yaesu E-DC-5B or E-DC-6); the battery does not last |
 
-The 3A+ has **one** USB port. The radio (or the Digirig) takes it. Anything else
-needs a powered hub.
+The 3A+ has **one** USB port. The FTX-1 plugs straight into it. **The Digirig
+Lite does not work plugged straight in:** the Pi does not detect it at all. Put a
+powered USB hub between them. The evidence is in
+[README.md](README.md#why-the-digirig-needs-a-powered-hub), and the symptom is
+under Troubleshooting.
 
-The FTX-1 has carried traffic on a pi-gate. The VX-6R has carried traffic in
-docker mode on a laptop, but has not yet run on a pi-gate. See the Quickstarts in
-[README.md](README.md#quickstarts).
+Both radios have carried traffic on a pi-gate, the VX-6R through a powered hub.
+See the Quickstarts in [README.md](README.md#quickstarts).
 
 **On your laptop**
 
@@ -187,6 +189,8 @@ What went into it:
 | `/opt/aprs-igate` | The whole project. `igate.conf` is installed unchanged; your laptop's own `igate.local.conf`, if you have one, is left out |
 | `/opt/aprs-igate/igate.local.conf` | Settings for the Pi only: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (the systemd unit runs it instead), `RADIO` if `PI_RADIO` is set, and commented examples for device overrides |
 | `/etc/udev/rules.d/99-igate-cm108.rules` | Lets the `audio` group key a Digirig (CM108) through its `/dev/hidraw` node. Installed whatever the radio |
+| `dtoverlay=vc4-kms-v3d,noaudio` in `config.txt` | Turns off HDMI audio, which otherwise takes an ALSA card number at boot, so the radio's sound card is always card 1 |
+| `/etc/rpi/swap.conf.d/50-igate.conf` | Keeps swap in compressed RAM with no writeback file on the card |
 | Three systemd units | WiFi country → first-boot setup → the gateway |
 
 Your `igate.secrets` is copied at mode 600. Your `pi.secrets` is **not** — the
@@ -244,7 +248,9 @@ When it finishes, pull the card out.
 1. Card into the Pi (contacts facing the board; it only goes in one way).
 2. The radio into the Pi's USB port, and the radio on.
    - **FTX-1:** its USB cable. `up` sets 144.390 MHz **D-FM** over CAT.
-   - **VX-6R:** the Digirig into the USB port and Digirig's cable to the radio.
+   - **VX-6R:** a powered USB hub into the USB port with its own supply
+     connected, the Digirig into the hub, and Digirig's cable to the radio. The
+     Digirig plugged straight into the Pi is not detected.
      Tune it to **144.390 MHz FM by hand**, and set it up as in "Yaesu VX-6R on a
      Digirig Lite" in [README.md](README.md#yaesu-vx-6r-on-a-digirig-lite),
      receive battery saver off above all. Nothing on the Pi can set or check the
@@ -313,8 +319,8 @@ systemctl status aprs-igate
 With the FTX-1 plugged in, this normally shows `Active: active (exited)` on the
 first boot: the radio profile's device names match what a Pi 3A+ assigns. If it
 failed instead, the Pi numbered the radio's devices differently, and Part 6 fixes
-that. Do Part 6's check either way — and for the VX-6R, whose profile has not yet
-run on a Pi, treat Part 6 as required.
+that. Do Part 6's check either way. For the VX-6R, start Part 6 with `lsusb`,
+which shows whether the Pi can see the Digirig at all.
 
 ---
 
@@ -346,7 +352,9 @@ card 0: Device [Yaesu FTX-1], device 0: USB Audio [USB Audio]
 The card number is what matters: `card 1` means `ADEVICE = plughw:1,0`, which is
 what the profile uses and what a Pi 3A+ with the FTX-1 has been observed to
 assign. A different number means overriding `ADEVICE` below. `card 0` means
-`plughw:0,0`, and so on.
+`plughw:0,0`, and so on. The image turns HDMI audio off so the radio is card 1
+every time. On a card built before that change, a radio plugged in after boot
+comes up as card 2, and it can do so after a reboot too.
 
 **FTX-1: the serial ports.**
 
@@ -357,6 +365,22 @@ ls -l /dev/ttyUSB* /dev/ttyACM*
 The FTX-1 presents two: a `ttyUSB` for CAT and a `ttyACM` for PTT. If you see
 several, `dmesg | tail -30` right after plugging the radio in tells you which
 belongs to what.
+
+**VX-6R: is the Digirig there at all?**
+
+```bash
+lsusb
+```
+
+```
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 001 Device 002: ID 2109:2817 VIA Labs, Inc. USB2.0 Hub
+Bus 001 Device 005: ID 0d8c:0012 C-Media Electronics, Inc. USB Audio Device
+```
+
+The `0d8c` line is the Digirig, and the hub line is your powered hub (its make will
+vary). If only the root hub is listed, nothing else here can work. See "VX-6R:
+`lsusb` shows only the root hub" under Troubleshooting.
 
 **VX-6R: the Digirig's PTT node.** The Digirig has no serial port. Its PTT is a
 GPIO pin on its sound chip, reached through a `/dev/hidraw` node:
@@ -710,9 +734,14 @@ The gateway runs under systemd as `aprs-igate.service`.
 launches Direwolf in the background and returns, so systemd has nothing
 left in the foreground to supervise.
 
-There is deliberately no `Restart=` on the unit — systemd rejects that setting on
-oneshot services. If the radio wasn't connected at boot, plug it in and
-`sudo systemctl start aprs-igate`.
+The gateway comes up by itself when its radio does. `up` first waits up to 60
+seconds for the radio's USB devices (`DEVICE_WAIT` in the Pi's
+`igate.local.conf`). If they still aren't there, it fails, and the unit's
+`Restart=on-failure` runs it again every 30 seconds for as long as it takes. A
+radio plugged in or switched on after boot therefore needs nothing from you;
+`systemctl status aprs-igate` shows `activating (auto-restart)` while it waits.
+A gateway that started successfully and then died is not restarted by this.
+`sudo systemctl restart aprs-igate` covers that case.
 
 You can also drive the script directly (`./deploy_igate.sh up` / `down` /
 `restart`), which does the same work. Prefer `systemctl` so systemd's view of
@@ -810,7 +839,7 @@ the routine writers:
 | `run/` — `direwolf.log`, `direwolf.conf`, `status.html`, pidfiles | Mounted as a 32 MB **tmpfs**. All of it is regenerated on each start, so it lives in RAM and never touches the card |
 | The packet log growing without bound | Rotated hourly at 8 MB, 2 generations, so it cannot exhaust that tmpfs |
 | The systemd journal | `Storage=volatile` — kept in `/run`, capped at 16 MB |
-| Swap | A `dphys-swapfile` swap **file on the card** is removed at first boot. Trixie instead uses **zram** — compressed swap in RAM, which writes nothing to the card — so that is left alone. `swapon --show` reporting `/dev/zram0` is expected |
+| Swap | A `dphys-swapfile` swap **file on the card** is removed at first boot. Trixie's **zram** (compressed swap in RAM) is kept, but set to `Mechanism=zram`: its default also writes idle pages out to a `/var/swap` file on the card. `swapon --show` reporting `/dev/zram0` is expected |
 
 What remains is a card that is written when you deliberately change something,
 and essentially never otherwise.
@@ -987,6 +1016,28 @@ On the VX-6R there is no such mode, so the usual cause is transmit level: lower
 `MCGAIN`, one at a time, and repeat the digipeat test from "Testing it" in
 README.md.
 
+**VX-6R: `lsusb` shows only the root hub, and `arecord -l` lists no capture
+device.** The Pi is not seeing the Digirig at all. Plugged directly into a Pi 3A+,
+a Digirig Lite has been observed to produce no USB event whatsoever. There is no
+error and nothing in `dmesg -w` when it is plugged in, even though the same
+Digirig, adapter and cable work on a laptop and the FTX-1 works in the same port.
+
+The fix is a **powered** USB hub, with its own supply connected, between the Pi and
+the Digirig:
+
+- Through an *unpowered* hub, the Pi logged `Undervoltage detected!` as the hub
+  connected, and the Digirig still did not appear.
+- Through the same hub on its own supply, it enumerated. The kernel may retry the
+  port first. `device descriptor read/64, error -32`, then `attempt power cycle`,
+  then `New USB device found, idVendor=0d8c` is a success.
+
+Check the Pi's own supply with `vcgencmd get_throttled`. `throttled=0x0` means no
+under-voltage since boot; bit 16 set (`0x10000`) means it has occurred. The kernel
+USB settings sometimes suggested for this, `dwc_otg.speed=1` in `cmdline.txt` or
+`dtoverlay=dwc2,dr_mode=host` in `config.txt`, did not make the Digirig appear.
+Whether the powered hub alone suffices without them has not been checked. A
+rebuilt card has neither, which is the configuration to confirm.
+
 **VX-6R: `up` refuses with an error about `/dev/hidraw`.** The Digirig's PTT
 device could not be used, and the message says which of three things is wrong:
 
@@ -1080,8 +1131,11 @@ gateway itself is stopped. If the page renders but stays empty, that may simply
 be a quiet band; give it a few minutes.
 
 **`swapon --show` reports `/dev/zram0`.** Expected. Raspberry Pi OS Trixie swaps
-to compressed RAM rather than to a file on the card, so it writes nothing to the
-card and is left in place deliberately — on 512 MB it is worth having.
+to compressed RAM, and on 512 MB that is worth having. Its default also keeps a
+`/var/swap` file on the card that idle pages are written out to, so the image
+sets `Mechanism=zram` in `/etc/rpi/swap.conf.d/50-igate.conf`. On such a card
+`ls /var/swap` reports no such file. A card built before that change has the file,
+and `dmesg | grep backing` shows `zram: setup backing device`.
 
 **Everything is slow.** It's a 512 MB single-board computer. `nano` on a config
 file is fine; don't expect to run a browser.

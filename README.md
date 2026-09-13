@@ -66,7 +66,7 @@ Pick the one that matches your hardware. Each is complete on its own.
 | Radio | Profile | Frequency and mode | PTT | State |
 |---|---|---|---|---|
 | Yaesu FTX-1 | `radios/ftx1.conf` | set and checked by `up` over CAT | CAT command, through `rigctld` | has carried traffic in both modes |
-| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic in docker mode on a laptop; not yet run on a Pi |
+| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal); on the Pi 3A+ it needs a powered USB hub |
 
 **All four start with the station settings,** which are the same on every machine:
 
@@ -327,14 +327,15 @@ Quickstart B's pi-gate, driving the VX-6R. The image selects the radio and
 installs the Digirig's udev rule, so nothing radio-related is done by hand on the
 Pi.
 
-> **Not yet run on a Pi.** The VX-6R has carried a round trip in docker mode on a
-> laptop (Quickstart C), but not bare-metal on a Pi, where Direwolf is 1.7 rather
-> than 1.8.1 and the udev rule comes from the image. Confirm transmit (step 5)
-> before leaving it unattended.
+> **On the air, through a powered USB hub.** This setup has carried a full SMS
+> round trip on a pi-gate. Plugged straight into the Pi 3A+, the Digirig Lite was
+> not detected at all; see
+> [Why the Digirig needs a powered hub](#why-the-digirig-needs-a-powered-hub).
 
 **You need:** Quickstart B's hardware, with the VX-6R, a Digirig Lite and
-Digirig's VX-6R cable in place of the FTX-1. The Digirig takes the Pi's only USB
-port. The VX-6R prepared as above, on DC power.
+Digirig's VX-6R cable in place of the FTX-1, plus **a powered USB hub** — one with
+its own power supply — between the Pi and the Digirig. Without it the Pi does not
+detect the Digirig. The VX-6R prepared as above, on DC power.
 
 **1. On the laptop, configure the image for the VX-6R.**
 
@@ -351,9 +352,9 @@ laptop for the Pi.
 
 **2. Build and write the card:** exactly as Quickstart B, step 2.
 
-**3. Boot it.** Card into the Pi. Digirig into the Pi's USB port, cable to the
-VX-6R, VX-6R on 144.390 MHz FM. Power last, and allow **5–10 minutes** for first
-boot.
+**3. Boot it.** Card into the Pi. The powered hub into the Pi's USB port with its
+supply connected, the Digirig into the hub, Digirig's cable to the VX-6R, VX-6R on
+144.390 MHz FM. Power the Pi last, and allow **5–10 minutes** for first boot.
 
 **4. Log in and check.**
 
@@ -361,15 +362,19 @@ boot.
 ssh-keygen -R aprs-igate.local
 ssh igate@aprs-igate.local
 cd aprs-igate
+lsusb                              # must list: C-Media Electronics, Inc. USB Audio Device
 ./deploy_igate.sh config           # RADIO = vx6r, credited to igate.local.conf
-arecord -l                         # the Digirig's card number
+arecord -l                         # the Digirig's card number: 1
 ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
 ./deploy_igate.sh status           # iGate running (bare-metal): direwolf pid N, no rigctld (CAT = none)
 ./deploy_igate.sh monitor
 ```
 
-If the Digirig is not card 1, set `ADEVICE` in the Pi's `igate.local.conf`, then
-`sudo systemctl restart aprs-igate`.
+If `lsusb` does not list the C-Media device, the Pi is not seeing the Digirig at
+all: check the hub's own supply is connected. If the Digirig is not card 1, set
+`ADEVICE` in the Pi's `igate.local.conf`, then `sudo systemctl restart aprs-igate`.
+A card built before the image disabled HDMI audio numbers a Digirig plugged in
+after boot as card 2 (`ADEVICE = plughw:2,0`); rebuilding removes that.
 
 **5. Confirm transmit decodes** as in Quickstart C, step 5, using
 `sudo systemctl restart aprs-igate` after any change.
@@ -643,7 +648,7 @@ overrides only the keys it actually sets and leaves everything else alone:
 |---|---|---|---|---|
 | 1 | `radios/<RADIO>.conf` | how to drive one radio | yes | hardware keys only |
 | 2 | `igate.conf` | the station | yes | any key |
-| 3 | `igate.local.conf` | this machine | **no** — gitignored | `DEPLOY_MODE`, `RADIO`, `WEB_MONITOR`, `WEB_PORT`, `WEB_BIND`, hardware keys only |
+| 3 | `igate.local.conf` | this machine | **no** — gitignored | `DEPLOY_MODE`, `RADIO`, `WEB_MONITOR`, `WEB_PORT`, `WEB_BIND`, `DEVICE_WAIT`, hardware keys only |
 | 4 | `igate.secrets` | the APRS-IS passcode | **no** — gitignored | `IGLOGIN_PASSCODE` only |
 | 5 | environment | one invocation | — | `IGATE_MODE`, `IGATE_PASSCODE` |
 
@@ -749,7 +754,7 @@ more code:
 | `CAT` | `PTT_METHOD` | What runs | Used by |
 |---|---|---|---|
 | `hamlib` | `rig` | `rigctld` for CAT and PTT; Direwolf `PTT RIG` through it | FTX-1 — on the air |
-| `none` | `cm108` | Direwolf alone, `PTT CM108` | VX-6R + Digirig Lite — on the air (laptop, docker) |
+| `none` | `cm108` | Direwolf alone, `PTT CM108` | VX-6R + Digirig Lite — on the air (laptop and pi-gate) |
 | `hamlib` | `cm108` | `rigctld` for frequency and mode only; Direwolf `PTT CM108` | accepted; no profile uses it yet |
 | `none` | `rig` | — | refused: no CAT link to key the radio over |
 | any | `rts`, `dtr` | — | recognised, refused until a start path exists |
@@ -1118,19 +1123,22 @@ customised offline, and what the first-boot units do is in §16 of the
 | The whole project in `/opt/aprs-igate` | `igate.conf` installed unchanged; symlinked to `~/aprs-igate` on first boot. The build host's own `igate.local.conf`, if any, is excluded |
 | `/opt/aprs-igate/igate.local.conf` | Written fresh for the Pi: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (`igate-web.service` runs it instead), `RADIO` if `PI_RADIO` is set, plus commented examples for device overrides |
 | `/etc/udev/rules.d/99-igate-cm108.rules` | Lets the `audio` group key a CM108 interface such as the Digirig Lite. Installed whatever the radio, so switching to one later needs no root access |
+| `dtoverlay=vc4-kms-v3d,noaudio` in `config.txt` | No HDMI audio, so the radio's USB sound card is ALSA card 1 whether it is attached at boot or plugged in later |
+| `/etc/rpi/swap.conf.d/50-igate.conf` | `Mechanism=zram`: swap stays in compressed RAM, with no `/var/swap` writeback file on the card |
 | `igate-firstboot.service` | Installs `direwolf libhamlib-utils alsa-utils avahi-daemon`, adds the user to `dialout` and `audio` |
-| `aprs-igate.service` | `deploy_igate.sh up` at boot, if `PI_AUTOSTART = yes` |
+| `aprs-igate.service` | `deploy_igate.sh up` at boot, if `PI_AUTOSTART = yes`. `up` waits up to 60 s for the radio (`DEVICE_WAIT = 60` in the Pi's `igate.local.conf`), and the unit retries every 30 s after a failed start, so a radio that appears late still brings the gateway up |
 
 ### Built to be unplugged
 
 A pi-gate gets pulled from the wall, not shut down, so the image removes
 everything that routinely writes to the SD card: `run/` is a 32 MB tmpfs (all of
 it is regenerated on each start), the packet log is rotated hourly so it cannot
-fill that tmpfs, and the systemd journal is volatile. Any `dphys-swapfile` swap
-file is removed at first boot; Raspberry Pi OS Trixie instead uses zram, which is
-compressed RAM and never touches the card, so that is left in place — on 512 MB
-it is worth having. What is left is a card written only when you deliberately
-change something.
+fill that tmpfs, and the systemd journal is volatile. Swap stays in RAM: any
+`dphys-swapfile` swap file is removed at first boot, and Raspberry Pi OS Trixie's
+zram swap is set to `Mechanism=zram`, because its default (`zram+file`) also
+writes idle pages out to a `/var/swap` file on the card. zram itself stays; on
+512 MB it is worth having. What is left is a card written only when you
+deliberately change something.
 
 The trade is that nothing in `run/` survives a reboot — the packet log starts
 empty and `journalctl` cannot show a previous boot. The remaining risk is the
@@ -1168,6 +1176,32 @@ Two other things worth knowing about the 3A+ specifically: it has one USB-A
 port, so a radio and anything else need a hub, and 512 MB of RAM, which is why
 `pi.conf` defaults to the 32-bit (`armhf`) Lite image and why the Pi runs
 bare-metal rather than under Docker.
+
+### Why the Digirig needs a powered hub
+
+Plugged directly into a Raspberry Pi 3A+, a Digirig Lite was not detected: no
+attach event, no error, nothing in `dmesg`, and `lsusb` showed only the root hub.
+The same Digirig, USB-A-to-C adapter and cable enumerate on a laptop, and the
+FTX-1 enumerates in the same Pi port. The boot logs show what differed:
+
+| Connection to the Pi 3A+ | Result |
+|---|---|
+| FTX-1, direct | Enumerates as a USB hub (`05e3:0610`) with the radio's CAT bridge, PTT interface and codec behind it |
+| Digirig, direct | Nothing: the port never saw a device attach |
+| Digirig through an unpowered hub | The hub enumerates; the Pi logs `Undervoltage detected!` as it connects; the Digirig does not appear |
+| Digirig through the same hub on its own supply | The Digirig enumerates, after the hub retries the port once, and carried a full round trip |
+
+The pattern points at power. The Digirig Lite takes its power from the USB port,
+and the undervoltage warning shows the Pi's 5 V rail sagging as even a hub
+connects. The 3A+ has no USB hub chip of its own: its single port is driven
+directly by the processor's USB controller (`dmesg` reports a root hub with one
+port). Which link was marginal was not isolated — the Pi's supply, the port, or
+the drop across the adapter chain — and a powered hub removes all three.
+
+To check the Pi's power, run `vcgencmd get_throttled` on it. `throttled=0x0`
+means no under-voltage since boot; `0x10000` or `0x50000` means it has occurred.
+A powered hub keeps the Digirig working even then, but a Pi reporting
+under-voltage deserves a better supply regardless.
 
 ### Settings
 

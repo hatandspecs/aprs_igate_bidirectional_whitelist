@@ -204,9 +204,24 @@ mount_image() {
     || die "losetup failed"
   note "loop device: $LOOP_DEV"
 
+  # losetup returns once the kernel has read the partition table, but the
+  # /dev/loopNpM nodes are created afterwards by udev. Testing for them at once
+  # is a race, usually won; lost, it reported a sound image as not a Raspberry Pi
+  # OS image. Wait for udev, then poll, nudging the kernel to re-read the table
+  # once in case the scan itself was missed.
+  command -v udevadm >/dev/null && sudo udevadm settle --timeout=10 2>/dev/null
+  local i
+  for i in $(seq 1 20); do
+    [[ -e "${LOOP_DEV}p1" && -e "${LOOP_DEV}p2" ]] && break
+    if (( i == 8 )); then
+      sudo partx -a "$LOOP_DEV" 2>/dev/null || sudo partprobe "$LOOP_DEV" 2>/dev/null || true
+    fi
+    sleep 0.25
+  done
+
   # Raspberry Pi OS images are two partitions: FAT boot, then ext4 root.
   [[ -e "${LOOP_DEV}p1" && -e "${LOOP_DEV}p2" ]] \
-    || die "expected two partitions on $LOOP_DEV — is this a Raspberry Pi OS image?"
+    || die "expected two partitions on $LOOP_DEV after 5s — is this a Raspberry Pi OS image? (sfdisk -d $OUTPUT_IMG shows its table)"
 
   BOOT_MNT="$(mktemp -d)"; ROOT_MNT="$(mktemp -d)"
   sudo mount "${LOOP_DEV}p1" "$BOOT_MNT" || die "cannot mount boot partition"
@@ -378,6 +393,7 @@ install_project() {
     --exclude '__pycache__/' \
     --exclude 'pi.secrets' \
     --exclude 'igate.local.conf' \
+    --exclude 'scratch_notes.txt' \
     "${SCRIPT_DIR}/" "${dest}/"
 
   # igate.conf is installed exactly as it is in the repository. It is the shared
@@ -394,7 +410,8 @@ install_project() {
 #   1. radios/<RADIO>.conf   how to drive the radio      hardware keys only
 #   2. igate.conf            the station                 any key
 #   3. igate.local.conf      THIS FILE: one machine      DEPLOY_MODE, RADIO,
-#                                                        WEB_*, hardware keys only
+#                                                        WEB_*, DEVICE_WAIT,
+#                                                        hardware keys only
 #   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
 #   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
 #
@@ -410,6 +427,12 @@ DEPLOY_MODE = bare-metal
 # caps its memory. This stops deploy_igate.sh starting a second copy on the same
 # port. Check it with: systemctl status igate-web
 WEB_MONITOR = no
+
+# Seconds `up` waits for the radio's USB devices before giving up. At boot the
+# gateway can start while a USB hub is still bringing the radio up, and a radio
+# switched on after the Pi appears later still. If they never appear, `up`
+# refuses as usual, and aprs-igate.service tries again every 30 seconds.
+DEVICE_WAIT = 60
 
 # Device names come from the radio profile. Check them here with 'arecord -l',
 # 'ls -l /dev/ttyUSB* /dev/ttyACM*' and, for a CM108 interface such as the
@@ -525,6 +548,17 @@ EOF
   note "journal kept in RAM, capped at 16M"
   note "log rotated hourly at 8M, 2 generations kept"
 
+  # 4. Swap. Raspberry Pi OS's rpi-swap defaults to Mechanism=auto, which is
+  #    currently "zram+file": compressed swap in RAM, plus a /var/swap file on the
+  #    root filesystem that idle pages are periodically written out to
+  #    (rpi-zram-writeback). That file is on the SD card, so it is a card writer
+  #    on a timer. Mechanism=zram keeps the compressed RAM swap, which is worth
+  #    having on 512 MB, and per swap.conf(5) removes the file.
+  sudo mkdir -p "${ROOT_MNT}/etc/rpi/swap.conf.d"
+  printf '# build_pi_image.sh: compressed swap in RAM only, no writeback file on\n# the SD card. See swap.conf(5).\n[Main]\nMechanism=zram\n' \
+    | sudo tee "${ROOT_MNT}/etc/rpi/swap.conf.d/50-igate.conf" >/dev/null
+  note "swap is zram only (no /var/swap writeback file on the card)"
+
   rm -f "$tmp"
 }
 
@@ -591,6 +625,9 @@ Wants=network-online.target
 # preflight refuses to start without a working audio device anyway.
 Wants=igate-firstboot.service
 ConditionPathExists=/opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}/deploy_igate.sh
+# Retry for as long as it takes (see Restart= below): an unattended gateway
+# should come up whenever its radio does, not give up after five attempts.
+StartLimitIntervalSec=0
 
 # run/ is a tmpfs (see /etc/fstab); without this the gateway can start before it
 # is mounted and write its pidfiles to the underlying directory instead.
@@ -604,8 +641,18 @@ WorkingDirectory=${dir}
 ExecStart=${dir}/deploy_igate.sh up
 ExecStop=${dir}/deploy_igate.sh down
 # deploy_igate.sh launches Direwolf in the background and returns, so this is a
-# oneshot. systemd rejects Restart= on Type=oneshot; if the radio was not
-# plugged in at boot, "systemctl start aprs-igate" after plugging it in.
+# oneshot. systemd refuses Restart=always and on-success on a oneshot, but
+# accepts on-failure: if "deploy_igate.sh up" fails (the radio still missing
+# after DEVICE_WAIT, say),
+# systemd stops whatever it had started and runs it again 30 seconds later, so a
+# radio plugged in or switched on after boot brings the gateway up by itself.
+# A start that succeeds is not restarted, so a Direwolf that dies later is not
+# covered by this.
+Restart=on-failure
+RestartSec=30
+# DEVICE_WAIT is 60 seconds; the default 90-second start timeout leaves too little
+# room after it.
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target
@@ -755,11 +802,13 @@ fi
 # a file on the root filesystem — so remove it where it is in use.
 #
 # Raspberry Pi OS Trixie does not use it: swap is zram, a compressed block
-# device in RAM. That writes nothing to the card, so it is left alone
-# deliberately. On a 512 MB machine it is actively useful, trading a little CPU
-# for effective memory, and removing it would make things worse rather than
-# safer. "swapon --show" reporting /dev/zram0 is therefore the expected result,
-# not a leftover.
+# device in RAM, managed by rpi-swap. Its default also keeps a /var/swap
+# writeback file on the card; the image sets Mechanism=zram in
+# /etc/rpi/swap.conf.d/50-igate.conf so that it does not (see
+# harden_against_power_loss). zram itself is kept deliberately: on a 512 MB
+# machine it trades a little CPU for effective memory, and removing it would make
+# things worse rather than safer. "swapon --show" reporting /dev/zram0 is the
+# expected result, not a leftover.
 if command -v dphys-swapfile >/dev/null; then
   dphys-swapfile swapoff || true
   dphys-swapfile uninstall || true
@@ -809,6 +858,32 @@ EOF
     note "igate-web.service enabled on port ${CFG[PI_WEB_PORT]:-8080} (read-only, LAN)"
   else
     note "igate-web.service installed but not enabled (PI_WEB_MONITOR is not yes)"
+  fi
+}
+
+# Settings in the boot partition's config.txt, read by the firmware.
+configure_boot_config() {
+  step "Configuring boot settings"
+  local cfg="${BOOT_MNT}/config.txt"
+  [[ -f "$cfg" ]] || { note "no config.txt in the boot partition; left alone"; return 0; }
+
+  # No HDMI audio. The Pi is headless, and the HDMI audio device otherwise takes
+  # an ALSA card number as the vc4 driver loads, about nine seconds into boot.
+  # A USB sound card gets whichever number is free when it enumerates, so the
+  # radio's codec came up as card 1 when attached at boot and card 2 when plugged
+  # in later, or when it lost the race at boot — and ADEVICE names a number.
+  # Without HDMI audio the onboard headphone output is card 0 and the radio's
+  # codec is card 1 every time.
+  if sudo grep -qE '^dtoverlay=vc4-kms-v3d$' "$cfg"; then
+    sudo sed -i 's/^dtoverlay=vc4-kms-v3d$/dtoverlay=vc4-kms-v3d,noaudio/' "$cfg"
+    note "HDMI audio disabled (vc4-kms-v3d,noaudio): the radio's sound card is card 1"
+  elif sudo grep -qE '^dtoverlay=vc4-kms-v3d,.*noaudio' "$cfg"; then
+    note "HDMI audio already disabled"
+  else
+    # A release that loads the overlay differently. Changing a line not
+    # understood here could cost the display driver, so leave it and say so.
+    note "WARNING: no plain 'dtoverlay=vc4-kms-v3d' line in config.txt; HDMI audio left as is."
+    note "         The radio's card number may then vary between boots (check 'arecord -l')."
   fi
 }
 
@@ -872,6 +947,7 @@ cmd_build() {
   configure_access
   configure_wifi
   configure_locale
+  configure_boot_config
   install_project
   harden_against_power_loss
   install_services

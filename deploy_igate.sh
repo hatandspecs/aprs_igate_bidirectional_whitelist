@@ -32,7 +32,8 @@
 #   1. radios/<RADIO>.conf   how to drive the radio      hardware keys only
 #   2. igate.conf            the station                 any key
 #   3. igate.local.conf      one machine (gitignored)    DEPLOY_MODE, RADIO,
-#                                                        WEB_*, hardware keys only
+#                                                        WEB_*, DEVICE_WAIT,
+#                                                        hardware keys only
 #   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
 #   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
 #
@@ -170,9 +171,9 @@ for _k in RADIO_DESCRIPTION CAT PTT_METHOD RIG_MODEL CAT_DEVICE CAT_BAUD \
 done
 unset _k
 # The local file describes a machine, so it may also say how that machine runs
-# the gateway, which radio is attached to it, and whether and where it serves the
-# web monitor.
-for _k in DEPLOY_MODE RADIO WEB_MONITOR WEB_PORT WEB_BIND; do
+# the gateway, which radio is attached to it, whether and where it serves the
+# web monitor, and how long `up` waits for the radio's devices to appear.
+for _k in DEPLOY_MODE RADIO WEB_MONITOR WEB_PORT WEB_BIND DEVICE_WAIT; do
   LOCAL_KEY_OK[$_k]=1
 done
 unset _k
@@ -248,7 +249,7 @@ load_and_resolve() {
   # Layer 3: this machine.
   if [[ -f "$LOCAL_CONFIG" ]]; then
     load_layer "$LOCAL_CONFIG" igate.local.conf LOCAL_KEY_OK \
-      "igate.local.conf may set only DEPLOY_MODE, RADIO, WEB_MONITOR, WEB_PORT, WEB_BIND and hardware keys."
+      "igate.local.conf may set only DEPLOY_MODE, RADIO, WEB_MONITOR, WEB_PORT, WEB_BIND, DEVICE_WAIT and hardware keys."
     LOCAL_CONFIG_IN_USE="$LOCAL_CONFIG"
   fi
 
@@ -338,6 +339,14 @@ validate_web() {
   fi
 }
 
+validate_device_wait() {
+  local w="${CFG[DEVICE_WAIT]:-0}"
+  if [[ ! "$w" =~ ^[0-9]+$ ]] || (( w > 600 )); then
+    echo "Config: DEVICE_WAIT = '${w}' is not valid. Use a number of seconds from 0 to 600." >&2
+    exit 1
+  fi
+}
+
 validate_config() {
   if [[ -n "$LAYER_ERRORS" ]]; then
     printf '%s' "$LAYER_ERRORS" >&2
@@ -347,6 +356,7 @@ validate_config() {
   require ADEVICE
   validate_capabilities
   validate_web
+  validate_device_wait
   if [[ "${CFG[CAT]}" == hamlib ]]; then
     require RIG_MODEL
     require CAT_DEVICE
@@ -655,8 +665,12 @@ print_layers() {
 }
 
 print_config() {
-  local filter cm108_lines=""
+  local filter cm108_lines="" device_wait_line=""
   filter="$(build_filter)"
+  # Listed only when set, for the same reason as the CM108 lines.
+  if [[ -n "${CFG[DEVICE_WAIT]:-}" ]]; then
+    device_wait_line=$'\n'"DEVICE_WAIT      = ${CFG[DEVICE_WAIT]}s (up waits this long for the radio's devices)"
+  fi
   # Appended to the PTT_TYPE line rather than given lines of their own, so a
   # radio that does not use CM108 gets the listing it always had, blank lines
   # included.
@@ -688,7 +702,7 @@ BEACON           = $(beacon_desc)
 AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
 KISS_PORT        = $(port_desc "${CFG[KISS_PORT]:-0}")
 WEB_MONITOR      = $(web_desc)
-IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}
+IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}${device_wait_line}
 
 Resolved Direwolf FILTER: IG 0 ${filter}
 
@@ -969,6 +983,63 @@ cm108_udev_help() {
   echo "    sudo udevadm control --reload-rules" >&2
   echo "  then unplug and replug the interface, and check with: ls -l /dev/hidraw*" >&2
   echo "  (Installing the direwolf package installs the same rule as 99-direwolf-cmedia.rules.)" >&2
+}
+
+# --- waiting for the radio's devices ---
+# A USB radio can appear after `up` runs. At boot the gateway service can start
+# while a hub is still retrying a port (seen with a Digirig Lite behind a powered
+# hub), and a radio switched on later appears later still. DEVICE_WAIT, in
+# seconds, lets `up` wait for the devices instead of refusing at once. Unset or 0
+# means no wait, which suits an interactive `up`; the Pi image sets 60.
+
+# Prints what is not there yet, space-separated; nothing when all is present.
+# A CM108 node counts as missing until udev has given it its group, since the
+# node appears a moment before the rule is applied to it.
+radio_devices_missing() {
+  local card missing="" mg mode gid
+  card="$(audio_card_number)"
+  if [[ -n "$card" && ! -e "/dev/snd/controlC${card}" ]]; then
+    missing+="ALSA-card-${card} "
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == cm108 ]]; then
+    cm108_resolve
+    if [[ -z "$CM108_PATH" ]] || ! _dev_exists "$CM108_PATH"; then
+      missing+="CM108-PTT-device "
+    else
+      mg="$(_dev_mode_gid "$CM108_PATH")"; mode="${mg% *}"; gid="${mg#* }"
+      if [[ ! "$mode" =~ ^[0-7]+$ ]] || (( (8#$mode & 8#060) != 8#060 )) || [[ "$gid" == 0 ]]; then
+        missing+="${CM108_PATH}-permissions "
+      fi
+    fi
+  fi
+  if [[ "${CFG[CAT]}" == hamlib && ! -e "${CFG[CAT_DEVICE]:-}" ]]; then
+    missing+="${CFG[CAT_DEVICE]:-CAT_DEVICE} "
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == rig && ! -e "${CFG[PTT_DEVICE]:-}" ]]; then
+    missing+="${CFG[PTT_DEVICE]:-PTT_DEVICE} "
+  fi
+  printf '%s' "${missing% }"
+}
+
+# Returns once everything is present or the time is up. It never refuses by
+# itself: the checks that follow in `up` do that, with their specific messages.
+wait_for_radio_devices() {
+  local limit="${CFG[DEVICE_WAIT]:-0}" missing waited=0
+  (( limit > 0 )) || return 0
+  missing="$(radio_devices_missing)"
+  [[ -n "$missing" ]] || return 0
+  echo "Waiting up to ${limit}s for the radio's devices: ${missing}"
+  while (( waited < limit )); do
+    sleep 1
+    waited=$((waited + 1))
+    missing="$(radio_devices_missing)"
+    if [[ -z "$missing" ]]; then
+      echo "Radio devices present after ${waited}s."
+      return 0
+    fi
+  done
+  echo "Still missing after ${limit}s: ${missing}" >&2
+  return 0
 }
 
 # Refuse to start without a usable PTT device, for the same reason as a missing
@@ -1334,6 +1405,8 @@ _docker_up() {
   fi
   container_exists && docker rm "$CONTAINER_NAME" >/dev/null
 
+  wait_for_radio_devices
+
   local cat_device="${CFG[CAT_DEVICE]:-}" ptt_device="${CFG[PTT_DEVICE]:-}"
   if [[ "${CFG[CAT]}" == hamlib && ! -e "$cat_device" ]]; then
     echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
@@ -1445,6 +1518,8 @@ _bare_up() {
     return 0
   fi
 
+  wait_for_radio_devices
+
   local cat_device="${CFG[CAT_DEVICE]:-}" ptt_device="${CFG[PTT_DEVICE]:-}"
   if [[ "${CFG[CAT]}" == hamlib && ! -e "$cat_device" ]]; then
     echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
@@ -1509,6 +1584,10 @@ _bare_up() {
     echo "Log: ${BARE_LOG}. Watch packet flow: ./deploy_igate.sh monitor"
   else
     echo "direwolf exited immediately — check ${BARE_LOG}" >&2
+    # rigctld may still be running. Left behind, it would hold port 4532 and make
+    # the next attempt fail in a different, more confusing way — and the Pi's
+    # service retries on its own.
+    bare_stop
     exit 1
   fi
 }
