@@ -64,11 +64,15 @@ can override what.
 | microSD card, 8 GB or larger | Class 10 / A1 or better. Card quality is the single most common cause of a Pi that boots unreliably — buy a name brand |
 | microSD reader for your laptop | Built-in slot is fine |
 | 5 V 2.5 A micro-USB supply | **Not** a phone charger you had lying around. An underpowered Pi browns out under load, and on this project that means the USB link to the radio dropping mid-transmission — the exact failure that sticks the radio in TX |
-| USB-A to USB-C cable | Pi's USB-A port to the FTX-1 |
-| The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README |
+| The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, and Digirig's VX-6R audio/PTT cable |
+| The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README. A VX-6R left running needs DC power (Yaesu E-DC-5B or E-DC-6); the battery does not last |
 
-The 3A+ has **one** USB port. The radio takes it. Anything else needs a powered
-hub.
+The 3A+ has **one** USB port. The radio (or the Digirig) takes it. Anything else
+needs a powered hub.
+
+The FTX-1 has carried traffic on a pi-gate. The VX-6R has carried traffic in
+docker mode on a laptop, but has not yet run on a pi-gate. See the Quickstarts in
+[README.md](README.md#quickstarts).
 
 **On your laptop**
 
@@ -128,6 +132,7 @@ The settings that matter:
 | `PI_SSH_PUBKEY` | blank | Path to a public key for key-based login. `check` lists what you have |
 | `PI_IMAGE_VARIANT` | `armhf` | 32-bit. Leave it — 512 MB is tight for 64-bit |
 | `PI_AUTOSTART` | `yes` | Start the gateway at boot |
+| `PI_RADIO` | blank | The radio this Pi drives: `ftx1` or `vx6r` (`ls radios/`). Blank uses `RADIO` from `igate.conf`. Written into the Pi's own `igate.local.conf`; `check` rejects a name with no profile |
 
 **About `PI_WIFI_COUNTRY`:** Raspberry Pi OS keeps the WiFi radio
 rfkill-blocked until a regulatory domain is set. Get this wrong on a Pi with no
@@ -180,7 +185,8 @@ What went into it:
 | `/etc/igate/authorized_keys` | Your public key, if configured; moved into place on first boot |
 | WiFi country, three ways | Kernel module parameter, `/etc/default/crda`, and a service that runs before NetworkManager |
 | `/opt/aprs-igate` | The whole project. `igate.conf` is installed unchanged; your laptop's own `igate.local.conf`, if you have one, is left out |
-| `/opt/aprs-igate/igate.local.conf` | Settings for the Pi only: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (the systemd unit runs it instead), and commented examples for device overrides |
+| `/opt/aprs-igate/igate.local.conf` | Settings for the Pi only: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (the systemd unit runs it instead), `RADIO` if `PI_RADIO` is set, and commented examples for device overrides |
+| `/etc/udev/rules.d/99-igate-cm108.rules` | Lets the `audio` group key a Digirig (CM108) through its `/dev/hidraw` node. Installed whatever the radio |
 | Three systemd units | WiFi country → first-boot setup → the gateway |
 
 Your `igate.secrets` is copied at mode 600. Your `pi.secrets` is **not** — the
@@ -236,7 +242,13 @@ When it finishes, pull the card out.
 ## Part 4 — First boot
 
 1. Card into the Pi (contacts facing the board; it only goes in one way).
-2. Radio's USB cable into the Pi's USB port. Radio on, set to 144.390, **D-FM**.
+2. The radio into the Pi's USB port, and the radio on.
+   - **FTX-1:** its USB cable. `up` sets 144.390 MHz **D-FM** over CAT.
+   - **VX-6R:** the Digirig into the USB port and Digirig's cable to the radio.
+     Tune it to **144.390 MHz FM by hand**, and set it up as in "Yaesu VX-6R on a
+     Digirig Lite" in [README.md](README.md#yaesu-vx-6r-on-a-digirig-lite),
+     receive battery saver off above all. Nothing on the Pi can set or check the
+     frequency.
 3. Power last. The Pi has no power switch — plugging it in boots it.
 
 Watch the two LEDs next to the power connector:
@@ -301,16 +313,24 @@ systemctl status aprs-igate
 With the FTX-1 plugged in, this normally shows `Active: active (exited)` on the
 first boot: the radio profile's device names match what a Pi 3A+ assigns. If it
 failed instead, the Pi numbered the radio's devices differently, and Part 6 fixes
-that. Do Part 6's check either way.
+that. Do Part 6's check either way — and for the VX-6R, whose profile has not yet
+run on a Pi, treat Part 6 as required.
 
 ---
 
 ## Part 6 — Point the config at the Pi's hardware
 
-The Pi enumerates its own USB hardware, so `ADEVICE`, `CAT_DEVICE` and
-`PTT_DEVICE` need checking. Their defaults come from the radio profile,
-`radios/ftx1.conf`, which was written on your laptop; the Pi's `igate.local.conf`
-carries a comment at the top saying so.
+The Pi enumerates its own USB hardware, so the radio's device names need checking.
+Their defaults come from the radio profile — `radios/ftx1.conf` or
+`radios/vx6r.conf` — and the Pi's `igate.local.conf` carries a comment at the top
+saying so. Start with what the gateway resolved:
+
+```bash
+cd ~/aprs-igate
+./deploy_igate.sh config
+```
+
+`RADIO` says which profile is in use and where it was selected.
 
 With the radio plugged in and powered on:
 
@@ -328,7 +348,7 @@ what the profile uses and what a Pi 3A+ with the FTX-1 has been observed to
 assign. A different number means overriding `ADEVICE` below. `card 0` means
 `plughw:0,0`, and so on.
 
-Then the serial ports:
+**FTX-1: the serial ports.**
 
 ```bash
 ls -l /dev/ttyUSB* /dev/ttyACM*
@@ -337,6 +357,24 @@ ls -l /dev/ttyUSB* /dev/ttyACM*
 The FTX-1 presents two: a `ttyUSB` for CAT and a `ttyACM` for PTT. If you see
 several, `dmesg | tail -30` right after plugging the radio in tells you which
 belongs to what.
+
+**VX-6R: the Digirig's PTT node.** The Digirig has no serial port. Its PTT is a
+GPIO pin on its sound chip, reached through a `/dev/hidraw` node:
+
+```bash
+ls -l /dev/hidraw*
+```
+
+```
+crw-rw---- 1 root audio 243, 0 ... /dev/hidraw0
+```
+
+The Digirig's node should show group `audio` and `crw-rw----`: the image's udev
+rule does that. Nothing needs setting, because `deploy_igate.sh` finds the node on
+the same USB device as the `ADEVICE` card. `config` shows it on the `CM108_DEVICE`
+line. If that line says none was found, `ADEVICE` names the wrong card or the
+Digirig is not plugged in. If the node shows `root root` and `crw-------`, the
+rule did not apply: unplug and replug the Digirig.
 
 If the Pi's values differ from the profile, **override them in the Pi's
 `igate.local.conf`** — not in `igate.conf`, which is shared with every machine, and
@@ -390,7 +428,9 @@ cd ~/aprs-igate
 ```
 
 `status` should report `iGate running (bare-metal): direwolf pid N, rigctld pid
-M`. Then watch `monitor` for a minute or two and look for `RF RX` lines — real
+M` for the FTX-1, or `direwolf pid N, no rigctld (CAT = none)` for the VX-6R,
+which has no CAT and so no `rigctld`. Then watch `monitor` for a minute or two
+and look for `RF RX` lines — real
 packets being decoded off the air. If nothing appears while there's audible
 activity on 144.390, your RX gain is wrong; see the audio levels section in the
 main README.
@@ -780,9 +820,10 @@ packet log starts empty each time and `journalctl` cannot show you a previous
 boot. For an appliance that is the right trade, but it does mean a post-mortem
 after an unexpected power cut has little to work with.
 
-**The remaining risk is the radio, not the card.** PTT rides the USB serial link,
-so if the Pi loses power mid-transmission the unkey command is never sent and
-**the radio can stay keyed**. Transmissions are rare and brief on a
+**The remaining risk is the radio, not the card.** With the FTX-1, PTT is a CAT
+command over USB, so if the Pi loses power mid-transmission the unkey command is
+never sent and **the radio can stay keyed**. A Digirig is powered by the same USB
+port, so its PTT should drop with the power, though that has not been tested. Transmissions are rare and brief on a
 whitelist-only gate, so the window is small — but it is the same failure mode as
 an RF-induced USB crash, and the radio's time-out timer is the only thing that
 ends it. Keep the TOT set, and if you are unplugging deliberately, glance at
@@ -937,10 +978,32 @@ bypasses the whitelist entirely and *will* transmit a station you never
 authorised if it is not honoured. No complaint about `IGMSP`, `IGFILTER`,
 `IGTXVIA` or `IGTXLIMIT` means the version you have parsed all of them.
 
-**Gateway transmits but nobody decodes it.** This is the radio, not the Pi. Plain
-FM modulates from the microphone input rather than the USB codec, producing a
-clean carrier with no data in it. The radio must be in **D-FM**. See the radio
-setup section in [README.md](README.md#radio-setup--the-one-that-matters).
+**Gateway transmits but nobody decodes it.** This is the radio, not the Pi. On the
+FTX-1, plain FM modulates from the microphone input rather than the USB codec,
+producing a clean carrier with no data in it. The radio must be in **D-FM**. See
+the radio setup section in [README.md](README.md#radio-setup--the-one-that-matters).
+On the VX-6R there is no such mode, so the usual cause is transmit level: lower
+`TX_AUDIO_LEVEL` in the Pi's `igate.local.conf`, or the radio's Set Mode 37
+`MCGAIN`, one at a time, and repeat the digipeat test from "Testing it" in
+README.md.
+
+**VX-6R: `up` refuses with an error about `/dev/hidraw`.** The Digirig's PTT
+device could not be used, and the message says which of three things is wrong:
+
+- **"has no hidraw node"** — the Digirig is unplugged, or `ADEVICE` names a card
+  other than the Digirig's. Compare `arecord -l` with `ADEVICE` in `config`.
+- **"not readable and writable by a non-root group"** — the udev rule has not
+  applied. `ls /etc/udev/rules.d/99-igate-cm108.rules` should exist on the Pi.
+  Unplug and replug the Digirig, then `sudo systemctl restart aprs-igate`.
+- **"this user is not in it"** — the service account is not in the `audio` group.
+  First-boot setup adds it; if first boot has not finished, wait for it. Otherwise
+  `sudo usermod -aG audio igate` and reboot.
+
+**VX-6R: running, but nothing decodes and nothing is heard.** Nothing on the Pi
+can tell what frequency the VX-6R is on. Check its display reads 144.390, that it
+is switched on (Set Mode 1 `APO` off), that receive battery saver is off (Set
+Mode 53 `RXSAVE`), and that the VOL knob is not at zero — it is the receive level
+into the Digirig.
 
 **`monitor` shows nothing, but the gateway is decoding.** Check `logs` — if raw
 output is flowing, the annotator is the problem, not the gateway. It uses

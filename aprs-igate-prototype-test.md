@@ -341,7 +341,8 @@ deployment rather than a hand-edited `direwolf.conf`.
 | File | Purpose |
 |------|---------|
 | `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, transmit path, radio. Identical on every machine. |
-| `radios/<name>.conf` | Radio profiles: how to drive one radio. Hardware keys only. |
+| `radios/<name>.conf` | Radio profiles: how to drive one radio. Hardware keys only. `ftx1` (Yaesu FTX-1) and `vx6r` (Yaesu VX-6R on a Digirig Lite). |
+| `udev/99-igate-cm108.rules` | Group access to a CM108 interface's hidraw node, for PTT by GPIO. Installed on a host by hand, or by the Pi image. |
 | `igate.local.conf` | One machine: deployment mode, radio, device overrides. Gitignored; template in `igate.local.conf.example`. |
 | `igate.secrets` | APRS-IS passcode. Gitignored. |
 | `deploy_igate.sh` | Single entry point: `config`, `build`, `up`, `down`, `restart`, `status`, `logs`, `monitor`, `audio`, `is-running`, `uninstall`. |
@@ -352,6 +353,10 @@ deployment rather than a hand-edited `direwolf.conf`.
 (§13.8) on every start and never edited directly.
 
 ### 13.1 Radio requirements
+
+The requirements below are the FTX-1's, where CAT lets `up` assert them. A radio
+without CAT permits no such assertion; the VX-6R's equivalents are set by hand and
+listed at the end of this subsection.
 
 Three radio-side settings are mandatory. Each fails silently — the station
 appears to transmit normally while emitting nothing decodable — so
@@ -382,6 +387,16 @@ re-applies them on every start.
 `up` also refuses to start if the ALSA card named by `ADEVICE` is absent, since
 PTT would otherwise still key the radio and transmit an unmodulated carrier.
 
+**The VX-6R** has no CAT port, so its frequency and power are front-panel state
+that no software can confirm; `up` prints a reminder on every start in place of
+the CAT readback. Plain FM is its only 2 m mode, so the D-FM failure above has no
+counterpart. Its operating manual names the setting that matters for packet: the
+receive battery saver (Set Mode 53 `RXSAVE`) must be off, because its sleep cycle
+truncates the start of incoming packets. Auto power-off (Set Mode 1 `APO`) must
+also be off and the time-out timer (Set Mode 67 `TOT`) on. At the profile's audio
+levels, Digirig's documented 50% starting points, the radio has carried a full SMS
+round trip (§15.1).
+
 ### 13.2 CAT and PTT
 
 The FTX-1 exposes CAT control and PTT on two separate serial ports:
@@ -408,6 +423,47 @@ connections, then `exec`s Direwolf so Direwolf becomes PID 1 and receives
 
 Radios with a single CAT/PTT port need only `PTT_DEVICE` set equal to
 `CAT_DEVICE`; the same path applies.
+
+**PTT by CM108 GPIO.** The Digirig Lite is a C-Media CM108 USB sound card without a
+serial port. It keys the radio from GPIO3 of the CM108, which Linux exposes as a
+`/dev/hidrawN` node on the same USB device as the card's audio. Direwolf 1.8.1
+drives it with `PTT CM108 <gpio> <device>`, and the packaged binary rejects a GPIO
+number outside 1–8. The number is written without a sign on purpose. In Direwolf's
+source a leading `-` selects the same pin with inverted polarity. The startup
+message (`Using /dev/hidraw0 GPIO 3 for channel 0 PTT control`) reads identically
+for both, so a stray `-` would key the radio whenever it should be idle, and
+nothing in the log would say so. Direwolf 1.7, the version Raspberry Pi OS
+installs, parses these tokens the same way. The Digirig VX-6R cable keys the radio through its mic line, which
+the VX-6R treats as PTT when pulled low through a resistor.
+
+Three decisions shape the implementation.
+
+*The node is located from the audio card, not by vendor.* `deploy_igate.sh`
+resolves `ADEVICE`'s card number to its sysfs device and requires that to be a USB
+interface. It then accepts only hidraw nodes under that USB device's own
+interfaces, rejecting a device on a hub port below it and any PCI card. Choosing
+the first C-Media device instead would fail on exactly the machine that has both
+radios attached, because the FTX-1's internal codec is also a C-Media part.
+
+*The path is resolved on the host and written into `direwolf.conf`.* Direwolf can
+search for the node itself, but its search reads the udev database, which the
+container does not have.
+
+*Access is checked before anything starts.* hidraw nodes default to `root:root
+0600`. `udev/99-igate-cm108.rules`, the same rule Direwolf's Fedora and Debian
+packages ship as `99-direwolf-cmedia.rules`, gives the `audio` group read-write
+access. `up` refuses to start if the node is missing, if it lacks read-write access
+for a non-root group, or, in bare-metal mode, if the invoking user cannot open it.
+Each refusal names the fix. In docker mode the node is passed with `--device`, and
+its group is added with `--group-add` when it is neither `audio` nor `dialout`.
+
+With `CAT = none` no `rigctld` runs in either mode. The container entrypoint
+receives `CAT` and `PTT_METHOD`, starts `rigctld` only for `CAT = hamlib`, and
+passes it a PTT port only for `PTT_METHOD = rig`. Unset values mean the FTX-1
+arrangement, so a container started by an older `deploy_igate.sh` behaves as
+before. Because the entrypoint now decides what starts, an image built from an older
+entrypoint cannot run a radio without CAT. The image therefore carries a label
+hashing `Dockerfile` and `entrypoint.sh`, and `up` rebuilds when it does not match.
 
 ### 13.3 APRS-IS gating configuration
 
@@ -455,7 +511,7 @@ a different UID.
 discarded on removal. The rendered `direwolf.conf` is the sole bind mount, and
 is mounted read-only.
 
-**Devices** — only this radio's nodes, each `rw` (no `mknod`):
+**Devices** — only this radio's nodes, each `rw` (no `mknod`). For the FTX-1:
 
 ```
 /dev/ttyUSB0        CAT control
@@ -474,6 +530,10 @@ card's nodes, falling back to the full directory with a warning only if
 
 Device access works without root because the container is launched with
 `--group-add` for the host's `dialout` and `audio` GIDs.
+
+A radio keyed by CM108 GPIO (§13.2) has no serial nodes. Its list is the ALSA
+nodes plus the interface's single `/dev/hidrawN`, and that node's group is added
+as well if it is neither of those.
 
 **Resources** — `--pids-limit=64`, `--memory=512m`.
 
@@ -917,8 +977,12 @@ belongs only in a test.
   transmit until told to stop, so a host that dies mid-transmission leaves it
   keyed with only the radio's time-out timer to end it. Hardware PTT on a serial
   control line (`RTS`/`DTR`) is inherently fail-safe: losing power drops the
-  line and the radio unkeys itself. That is a point in favour of an interface
-  that keys this way, alongside supporting a second radio.
+  line and the radio unkeys itself. RTS/DTR keying is recognised but not
+  implemented. CM108 GPIO keying, implemented for the Digirig Lite, should release
+  in the same way on loss of power, since the interface is powered from the USB
+  port, though this has not been tested. Neither releases PTT if the host hangs
+  while USB power stays up, so the time-out timer remains the backstop for every
+  PTT method.
 - **Graywolf is an unevaluated alternative to Direwolf.** Graywolf (Chris Snell,
   NW5W; GPL-2.0) is a from-scratch APRS stack rather than a Direwolf front-end: a
   Rust DSP modem, a Go service for AX.25, APRS and iGate work, and a built-in web
@@ -941,17 +1005,22 @@ belongs only in a test.
   rather than with benchmarks. Note also that better demodulation would not
   address the current low-audio symptom, which is mixer gain (§13.5) and free to
   correct.
-- **Only one radio is implemented, though the structure for more exists.** Radio
-  profiles and capability keys (§13.8) make a second radio a second profile. What
-  does not exist yet are start paths for a radio without CAT control and for
-  hardware PTT: `CAT = none` and `PTT_METHOD = cm108`, `rts` or `dtr` are
-  recognised and refused, because every start path still launches `rigctld` and
-  the container entrypoint requires CAT settings. A Yaesu VX-6R on a Digirig Lite
-  is the planned second profile. It has no CAT control, so frequency and mode can
-  neither be set nor verified in software, and it keys by CM108 GPIO over HID,
-  which needs `/dev/hidraw` access on the host and in the container and a udev
-  rule on whichever machine owns the device. That PTT method is also inherently
-  fail-safe, unlike PTT by CAT command.
+- **The VX-6R has not run bare-metal on a Pi.** It has carried traffic in docker
+  mode on the laptop (§15.1). That run settled the four questions only the
+  hardware could answer: the Digirig keys the VX-6R through Digirig's cable, the
+  profile's mixer control names exist on the Digirig Lite, transmit at 50% decodes,
+  and SELinux on Fedora lets the container open the passed hidraw node. A Pi
+  differs in two respects. It runs Direwolf 1.7, whose CM108 parsing matches 1.8.1
+  in source but has not been exercised. It also depends on the image's udev rule
+  and first-boot group membership rather than a hand-installed rule. The 50% levels
+  are a working start, not a fine calibration.
+- **A radio without CAT cannot be verified from software.** For the VX-6R,
+  frequency and power are front-panel state. A retuned or switched-off radio leaves
+  the gateway running and hearing nothing, and `up` can only print a reminder. A
+  watchdog on the time since the last decode would be the software-side mitigation.
+- **`rts` and `dtr` PTT are unimplemented.** They are recognised values that
+  `config` refuses. The start path is small, since Direwolf keys a serial control
+  line directly, but no radio here uses it to test against.
 ### 15.1 Verified behaviour
 
 | Function | Evidence |
@@ -970,6 +1039,9 @@ belongs only in a test.
 | Refactored configuration on the air | One `igate.conf` and one `radios/ftx1.conf` carried a full SMS round trip, RF to APRS-IS and APRS-IS to RF with the handheld's acknowledgements heard, on the FTX-1 in docker mode on the laptop and in bare-metal mode on a freshly built Pi 3A+. On the Pi the gateway started itself at boot on the profile's device names unchanged (`plughw:1,0`, `/dev/ttyUSB0`, `/dev/ttyACM0`). `config` there credited `DEPLOY_MODE` and `WEB_MONITOR` to `igate.local.conf`, `RADIO` to `igate.conf` and the passcode to `igate.secrets`, with those two overrides and no others |
 | Configuration layers | A local file's `DEPLOY_MODE`, `RADIO` and device paths override the station config and radio profile, with each override chain reported by `config`; a local file or profile that sets the whitelist or beacon is refused, while `down` still honours its `DEPLOY_MODE`; stray keys in `igate.secrets` are ignored and reported; and `down` stops a running bare-metal gateway when the mode resolves to docker, including with no docker binary installed |
 | Web monitor lifecycle | In docker mode on the laptop, `up` against a running gateway started only the monitor, and the page, status endpoint and event stream answered on the LAN address. In isolation: a second `up` is a no-op; `down` leaves no server and no `monitor` pipeline, and so does Ctrl+C; a busy port is reported with the cause, leaves no pidfile, and does not fail `up`; a pidfile naming an unrelated live process is neither reported as the monitor nor signalled; `WEB_MONITOR = no` starts nothing; `WEB_BIND = 127.0.0.1` listens on loopback only; invalid `WEB_MONITOR` and `WEB_PORT` values are refused |
+| Radio without CAT, CM108 PTT (without the radio) | With every external command stubbed, the VX-6R profile starts in both modes with no `rigctld`. The container receives only the ALSA nodes and one hidraw node, with `CAT=none`, and the rendered configuration carries `PTT CM108 3 <node>`. That configuration parses in the packaged Direwolf 1.8.1, which reports using the node on GPIO 3. In the rebuilt image the entrypoint starts no `rigctld` for `CAT = none`, `rigctld` without PTT arguments for CAT with CM108, and the unchanged FTX-1 command line for `rig` or for unset variables. It refuses a missing PTT setting or an invalid `CAT`. Against a fake sysfs tree, the node lookup returns only the audio card's own USB device, never a device on a hub port below it, a PCI card, or another C-Media device. `up` refuses a missing node, a root-only node, a bare-metal user outside the node's group, a missing explicit device, a GPIO outside 1–8, a non-`/dev/hidraw` path and a named `ADEVICE`, and warns on an explicit node that is not the card's own. `PI_RADIO` is checked against `radios/` and lands in the Pi's generated `igate.local.conf`, where `config` credits `RADIO` to it, with the udev rule installed beside it |
+| VX-6R on the air (laptop, docker) | A Yaesu VX-6R on a Digirig Lite, selected by `RADIO = vx6r` in the laptop's `igate.local.conf`, carried a full SMS round trip in docker mode. Direwolf used `/dev/hidraw7` on GPIO 3, found automatically on the same USB device as ALSA card 1; the udev rule gave the node group `audio`, and the container opened it without a permission error. APRS-IS to RF: the gated message was transmitted, and a Yaesu FT5D displayed and acknowledged it. The acknowledgement was heard both directly and via W3YA-1, and gated up. RF to APRS-IS: the FT5D's message was decoded and gated, and its acknowledgement was transmitted back over RF. Received levels were 57–86 at the profile's 50% capture gain (18 of 35), with no clipping; transmit at 50% (18 of 37) decoded. All three mixer control names in the profile exist on the Digirig Lite |
+| FTX-1 unchanged by CM108 support | Against the previous commit, with every external command stubbed, each FTX-1 start path — docker and bare-metal, with a host device override, and the forced-path test config — renders a byte-identical `direwolf.conf` and prints identical output apart from one image-rebuild notice. The calls issued differ only by the image-label check and rebuild, and by `CAT=hamlib` and `PTT_METHOD=rig` added to `docker run` |
 
 ---
 
@@ -1130,11 +1202,17 @@ reasoning drives the 32-bit `armhf` image default.
 
 The 3A+ has one USB-A port, so a radio plus anything else needs a hub.
 
-`ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` come from the radio profile, written on
-the build host, and will not necessarily match the Pi, which enumerates its own
-hardware. The generated `igate.local.conf` records this and carries commented
-overrides, so a correction lands in the Pi's own file rather than in the shared
-profile or `igate.conf`.
+Device names come from the radio profile and will not necessarily match the Pi,
+which enumerates its own hardware. The generated `igate.local.conf` records this
+and carries commented overrides, so a correction lands in the Pi's own file rather
+than in the shared profile or `igate.conf`.
+
+`PI_RADIO` in `pi.conf` selects the Pi's radio at build time by writing `RADIO`
+into the same file; `check` rejects a name with no profile, since a missing profile
+would otherwise surface only as a gateway that does not start on a machine with no
+screen. The udev rule for CM108 PTT is installed into `/etc/udev/rules.d`
+whichever radio is selected. It is therefore in place before the interface is first
+plugged in, and a later change of radio needs no root access.
 
 ### 16.7 Secrets on the card
 
@@ -1181,9 +1259,9 @@ marker is `/var/lib/igate-firstboot-done`.
 The residual risks are not the card. Nothing in `run/` survives a reboot, so the
 packet log starts empty and the journal cannot show a previous boot — acceptable
 for an appliance, but it leaves little for a post-mortem after an unexpected
-outage. And PTT rides the USB serial link, so power lost mid-transmission means
-the unkey command is never sent and the radio can remain keyed; the radio's
-time-out timer is the only thing that ends that.
+outage. And with the FTX-1, PTT is a CAT command over USB, so power lost
+mid-transmission means the unkey command is never sent and the radio can remain
+keyed; the radio's time-out timer is the only thing that ends that.
 
 ### 16.9 Writing the card
 

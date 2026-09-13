@@ -24,6 +24,9 @@ RUN mkdir -p /etc/direwolf && chmod 755 /etc/direwolf
 USER igate
 WORKDIR /home/igate
 
-# entrypoint.sh starts rigctld (bridging the FTX-1's separate CAT/PTT serial
-# ports) on loopback, then execs direwolf so it becomes PID 1.
+# entrypoint.sh starts rigctld on loopback for a radio with CAT control (for the
+# FTX-1 it also bridges the separate CAT/PTT serial ports), none for a radio
+# without, then execs direwolf so it becomes PID 1. deploy_igate.sh labels the
+# image with a hash of this file and entrypoint.sh, and rebuilds when either
+# changes rather than running a stale entrypoint.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

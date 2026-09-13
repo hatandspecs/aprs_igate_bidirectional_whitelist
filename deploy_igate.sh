@@ -161,7 +161,8 @@ declare -A CFG_OVERRIDDEN=()
 # can only ever come from the main config.
 declare -A PROFILE_KEY_OK=() LOCAL_KEY_OK=()
 for _k in RADIO_DESCRIPTION CAT PTT_METHOD RIG_MODEL CAT_DEVICE CAT_BAUD \
-          PTT_DEVICE PTT_TYPE ACHANNELS ADEVICE MIXER_TX_CONTROL \
+          PTT_DEVICE PTT_TYPE CM108_DEVICE CM108_GPIO \
+          ACHANNELS ADEVICE MIXER_TX_CONTROL \
           MIXER_RX_CONTROL MIXER_AGC_CONTROL TX_AUDIO_LEVEL RX_AUDIO_LEVEL \
           DISABLE_AGC RADIO_SET_ON_UP RADIO_FREQ RADIO_MODE RADIO_PASSBAND; do
   PROFILE_KEY_OK[$_k]=1
@@ -298,17 +299,31 @@ validate_capabilities() {
     exit 1
   fi
 
-  # Valid, but the start paths do not exist yet: both still assume rigctld. Refused
-  # outright rather than half-working, because the half that would work is the
-  # transmitter.
-  if [[ "${CFG[CAT]}" == none ]]; then
-    echo "Config: CAT = none is not supported yet; every start path still assumes rigctld." >&2
-    exit 1
-  fi
-  if [[ "${CFG[PTT_METHOD]}" != rig ]]; then
-    echo "Config: PTT_METHOD = ${CFG[PTT_METHOD]} is not supported yet; only rig is implemented." >&2
-    exit 1
-  fi
+  case "${CFG[PTT_METHOD]}" in
+    # Recognised, but no start path exists: refused outright rather than
+    # half-working, because the half that would work is the transmitter.
+    rts|dtr)
+      echo "Config: PTT_METHOD = ${CFG[PTT_METHOD]} is not supported yet; rig and cm108 are implemented." >&2
+      exit 1
+      ;;
+    cm108)
+      local gpio="${CFG[CM108_GPIO]:-3}" dev="${CFG[CM108_DEVICE]:-}"
+      if [[ ! "$gpio" =~ ^[1-8]$ ]]; then
+        echo "Config: CM108_GPIO = '${gpio}' is not valid. Use 1 to 8; the Digirig Lite keys on 3." >&2
+        exit 1
+      fi
+      # Direwolf accepts only a /dev path here.
+      if [[ -n "$dev" && ! "$dev" =~ ^/dev/hidraw[0-9]+$ ]]; then
+        echo "Config: CM108_DEVICE = '${dev}' must be /dev/hidrawN, or blank to find it from ADEVICE." >&2
+        exit 1
+      fi
+      if [[ -z "$dev" && -z "$(audio_card_number)" ]]; then
+        echo "Config: PTT_METHOD = cm108 finds its device from ADEVICE's card number, and ADEVICE = '${CFG[ADEVICE]}' has none." >&2
+        echo "  Use a numbered ADEVICE (plughw:N,0), or set CM108_DEVICE." >&2
+        exit 1
+      fi
+      ;;
+  esac
 }
 
 validate_web() {
@@ -336,6 +351,8 @@ validate_config() {
     require RIG_MODEL
     require CAT_DEVICE
     require CAT_BAUD
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == rig ]]; then
     require PTT_DEVICE
     require PTT_TYPE
   fi
@@ -559,6 +576,30 @@ web_desc() {
   fi
 }
 
+# A hardware key's value, or why it has none. A radio without CAT has no CAT port,
+# and a blank in the listing would read like a setting someone forgot.
+hw_value() {  # key
+  case "$1" in
+    RIG_MODEL|CAT_DEVICE|CAT_BAUD)
+      if [[ "${CFG[CAT]}" != hamlib ]]; then echo "not used (CAT = ${CFG[CAT]})"; return; fi ;;
+    PTT_DEVICE|PTT_TYPE)
+      if [[ "${CFG[PTT_METHOD]}" != rig ]]; then echo "not used (PTT_METHOD = ${CFG[PTT_METHOD]})"; return; fi ;;
+  esac
+  echo "${CFG[$1]:-}"
+}
+
+cm108_desc() {
+  cm108_resolve
+  local card; card="$(audio_card_number)"
+  if [[ -n "${CFG[CM108_DEVICE]:-}" ]]; then
+    echo "${CM108_PATH} (set in ${CFG_SRC[CM108_DEVICE]})"
+  elif [[ -n "$CM108_PATH" ]]; then
+    echo "${CM108_PATH} (found on the USB device of ALSA card ${card})"
+  else
+    echo "none found on the USB device of ALSA card ${card} — up refuses to start without it"
+  fi
+}
+
 local_desc() {
   if [[ -n "$LOCAL_CONFIG_IN_USE" ]]; then
     echo "igate.local.conf (settings for this machine)"
@@ -614,8 +655,14 @@ print_layers() {
 }
 
 print_config() {
-  local filter
+  local filter cm108_lines=""
   filter="$(build_filter)"
+  # Appended to the PTT_TYPE line rather than given lines of their own, so a
+  # radio that does not use CM108 gets the listing it always had, blank lines
+  # included.
+  if [[ "${CFG[PTT_METHOD]}" == cm108 ]]; then
+    cm108_lines=$'\n'"CM108_DEVICE     = $(cm108_desc)"$'\n'"CM108_GPIO       = ${CFG[CM108_GPIO]:-3}"
+  fi
   cat <<EOF
 DEPLOY_MODE      = ${MODE}
 LOCAL_CONFIG     = $(local_desc)
@@ -626,11 +673,11 @@ MYCALL           = ${CFG[MYCALL]}
 MODEM            = ${CFG[MODEM]}
 ACHANNELS        = ${CFG[ACHANNELS]}
 ADEVICE          = ${CFG[ADEVICE]}
-RIG_MODEL        = ${CFG[RIG_MODEL]}
-CAT_DEVICE       = ${CFG[CAT_DEVICE]}
-CAT_BAUD         = ${CFG[CAT_BAUD]}
-PTT_DEVICE       = ${CFG[PTT_DEVICE]}
-PTT_TYPE         = ${CFG[PTT_TYPE]}
+RIG_MODEL        = $(hw_value RIG_MODEL)
+CAT_DEVICE       = $(hw_value CAT_DEVICE)
+CAT_BAUD         = $(hw_value CAT_BAUD)
+PTT_DEVICE       = $(hw_value PTT_DEVICE)
+PTT_TYPE         = $(hw_value PTT_TYPE)${cm108_lines}
 IGSERVER         = ${CFG[IGSERVER]}
 IGLOGIN_CALL     = ${CFG[IGLOGIN_CALL]}
 IGLOGIN_PASSCODE = $(mask_secret "${CFG[IGLOGIN_PASSCODE]}")
@@ -649,8 +696,8 @@ $(print_layers)
 EOF
 }
 
-# Direwolf's PTT line for PTT_METHOD. Only "rig" is implemented; the others are
-# refused by validate_capabilities until their start paths exist.
+# Direwolf's PTT line for PTT_METHOD. rts and dtr are refused by
+# validate_capabilities until their start paths exist.
 build_ptt_directive() {
   case "${CFG[PTT_METHOD]:-rig}" in
     rig)
@@ -658,6 +705,16 @@ build_ptt_directive() {
 # rigctld bridges the radio's separate CAT and PTT serial ports; Direwolf
 # just talks to it over loopback. See README.md.
 PTT RIG 2 localhost:4532
+PTT
+      ;;
+    cm108)
+      cm108_resolve
+      cat <<PTT
+# PTT on a GPIO pin of the USB sound card's CM108 chip, through its hidraw node.
+# The node is found on the host, on the same USB device as ADEVICE, and written
+# out explicitly: Direwolf's own search needs the udev database, which the
+# container does not have, and could pick a different C-Media device.
+PTT CM108 ${CFG[CM108_GPIO]:-3} ${CM108_PATH}
 PTT
       ;;
   esac
@@ -776,8 +833,8 @@ render_status_html() {
 <tr><td>APRS-IS server</td><td>${CFG[IGSERVER]:-}</td></tr>
 <tr><td>Login call</td><td>${CFG[IGLOGIN_CALL]:-}</td></tr>
 <tr><td>Audio device</td><td><code>${CFG[ADEVICE]:-}</code></td></tr>
-<tr><td>CAT device</td><td><code>${CFG[CAT_DEVICE]:-}</code></td></tr>
-<tr><td>PTT device</td><td><code>${CFG[PTT_DEVICE]:-}</code></td></tr>
+<tr><td>CAT device</td><td><code>$(hw_value CAT_DEVICE)</code></td></tr>
+<tr><td>PTT device</td><td><code>$(if [[ "${CFG[PTT_METHOD]}" == cm108 ]]; then cm108_desc; else hw_value PTT_DEVICE; fi)</code></td></tr>
 <tr><td>TX via</td><td>$(via_desc)</td></tr>
 <tr><td>RX gating</td><td>$(rx_via_desc)</td></tr>
 <tr><td>TX rate limit</td><td>${CFG[IGTXLIMIT]:-}</td></tr>
@@ -804,6 +861,20 @@ require_docker() {
 
 image_exists() {
   docker image inspect "$IMAGE_NAME" >/dev/null 2>&1
+}
+
+# What this checkout's image must contain. An image built from an older
+# Dockerfile or entrypoint.sh is rebuilt rather than reused: the entrypoint
+# decides whether rigctld starts, and one that predates CAT = none would refuse
+# to run a radio without CAT, or start rigctld against a port that is not there.
+image_context_hash() {
+  cat "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}/entrypoint.sh" | sha256sum | cut -c1-16
+}
+
+image_current() {
+  local label
+  label="$(docker image inspect -f '{{index .Config.Labels "igate.context"}}' "$IMAGE_NAME" 2>/dev/null || true)"
+  [[ -n "$label" && "$label" == "$(image_context_hash)" ]]
 }
 
 is_running() {
@@ -843,6 +914,108 @@ require_audio_device() {
     echo "  set ADEVICE in igate.local.conf (see igate.local.conf.example)." >&2
     exit 1
   fi
+}
+
+# --- CM108 PTT: a GPIO pin on the USB sound card (Digirig Lite and similar) ---
+# Tests point this at a fake sysfs tree.
+SYSFS_ROOT="/sys"
+CM108_PATH=""
+CM108_GID=""
+
+# The hidraw node on the same USB device as ALSA card N, if any.
+#
+# Derived from the audio card rather than taken as the first C-Media device
+# present, because PTT must key the interface whose audio Direwolf is using. A
+# machine with two USB sound cards — and the FTX-1's built-in codec is itself a
+# C-Media chip — would otherwise key whichever enumerated first.
+cm108_hidraw_for_card() {  # card-number
+  local card="$1" snd usb h hd
+  [[ -n "$card" ]] || return 0
+  snd="$(readlink -f "${SYSFS_ROOT}/class/sound/card${card}/device" 2>/dev/null || true)"
+  # A USB audio card's device is an interface such as .../1-2/1-2:1.0. Anything
+  # else (a PCI card, say) has no GPIO device to find, and its parent directory
+  # would match unrelated hidraw nodes.
+  [[ "${snd##*/}" =~ ^[0-9]+-[0-9.]+:[0-9]+\.[0-9]+$ ]] || return 0
+  usb="${snd%/*}"
+  for h in "${SYSFS_ROOT}"/class/hidraw/hidraw*; do
+    [[ -e "$h" ]] || continue
+    hd="$(readlink -f "$h/device" 2>/dev/null || true)"
+    # One of this USB device's own interfaces: ".../1-2/1-2:1.3/...". A device on
+    # a hub port below it (".../1-2/1-2.1/...") is a different device.
+    if [[ "$hd" == "${usb}/${usb##*/}:"* ]]; then
+      echo "/dev/${h##*/}"
+    fi
+  done
+  return 0
+}
+
+# Sets CM108_PATH: CM108_DEVICE if set, otherwise found from ADEVICE's card.
+cm108_resolve() {
+  CM108_PATH="${CFG[CM108_DEVICE]:-}"
+  if [[ -z "$CM108_PATH" ]]; then
+    CM108_PATH="$(cm108_hidraw_for_card "$(audio_card_number)" | head -n 1)"
+  fi
+}
+
+# Device-node checks, as functions so tests can stand in for nodes that do not
+# exist on the test machine.
+_dev_exists() { [[ -e "$1" ]]; }
+_dev_mode_gid() { stat -Lc '%a %g' "$1" 2>/dev/null; }
+_dev_user_rw() { [[ -r "$1" && -w "$1" ]]; }
+
+cm108_udev_help() {
+  echo "  The udev rule in this project gives the audio group that access:" >&2
+  echo "    sudo cp ${SCRIPT_DIR}/udev/99-igate-cm108.rules /etc/udev/rules.d/" >&2
+  echo "    sudo udevadm control --reload-rules" >&2
+  echo "  then unplug and replug the interface, and check with: ls -l /dev/hidraw*" >&2
+  echo "  (Installing the direwolf package installs the same rule as 99-direwolf-cmedia.rules.)" >&2
+}
+
+# Refuse to start without a usable PTT device, for the same reason as a missing
+# audio card: the gateway would come up looking healthy and every transmission
+# would fail. Sets CM108_PATH and CM108_GID.
+require_cm108_device() {
+  local card found mg mode gid group
+  card="$(audio_card_number)"
+  cm108_resolve
+  if [[ -z "$CM108_PATH" ]]; then
+    echo "ERROR: PTT_METHOD = cm108, but the USB device of ALSA card ${card} (ADEVICE='${CFG[ADEVICE]}') has no hidraw node." >&2
+    echo "  Check the interface is plugged in and that ADEVICE is its card ('arecord -l')." >&2
+    echo "  Refusing to start: with no PTT device nothing can be transmitted." >&2
+    exit 1
+  fi
+  if ! _dev_exists "$CM108_PATH"; then
+    echo "ERROR: CM108_DEVICE = '${CM108_PATH}' does not exist. Refusing to start." >&2
+    exit 1
+  fi
+
+  if [[ -n "${CFG[CM108_DEVICE]:-}" ]]; then
+    found="$(cm108_hidraw_for_card "$card" | head -n 1)"
+    if [[ -n "$found" && "$found" != "$CM108_PATH" ]]; then
+      echo "Warning: CM108_DEVICE is ${CM108_PATH}, but ALSA card ${card}'s own GPIO device is ${found}." >&2
+      echo "  PTT and audio are on different interfaces; leave CM108_DEVICE blank unless that is intended." >&2
+    fi
+  fi
+
+  mg="$(_dev_mode_gid "$CM108_PATH")"
+  mode="${mg% *}"; gid="${mg#* }"
+  # By default hidraw nodes are root:root 0600. Group read-write for a group
+  # other than root is what the udev rule provides, and what lets the container
+  # reach the node through --group-add.
+  if [[ ! "$mode" =~ ^[0-7]+$ ]] || (( (8#$mode & 8#060) != 8#060 )) || [[ "$gid" == 0 ]]; then
+    echo "ERROR: ${CM108_PATH} is not readable and writable by a non-root group (mode ${mode:-?}, gid ${gid:-?})," >&2
+    echo "  so PTT could not key the radio. Refusing to start." >&2
+    cm108_udev_help
+    exit 1
+  fi
+  # Bare-metal runs Direwolf as this user, so this user needs the access itself.
+  if [[ "$MODE" == bare-metal ]] && ! _dev_user_rw "$CM108_PATH"; then
+    group="$(getent group "$gid" | cut -d: -f1)"
+    echo "ERROR: ${CM108_PATH} belongs to group '${group:-$gid}', and this user is not in it. Refusing to start." >&2
+    echo "  sudo usermod -aG ${group:-$gid} \$USER   then log out and back in." >&2
+    exit 1
+  fi
+  CM108_GID="$gid"
 }
 
 # Apply the calibrated ALSA mixer levels. These reset to device defaults every
@@ -896,6 +1069,12 @@ apply_audio_levels() {
 # looks correct — PTT works, the waterfall shows a signal — but nothing on
 # earth can decode it. PKTFM is hamlib's name for the radio's FM-D mode.
 apply_radio_settings() {
+  # Nothing to set it with, and nothing to read it back from. The operator is the
+  # only check that the radio is on the right frequency, so say so on every start.
+  if [[ "${CFG[CAT]:-hamlib}" != hamlib ]]; then
+    echo "Radio: no CAT control (CAT = ${CFG[CAT]}). Frequency is whatever the radio is set to — it must be 144.390 MHz FM."
+    return 0
+  fi
   [[ "${CFG[RADIO_SET_ON_UP]:-yes}" == "yes" ]] || return 0
   local freq="${CFG[RADIO_FREQ]:-}" mode="${CFG[RADIO_MODE]:-PKTFM}"
   local pb="${CFG[RADIO_PASSBAND]:-16000}"
@@ -1140,7 +1319,7 @@ cmd_config() {
 
 _docker_build() {
   require_docker
-  docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+  docker build --label "igate.context=$(image_context_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
 }
 
 cmd_build() {
@@ -1155,15 +1334,25 @@ _docker_up() {
   fi
   container_exists && docker rm "$CONTAINER_NAME" >/dev/null
 
-  local cat_device="${CFG[CAT_DEVICE]}" ptt_device="${CFG[PTT_DEVICE]}"
-  [[ -e "$cat_device" ]] || echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
-  [[ "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]] && echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
+  local cat_device="${CFG[CAT_DEVICE]:-}" ptt_device="${CFG[PTT_DEVICE]:-}"
+  if [[ "${CFG[CAT]}" == hamlib && ! -e "$cat_device" ]]; then
+    echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == rig && "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]]; then
+    echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
+  fi
   [[ -e /dev/snd ]] || echo "Warning: /dev/snd does not exist on this host (no ALSA audio devices)." >&2
 
   require_audio_device
+  [[ "${CFG[PTT_METHOD]}" == cm108 ]] && require_cm108_device
   apply_audio_levels
 
-  image_exists || _docker_build
+  if ! image_current; then
+    if image_exists; then
+      echo "Image ${IMAGE_NAME} was built from a different Dockerfile or entrypoint.sh; rebuilding."
+    fi
+    _docker_build
+  fi
 
   render_conf
 
@@ -1172,10 +1361,34 @@ _docker_up() {
   dialout_gid="$(gid_of dialout)"; audio_gid="$(gid_of audio)"
   [[ -n "$dialout_gid" ]] && group_flags+=(--group-add "$dialout_gid")
   [[ -n "$audio_gid" ]] && group_flags+=(--group-add "$audio_gid")
+  # The hidraw node's own group, when the udev rule gave it one other than audio.
+  if [[ "${CFG[PTT_METHOD]}" == cm108 && -n "$CM108_GID" \
+        && "$CM108_GID" != "$audio_gid" && "$CM108_GID" != "$dialout_gid" ]]; then
+    group_flags+=(--group-add "$CM108_GID")
+  fi
 
-  # Serial: only the specific port(s) this radio uses, read/write, no mknod.
-  local -a device_flags=(--device "${cat_device}:${cat_device}:rw")
-  [[ "$ptt_device" != "$cat_device" ]] && device_flags+=(--device "${ptt_device}:${ptt_device}:rw")
+  # Only the device nodes this radio uses, read/write, no mknod: its serial
+  # port(s) if it has CAT or serial PTT, its GPIO node if it keys by CM108.
+  local -a device_flags=()
+  if [[ "${CFG[CAT]}" == hamlib ]]; then
+    device_flags+=(--device "${cat_device}:${cat_device}:rw")
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == rig && "$ptt_device" != "$cat_device" ]]; then
+    device_flags+=(--device "${ptt_device}:${ptt_device}:rw")
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == cm108 ]]; then
+    device_flags+=(--device "${CM108_PATH}:${CM108_PATH}:rw")
+  fi
+
+  # The entrypoint starts rigctld only for CAT = hamlib, and hands it the PTT
+  # port only for PTT_METHOD = rig.
+  local -a env_flags=(-e CAT="${CFG[CAT]}" -e PTT_METHOD="${CFG[PTT_METHOD]}")
+  if [[ "${CFG[CAT]}" == hamlib ]]; then
+    env_flags+=(-e RIG_MODEL="${CFG[RIG_MODEL]}" -e CAT_DEVICE="${cat_device}" -e CAT_BAUD="${CFG[CAT_BAUD]}")
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == rig ]]; then
+    env_flags+=(-e PTT_DEVICE="${ptt_device}" -e PTT_TYPE="${CFG[PTT_TYPE]}")
+  fi
 
   # Audio: pass ONLY this radio's ALSA card, not all of /dev/snd. Passing the
   # whole directory would also hand over the machine's built-in microphone
@@ -1211,11 +1424,7 @@ _docker_up() {
     --tmpfs /tmp \
     "${device_flags[@]}" \
     "${group_flags[@]}" \
-    -e RIG_MODEL="${CFG[RIG_MODEL]}" \
-    -e CAT_DEVICE="${cat_device}" \
-    -e CAT_BAUD="${CFG[CAT_BAUD]}" \
-    -e PTT_DEVICE="${ptt_device}" \
-    -e PTT_TYPE="${CFG[PTT_TYPE]}" \
+    "${env_flags[@]}" \
     -v "${RENDERED_CONF}:/etc/direwolf/direwolf.conf:ro" \
     "$IMAGE_NAME" >/dev/null
 
@@ -1236,38 +1445,52 @@ _bare_up() {
     return 0
   fi
 
-  local cat_device="${CFG[CAT_DEVICE]}" ptt_device="${CFG[PTT_DEVICE]}"
-  [[ -e "$cat_device" ]] || echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
-  [[ "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]] && echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
+  local cat_device="${CFG[CAT_DEVICE]:-}" ptt_device="${CFG[PTT_DEVICE]:-}"
+  if [[ "${CFG[CAT]}" == hamlib && ! -e "$cat_device" ]]; then
+    echo "Warning: $cat_device does not exist on this host yet (radio unplugged?)." >&2
+  fi
+  if [[ "${CFG[PTT_METHOD]}" == rig && "$ptt_device" != "$cat_device" && ! -e "$ptt_device" ]]; then
+    echo "Warning: $ptt_device does not exist on this host yet (radio unplugged?)." >&2
+  fi
 
   require_audio_device
+  [[ "${CFG[PTT_METHOD]}" == cm108 ]] && require_cm108_device
   apply_audio_levels
 
-  { command -v direwolf >/dev/null && command -v rigctld >/dev/null; } || _bare_install
+  if ! command -v direwolf >/dev/null \
+     || { [[ "${CFG[CAT]}" == hamlib ]] && ! command -v rigctld >/dev/null; }; then
+    _bare_install
+  fi
 
   render_conf
 
-  rigctld \
-    -m "${CFG[RIG_MODEL]}" \
-    -r "$cat_device" \
-    -s "${CFG[CAT_BAUD]}" \
-    -p "$ptt_device" \
-    -P "${CFG[PTT_TYPE]}" \
-    -t 4532 \
-    -T 127.0.0.1 \
-    >> "$BARE_LOG" 2>&1 &
-  echo $! > "$BARE_RIGCTLD_PID"
+  # rigctld exists to reach the radio over CAT, so a radio without CAT has none.
+  if [[ "${CFG[CAT]}" == hamlib ]]; then
+    local -a rig_ptt=()
+    if [[ "${CFG[PTT_METHOD]}" == rig ]]; then
+      rig_ptt=(-p "$ptt_device" -P "${CFG[PTT_TYPE]}")
+    fi
+    rigctld \
+      -m "${CFG[RIG_MODEL]}" \
+      -r "$cat_device" \
+      -s "${CFG[CAT_BAUD]}" \
+      "${rig_ptt[@]}" \
+      -t 4532 \
+      -T 127.0.0.1 \
+      >> "$BARE_LOG" 2>&1 &
+    echo $! > "$BARE_RIGCTLD_PID"
 
-  local i
-  for i in $(seq 1 20); do
-    kill -0 "$(cat "$BARE_RIGCTLD_PID")" 2>/dev/null || {
-      echo "rigctld exited during startup — check ${BARE_LOG} (bad CAT_DEVICE/PTT_DEVICE/RIG_MODEL?)." >&2
-      rm -f "$BARE_RIGCTLD_PID"
-      exit 1
-    }
-    (exec 3<>/dev/tcp/127.0.0.1/4532) 2>/dev/null && break
-    sleep 0.5
-  done
+    local i
+    for i in $(seq 1 20); do
+      kill -0 "$(cat "$BARE_RIGCTLD_PID")" 2>/dev/null || {
+        echo "rigctld exited during startup — check ${BARE_LOG} (bad CAT_DEVICE/PTT_DEVICE/RIG_MODEL?)." >&2
+        rm -f "$BARE_RIGCTLD_PID"
+        exit 1
+      }
+      (exec 3<>/dev/tcp/127.0.0.1/4532) 2>/dev/null && break
+      sleep 0.5
+    done
+  fi
 
   # -d i and stdbuf for the same reasons as the container path: without -d i the
   # RF->APRS-IS direction is invisible in the log, and without stdbuf the log is
@@ -1277,7 +1500,11 @@ _bare_up() {
   sleep 1
 
   if bare_is_running; then
-    echo "iGate up (bare-metal). direwolf pid=$(cat "$BARE_DIREWOLF_PID") rigctld pid=$(cat "$BARE_RIGCTLD_PID")"
+    if [[ "${CFG[CAT]}" == hamlib ]]; then
+      echo "iGate up (bare-metal). direwolf pid=$(cat "$BARE_DIREWOLF_PID") rigctld pid=$(cat "$BARE_RIGCTLD_PID")"
+    else
+      echo "iGate up (bare-metal). direwolf pid=$(cat "$BARE_DIREWOLF_PID"), no rigctld (CAT = ${CFG[CAT]})"
+    fi
     apply_radio_settings
     echo "Log: ${BARE_LOG}. Watch packet flow: ./deploy_igate.sh monitor"
   else
@@ -1360,7 +1587,11 @@ _gather_state() {
   else
     if bare_is_running; then
       STATE_RUNNING="true"
-      STATE_DETAIL="direwolf pid $(cat "$BARE_DIREWOLF_PID"), rigctld pid $(cat "$BARE_RIGCTLD_PID" 2>/dev/null || echo '?')"
+      if [[ "${CFG[CAT]}" == hamlib ]]; then
+        STATE_DETAIL="direwolf pid $(cat "$BARE_DIREWOLF_PID"), rigctld pid $(cat "$BARE_RIGCTLD_PID" 2>/dev/null || echo '?')"
+      else
+        STATE_DETAIL="direwolf pid $(cat "$BARE_DIREWOLF_PID"), no rigctld (CAT = ${CFG[CAT]})"
+      fi
     fi
   fi
 }

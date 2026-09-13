@@ -96,6 +96,19 @@ validate() {
   [[ -f "${SCRIPT_DIR}/igate.secrets" ]] \
     || die "igate.secrets not found — the Pi needs the APRS-IS passcode to run"
 
+  # PI_RADIO names the radio this Pi drives, and is written into the Pi's own
+  # igate.local.conf. Blank leaves igate.conf's RADIO in charge. Checked here
+  # because on the Pi a missing profile stops the gateway starting, on a machine
+  # with no screen.
+  local radio="${CFG[PI_RADIO]:-}" station_radio
+  station_radio="$(sed -n 's/^[[:space:]]*RADIO[[:space:]]*=[[:space:]]*\([^#[:space:]]*\).*/\1/p' \
+                     "${SCRIPT_DIR}/igate.conf" 2>/dev/null | tail -n 1)"
+  if [[ -n "$radio" ]]; then
+    if [[ ! "$radio" =~ ^[a-z0-9][a-z0-9._-]*$ || ! -f "${SCRIPT_DIR}/radios/${radio}.conf" ]]; then
+      die "PI_RADIO = '${radio}' has no radios/${radio}.conf. Available: $(cd "${SCRIPT_DIR}/radios" 2>/dev/null && ls -- *.conf | sed 's/\.conf$//' | tr '\n' ' ')"
+    fi
+  fi
+
   local n=1 count=0
   while [[ -n "${CFG[WIFI_${n}_SSID]:-}" ]]; do
     [[ -n "${CFG[WIFI_${n}_PSK]:-}" ]] || die "WIFI_${n}_SSID is set but WIFI_${n}_PSK is not"
@@ -107,6 +120,11 @@ validate() {
   note "variant      Raspberry Pi OS Lite (${CFG[PI_IMAGE_VARIANT]})"
   note "wifi         ${count} network(s), country ${CFG[PI_WIFI_COUNTRY]}"
   note "autostart    ${CFG[PI_AUTOSTART]:-yes}"
+  if [[ -n "$radio" ]]; then
+    note "radio        ${radio} (PI_RADIO in pi.conf)"
+  else
+    note "radio        ${station_radio:-none} (RADIO in igate.conf)"
+  fi
   if [[ "${CFG[PI_WEB_MONITOR]:-yes}" == "yes" ]]; then
     note "web monitor  enabled, port ${CFG[PI_WEB_PORT]:-8080} (read-only, no auth — LAN only)"
   else
@@ -393,17 +411,22 @@ DEPLOY_MODE = bare-metal
 # port. Check it with: systemctl status igate-web
 WEB_MONITOR = no
 
-# Device paths come from the radio profile and were written on the build host.
-# Check them here with 'arecord -l' and 'ls -l /dev/serial/by-id/'. If this Pi
-# enumerates them differently, override them below rather than editing the
-# shared profile:
-#   ADEVICE = plughw:0,0
+# Device names come from the radio profile. Check them here with 'arecord -l',
+# 'ls -l /dev/ttyUSB* /dev/ttyACM*' and, for a CM108 interface such as the
+# Digirig Lite, 'ls -l /dev/hidraw*'. If this Pi numbers them differently,
+# override them below rather than editing the shared profile:
+#   ADEVICE = plughw:2,0
 #   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
 #   PTT_DEVICE = /dev/ttyACM0
 
-# To run this Pi with a different radio than igate.conf names:
-#   RADIO = ftx1
+# To run this Pi with a different radio than igate.conf names (or set PI_RADIO
+# in pi.conf before building):
+#   RADIO = vx6r
 LOCAL
+  if [[ -n "${CFG[PI_RADIO]:-}" ]]; then
+    printf '\n# From PI_RADIO in pi.conf at build time: this Pi drives this radio,\n# whatever RADIO igate.conf names.\nRADIO = %s\n' \
+      "${CFG[PI_RADIO]}" >> "$tmp"
+  fi
   sudo cp "$tmp" "${dest}/igate.local.conf"
   sudo chmod 644 "${dest}/igate.local.conf"
   rm -f "$tmp"
@@ -412,7 +435,16 @@ LOCAL
   # The tmpfs needs an existing directory to mount over; rsync excluded run/.
   sudo mkdir -p "${dest}/run"
   note "installed to /opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
-  note "igate.local.conf written with DEPLOY_MODE = bare-metal; igate.conf installed unchanged"
+  note "igate.local.conf written with DEPLOY_MODE = bare-metal${CFG[PI_RADIO]:+ and RADIO = ${CFG[PI_RADIO]}}; igate.conf installed unchanged"
+
+  # A CM108 interface (PTT_METHOD = cm108) keys through a hidraw node that only
+  # root may open by default. Installed whatever radio is selected, so moving
+  # the Pi to such a radio later needs nothing but a config change, and before
+  # first boot so it already applies when the interface is first plugged in.
+  # It matches only C-Media devices and does nothing without one.
+  sudo install -D -m 644 "${SCRIPT_DIR}/udev/99-igate-cm108.rules" \
+    "${ROOT_MNT}/etc/udev/rules.d/99-igate-cm108.rules"
+  note "udev rule for CM108 PTT installed (/etc/udev/rules.d/99-igate-cm108.rules)"
 }
 
 # The pi-gate is unplugged rather than shut down, so the design goal is that
@@ -873,8 +905,9 @@ cmd_build() {
   echo
   echo "Step-by-step instructions are in PI-SETUP.md."
   echo
-  echo "Verify ADEVICE, CAT_DEVICE and PTT_DEVICE on the Pi before trusting the"
-  echo "gateway — they were copied from this host and the Pi enumerates its own."
+  echo "Check the radio's device names on the Pi before trusting the gateway"
+  echo "(./deploy_igate.sh config there shows them). They come from the radio"
+  echo "profile, and the Pi numbers its own USB devices."
 }
 
 cmd_flash() {

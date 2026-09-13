@@ -21,8 +21,8 @@
 #   WEB_PORT        its port (default 8080)
 #   WEB_BIND        its listening address (default 0.0.0.0, every interface)
 #   hardware keys   anything a radio profile may set: CAT, PTT_METHOD, RIG_MODEL,
-#                   CAT_DEVICE, CAT_BAUD, PTT_DEVICE, PTT_TYPE, ACHANNELS,
-#                   ADEVICE, MIXER_TX_CONTROL, MIXER_RX_CONTROL,
+#                   CAT_DEVICE, CAT_BAUD, PTT_DEVICE, PTT_TYPE, CM108_DEVICE,
+#                   CM108_GPIO, ACHANNELS, ADEVICE, MIXER_TX_CONTROL, MIXER_RX_CONTROL,
 #                   MIXER_AGC_CONTROL, TX_AUDIO_LEVEL, RX_AUDIO_LEVEL,
 #                   DISABLE_AGC, RADIO_SET_ON_UP, RADIO_FREQ, RADIO_MODE,
 #                   RADIO_PASSBAND
@@ -50,8 +50,14 @@
 #   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
 #   PTT_DEVICE = /dev/ttyACM0
 
-# This machine has a different radio attached than igate.conf names:
-#   RADIO = ftx1
+# This machine has a different radio attached than igate.conf names — for
+# example the VX-6R on a Digirig Lite (radios/vx6r.conf), where igate.conf says
+# ftx1. Available profiles: ls radios/
+#   RADIO = vx6r
+
+# A CM108 interface's GPIO device is found from ADEVICE's card. Set it only to
+# override that, and check first with: ls -l /dev/hidraw*
+#   CM108_DEVICE = /dev/hidraw3
 
 # The web monitor. igate.conf turns it on; `up` starts it on this host and `down`
 # stops it. A laptop that joins other networks can keep it to itself:

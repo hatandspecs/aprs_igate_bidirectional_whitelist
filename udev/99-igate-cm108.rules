@@ -1,0 +1,20 @@
+# USB sound cards built on C-Media chips (the Digirig Lite, and most USB radio
+# interfaces) expose their GPIO pins as a HID device. PTT_METHOD = cm108 keys the
+# radio through that device, and by default only root may open a /dev/hidraw
+# node. This rule gives the audio group, which already owns the card's sound
+# devices, read-write access to it. It is the same rule Direwolf's packages ship
+# as 99-direwolf-cmedia.rules.
+#
+# Install it on the machine the interface plugs into:
+#
+#   sudo cp udev/99-igate-cm108.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#
+# then unplug and replug the interface, and check:
+#
+#   ls -l /dev/hidraw*        # the interface's node shows group audio, crw-rw----
+#
+# The Raspberry Pi image installs it at build time. In docker mode it belongs on
+# the host, not in the container; deploy_igate.sh then adds the node's group to
+# the container.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"

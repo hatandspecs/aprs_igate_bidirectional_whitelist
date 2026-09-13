@@ -10,7 +10,7 @@ One editable config file drives everything, in either of two deployment modes.
 | Mode | Runs as | Intended host |
 |---|---|---|
 | `docker` (default) | A locked-down container: all capabilities dropped, read-only rootfs, non-root, filtered egress, only the radio's own device nodes | A workstation that does other things too, where isolating the gateway is worth the overhead |
-| `bare-metal` | Direwolf and `rigctld` directly on the host, under `systemd` | A single-purpose appliance — nothing to isolate it from, and no RAM to spend on a container runtime |
+| `bare-metal` | Direwolf directly on the host under `systemd`, with `rigctld` for a radio that has CAT | A single-purpose appliance — nothing to isolate it from, and no RAM to spend on a container runtime |
 
 Both have carried live traffic in both directions. The mode is set per machine,
 with `DEPLOY_MODE` in that machine's `igate.local.conf`; with no such file it is
@@ -46,7 +46,8 @@ involved).
 | [PI-SETUP.md](PI-SETUP.md) | Step-by-step pi-gate build, from SD card to on-air, plus day-to-day operation over SSH |
 | [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md) | Design document. §13 what was built, §14 constraints of Direwolf and the radio that the design has to work around, §15 limitations and future work, §16 the headless Pi deployment |
 | `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, which radio. Identical on every machine |
-| `radios/<name>.conf` | Radio profiles: how to drive one radio — audio device, mixer levels, CAT, PTT |
+| `radios/<name>.conf` | Radio profiles: how to drive one radio — audio device, mixer levels, CAT, PTT. `ftx1` and `vx6r` |
+| `udev/99-igate-cm108.rules` | Lets the `audio` group key a CM108 interface such as the Digirig Lite. Installed on the host by hand, or by the Pi image |
 | `igate.local.conf.example` | Template for `igate.local.conf`: settings for one machine only (gitignored) |
 | `igate.test.conf` | A ready-made forced-digipeat-path test that leaves `igate.conf` alone |
 | `pi.conf`, `pi.secrets.example` | Image build settings and the credential template |
@@ -59,11 +60,15 @@ Pick the one that matches your hardware. Each is complete on its own.
 |---|---|---|---|
 | [A](#quickstart-a--laptop--docker--yaesu-ftx-1) | Linux laptop or desktop | `docker` | Yaesu FTX-1 |
 | [B](#quickstart-b--raspberry-pi-3a-pi-gate--bare-metal--yaesu-ftx-1) | Raspberry Pi 3A+ (the pi-gate) | `bare-metal` | Yaesu FTX-1 |
+| [C](#quickstart-c--laptop--docker--yaesu-vx-6r-on-a-digirig-lite) | Linux laptop or desktop | `docker` | Yaesu VX-6R on a Digirig Lite |
+| [D](#quickstart-d--raspberry-pi-3a-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite) | Raspberry Pi 3A+ (the pi-gate) | `bare-metal` | Yaesu VX-6R on a Digirig Lite |
 
-The FTX-1 is the only radio with a profile so far (`radios/ftx1.conf`). Other
-radios get their own quickstart when their profile exists.
+| Radio | Profile | Frequency and mode | PTT | State |
+|---|---|---|---|---|
+| Yaesu FTX-1 | `radios/ftx1.conf` | set and checked by `up` over CAT | CAT command, through `rigctld` | has carried traffic in both modes |
+| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic in docker mode on a laptop; not yet run on a Pi |
 
-**Both start with the station settings,** which are the same on every machine:
+**All four start with the station settings,** which are the same on every machine:
 
 ```bash
 cd aprs_igate_bidirectional_whitelist
@@ -72,17 +77,33 @@ $EDITOR igate.secrets        # IGLOGIN_PASSCODE — your APRS-IS passcode
 $EDITOR igate.conf           # MYCALL, IGLOGIN_CALL, WHITELIST_CALLS, BEACON_*
 ```
 
-`igate.conf` already says `RADIO = ftx1`. Leave `DEPLOY_MODE` out of it: the mode
-belongs to the machine, as the next two sections show.
+`igate.conf` says `RADIO = ftx1`, the station's usual radio. A machine with the
+VX-6R selects it for itself, as Quickstarts C and D show, so `igate.conf` stays the
+same everywhere. Leave `DEPLOY_MODE` out of it too: the mode belongs to the machine.
 
-**Both need the radio prepared** from its front panel. `up` sets 144.390 MHz and
-**D-FM** over CAT on every start. D-FM matters: in plain FM the radio transmits
-from the microphone, not USB, and nothing can decode it. The rest `up` cannot set:
+**Then prepare the radio** from its front panel.
+
+*FTX-1 (A, B).* `up` sets 144.390 MHz and **D-FM** over CAT on every start. D-FM
+matters: in plain FM the radio transmits from the microphone, not USB, and nothing
+can decode it. The rest `up` cannot set:
 
 - **Time-out timer** set to 3 minutes. It is the only thing that unkeys the
   radio if USB drops mid-transmission. See [Safety notes](#safety-notes).
 - **USB MOD GAIN** (under data-mode settings) at a sane level, and power and
   antenna as you want them.
+
+*VX-6R (C, D).* It has no CAT, so everything is by hand and nothing checks it.
+Set Mode item numbers are from Yaesu's manual (press **F/W**, then **0(SET)**,
+turn the DIAL to the item). Details are in
+[Radio setup](#yaesu-vx-6r-on-a-digirig-lite).
+
+- **144.390 MHz, FM.**
+- **53 `RXSAVE` = OFF.** The manual's own packet advice: the battery saver's sleep
+  cycle cuts off the start of incoming packets.
+- **67 `TOT` on** (factory 3 minutes), and **1 `APO` = OFF** (factory default).
+- **Squelch low, volume low.** The VOL knob is the receive level into the Digirig.
+- **DC power** for anything longer than a test (Yaesu E-DC-5B or E-DC-6). An
+  unattended gateway outlasts the battery.
 
 ### Quickstart A — laptop · docker · Yaesu FTX-1
 
@@ -218,6 +239,144 @@ sudo systemctl restart aprs-igate  # only needed if you edited igate.local.conf
 **6. Powering it off:** the image is built to be unplugged. See
 [Built to be unplugged](#built-to-be-unplugged) and PI-SETUP.md's shutdown
 section.
+
+### Quickstart C — laptop · docker · Yaesu VX-6R on a Digirig Lite
+
+The same container as Quickstart A, with no `rigctld` in it: the VX-6R has no CAT,
+and the Digirig keys it from a GPIO pin on its sound chip.
+
+> **On the air.** This setup has carried a full SMS round trip, in both directions,
+> with the profile's levels unchanged. Deviation also depends on the cable and the
+> radio's `MCGAIN`, so confirm transmit on your own setup (step 5).
+
+**You need:** everything Quickstart A needs, plus a Digirig Lite and Digirig's
+VX-6R audio/PTT cable, and `sudo` once for step 2. The VX-6R prepared as above.
+
+**1. Select the VX-6R for this laptop only.**
+
+```bash
+cp igate.local.conf.example igate.local.conf    # skip if you already have one
+$EDITOR igate.local.conf                        # uncomment: RADIO = vx6r
+```
+
+To make the VX-6R the station's radio on every machine instead, change `RADIO` in
+`igate.conf`.
+
+**2. Let the `audio` group key the Digirig (once per machine).** Its PTT is a
+`/dev/hidraw` node, which only root can open by default:
+
+```bash
+sudo cp udev/99-igate-cm108.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+```
+
+Then unplug the Digirig and plug it back in. Check:
+
+```bash
+arecord -l                 # the Digirig is a C-Media USB audio device — note its card number
+ls -l /dev/hidraw*         # one node now shows group audio: crw-rw----
+```
+
+`radios/vx6r.conf` expects `ADEVICE = plughw:1,0`. If the card number differs, set
+`ADEVICE` in `igate.local.conf`. The hidraw node needs no setting: it is found on
+the same USB device as that card.
+
+**3. Validate.**
+
+```bash
+./deploy_igate.sh config
+```
+
+Look for `RADIO = vx6r (… selected in igate.local.conf)`, `CAT = none`, and
+`CM108_DEVICE = /dev/hidrawN (found on the USB device of ALSA card 1)`. If
+`CM108_DEVICE` says none was found, the Digirig is unplugged or `ADEVICE` names
+the wrong card.
+
+**4. Start.** Tune the VX-6R to 144.390 MHz FM first; nothing else will.
+
+```bash
+sudo -v                            # optional: lets `up` restrict the container's egress
+./deploy_igate.sh up
+```
+
+The image rebuilds itself the first time after this update. The last lines look
+like:
+
+```
+iGate up (docker). container=aprs-igate
+Radio: no CAT control (CAT = none). Frequency is whatever the radio is set to — it must be 144.390 MHz FM.
+Web monitor: http://localhost:8080/ on this machine, http://192.168.68.67:8080/ from the LAN
+```
+
+If `up` refuses with an error about `/dev/hidraw`, it prints the fix: usually
+step 2 was skipped, or the Digirig was not replugged after it.
+
+**5. Confirm transmit decodes.** The quickest proof is the SMS round trip in
+[Testing it](#testing-it), step 4: a handheld that displays the gated message
+decoded this station. The digipeat test in step 2 works too. If nothing decodes,
+lower `TX_AUDIO_LEVEL` in `igate.local.conf` (over-deviation is the usual fault),
+then `./deploy_igate.sh restart`. `./deploy_igate.sh audio` shows the mixer controls and
+the received level. See [Audio levels](#audio-levels--important).
+
+**6. Watch, stop, reboot:** exactly as Quickstart A, steps 3 and 4. The web monitor
+is at **`http://localhost:8080/`** on the laptop.
+
+### Quickstart D — Raspberry Pi 3A+ (pi-gate) · bare-metal · Yaesu VX-6R on a Digirig Lite
+
+Quickstart B's pi-gate, driving the VX-6R. The image selects the radio and
+installs the Digirig's udev rule, so nothing radio-related is done by hand on the
+Pi.
+
+> **Not yet run on a Pi.** The VX-6R has carried a round trip in docker mode on a
+> laptop (Quickstart C), but not bare-metal on a Pi, where Direwolf is 1.7 rather
+> than 1.8.1 and the udev rule comes from the image. Confirm transmit (step 5)
+> before leaving it unattended.
+
+**You need:** Quickstart B's hardware, with the VX-6R, a Digirig Lite and
+Digirig's VX-6R cable in place of the FTX-1. The Digirig takes the Pi's only USB
+port. The VX-6R prepared as above, on DC power.
+
+**1. On the laptop, configure the image for the VX-6R.**
+
+```bash
+cp pi.secrets.example pi.secrets
+$EDITOR pi.secrets                 # PI_USER_PASSWORD, WIFI_1_SSID, WIFI_1_PSK
+$EDITOR pi.conf                    # PI_RADIO = vx6r, PI_WIFI_COUNTRY (required)
+./build_pi_image.sh check          # should list: radio  vx6r (PI_RADIO in pi.conf)
+```
+
+`PI_RADIO` writes `RADIO = vx6r` into the Pi's own `igate.local.conf`, so
+`igate.conf` is unchanged. As in B, do not create an `igate.local.conf` on the
+laptop for the Pi.
+
+**2. Build and write the card:** exactly as Quickstart B, step 2.
+
+**3. Boot it.** Card into the Pi. Digirig into the Pi's USB port, cable to the
+VX-6R, VX-6R on 144.390 MHz FM. Power last, and allow **5–10 minutes** for first
+boot.
+
+**4. Log in and check.**
+
+```bash
+ssh-keygen -R aprs-igate.local
+ssh igate@aprs-igate.local
+cd aprs-igate
+./deploy_igate.sh config           # RADIO = vx6r, credited to igate.local.conf
+arecord -l                         # the Digirig's card number
+ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
+./deploy_igate.sh status           # iGate running (bare-metal): direwolf pid N, no rigctld (CAT = none)
+./deploy_igate.sh monitor
+```
+
+If the Digirig is not card 1, set `ADEVICE` in the Pi's `igate.local.conf`, then
+`sudo systemctl restart aprs-igate`.
+
+**5. Confirm transmit decodes** as in Quickstart C, step 5, using
+`sudo systemctl restart aprs-igate` after any change.
+
+**6. Web monitor and power:** exactly as Quickstart B, steps 5 and 6. Remember
+that the VX-6R's frequency is front-panel state: a knocked dial takes the gateway
+off 144.390 with nothing on the Pi to notice.
 
 ### Tearing down
 
@@ -436,6 +595,38 @@ RADIO_PASSBAND = 16000
 Also confirm the radio's **USB MOD GAIN** (under its data-mode settings) is
 sane, since that governs transmit deviation from the USB audio.
 
+### Yaesu VX-6R on a Digirig Lite
+
+The VX-6R has no CAT port. `up` can neither set nor read its frequency, so on
+every start it prints a reminder where the FTX-1 gets its `Radio: … FM-D`
+readback. Plain FM is the VX-6R's only 2 m mode, so the FTX-1's D-FM trap does
+not exist here; being on the wrong frequency does, and nothing will report it.
+
+The Digirig Lite is a C-Media CM108 USB sound card with no serial port. It keys
+the radio from the chip's GPIO3 pin, through Digirig's VX-6R cable. The VX-6R has
+no separate PTT contact: it transmits when its mic line is pulled low through a
+resistor, and the cable does that.
+
+These settings come from Yaesu's VX-6R operating manual. Enter Set mode with
+**F/W** then **0(SET)**, turn the DIAL to the item, press **0(SET)** to change it,
+and **PTT** to save.
+
+| Set Mode item | Setting | Why |
+|---|---|---|
+| 53 `RXSAVE` | **OFF** | The manual's packet advice: the receive battery saver's sleep cycle "may collide with the beginning of an incoming Packet transmission" |
+| 67 `TOT` | on (factory: 3 minutes) | Ends a stuck transmission; see [Safety notes](#safety-notes) |
+| 1 `APO` | OFF (factory default) | Auto power-off would take the gateway off the air with nothing to show for it |
+| 27 `HLF.DEV` | OFF | Normal ±5 kHz deviation. ON halves it |
+| 70 `TXSAVE` | OFF | ON lowers transmit power after a strong received signal |
+| 58 `SQL` | low | Direwolf finds packets in noise itself; a high squelch clips their start. Digirig's forum reports success with squelch fully open |
+| 37 `MCGAIN` | factory `LVL 5` to start | The radio's sensitivity to the Digirig's transmit audio: a second TX level alongside `TX_AUDIO_LEVEL` |
+| VOL knob | low | The receive level into the Digirig. Digirig's forum suggests the first click from off |
+
+**The Digirig's PTT needs a udev rule** on the machine it plugs into, because a
+`/dev/hidraw` node is root-only by default. `udev/99-igate-cm108.rules` gives the
+`audio` group access; Quickstart C step 2 installs it, and the Pi image installs it
+for you. Without it, `up` refuses to start and prints the commands.
+
 ## Configuration
 
 Every configuration file is plain `key = value`, with `#` comments. There are
@@ -457,7 +648,8 @@ overrides only the keys it actually sets and leaves everything else alone:
 | 5 | environment | one invocation | — | `IGATE_MODE`, `IGATE_PASSCODE` |
 
 **Hardware keys** are the ones a radio profile may set: `CAT`, `PTT_METHOD`,
-`RIG_MODEL`, `CAT_DEVICE`, `CAT_BAUD`, `PTT_DEVICE`, `PTT_TYPE`, `ACHANNELS`,
+`RIG_MODEL`, `CAT_DEVICE`, `CAT_BAUD`, `PTT_DEVICE`, `PTT_TYPE`, `CM108_DEVICE`,
+`CM108_GPIO`, `ACHANNELS`,
 `ADEVICE`, `MIXER_TX_CONTROL`, `MIXER_RX_CONTROL`, `MIXER_AGC_CONTROL`,
 `TX_AUDIO_LEVEL`, `RX_AUDIO_LEVEL`, `DISABLE_AGC`, `RADIO_SET_ON_UP`,
 `RADIO_FREQ`, `RADIO_MODE`, `RADIO_PASSBAND`.
@@ -538,12 +730,44 @@ PTT_DEVICE = /dev/ttyACM0          # PTT port (same as CAT on single-port radios
 PTT_TYPE = RIG                     # RIG = PTT via CAT command; also RTS, DTR
 ```
 
+`radios/vx6r.conf` describes the Yaesu VX-6R on a Digirig Lite:
+
+```
+CAT = none                         # no CAT: no rigctld, frequency set by hand
+PTT_METHOD = cm108                 # PTT on a GPIO pin of the USB sound card
+ADEVICE = plughw:1,0               # the Digirig's card, from `arecord -l`
+CM108_DEVICE =                     # blank: found on ADEVICE's USB device
+CM108_GPIO = 3                     # the Digirig Lite keys on GPIO3
+TX_AUDIO_LEVEL = 50%               # Digirig's starting point; decodes
+RX_AUDIO_LEVEL = 50%
+```
+
 `CAT` and `PTT_METHOD` declare what the radio can do, and the code branches on
 those rather than on the profile's name — so another radio is another profile, not
-more code. Only `CAT = hamlib` with `PTT_METHOD = rig` is implemented today.
-`CAT = none` and `PTT_METHOD = cm108`, `rts` or `dtr` are recognised values that
-`config` refuses until their start paths exist, and `PTT_METHOD = rig` with
-`CAT = none` is refused outright: there would be no link to key the radio over.
+more code:
+
+| `CAT` | `PTT_METHOD` | What runs | Used by |
+|---|---|---|---|
+| `hamlib` | `rig` | `rigctld` for CAT and PTT; Direwolf `PTT RIG` through it | FTX-1 — on the air |
+| `none` | `cm108` | Direwolf alone, `PTT CM108` | VX-6R + Digirig Lite — on the air (laptop, docker) |
+| `hamlib` | `cm108` | `rigctld` for frequency and mode only; Direwolf `PTT CM108` | accepted; no profile uses it yet |
+| `none` | `rig` | — | refused: no CAT link to key the radio over |
+| any | `rts`, `dtr` | — | recognised, refused until a start path exists |
+
+**How CM108 PTT finds its device.** A CM108 chip's GPIO pins appear as a
+`/dev/hidrawN` node on the same USB device as its sound card. With `CM108_DEVICE`
+blank, `deploy_igate.sh` takes `ADEVICE`'s card number and, through sysfs, finds
+the hidraw node belonging to that card's own USB device. It does not take the
+first C-Media device present: the FTX-1's built-in codec is also a C-Media chip,
+and a machine with both radios plugged in must key the right one. The path is
+written into `direwolf.conf` explicitly, because Direwolf's own search relies on
+the udev database, which the container does not have. `config` shows the node it
+found. Set `CM108_DEVICE` only to override that; `up` warns if the override is not
+the audio card's own node.
+
+`up` refuses to start when the node is missing, when only root can open it, or, in
+bare-metal mode, when this user is not in its group, and prints the fix each time.
+In docker mode the node alone is passed to the container, with its group.
 
 The FTX-1 exposes CAT and PTT as **two separate serial ports**, which Direwolf's
 single-port `PTT RIG` directive can't drive — so `rigctld` bridges them and
@@ -744,20 +968,38 @@ and both failure modes are **silent**. `up` re-applies them every start. If you
 change radios, recalibrate: raise TX until the digipeat test above stops
 working, then back off.
 
+**The VX-6R profile's levels are Digirig's documented 50% starting point,** and
+at those levels it carried a full SMS round trip with a Yaesu FT5D. On the Digirig
+Lite, 50% is 18 of 0–37 on `Speaker Playback Volume` (TX) and 18 of 0–35 on
+`Mic Capture Volume` (RX). Received levels read 57–86, above Direwolf's suggested
+50, with no clipping. This is a working start rather than a fine calibration:
+deviation also depends on the cable and the radio's `MCGAIN`, so confirm transmit
+on a new setup. The VX-6R adds two knobs the FTX-1 does not
+have: its **VOL** knob sets the receive level into the Digirig, and Set Mode 37
+`MCGAIN` sets how strongly it responds to the Digirig's transmit audio. Change one
+knob at a time.
+
 ## Safety notes
 
-- **Enable your radio's TOT (time-out timer).** If USB drops mid-transmission
-  the unkey can't get through and the radio sticks in transmit. No software can
-  fix that — the control path is what died. The radio's own timer is the only
-  backstop. This happened twice at 5 W. **Set to 3 minutes here** — note it is
-  global on the FTX-1, applying to voice as well as data, so a long SSB over
-  could be cut. Invisible to APRS, where bursts are milliseconds.
+- **Enable your radio's TOT (time-out timer).** On the FTX-1, PTT is a CAT
+  command: if USB drops mid-transmission the unkey can't get through and the
+  radio sticks in transmit. No software can fix that — the control path is what
+  died. This happened twice at 5 W. On a Digirig, PTT is a GPIO pin the interface
+  holds, so a host that hangs mid-transmission holds the radio keyed. Either way
+  the radio's own timer is the only backstop. **Set to 3 minutes here** — note it
+  is global on the FTX-1, applying to voice as well as data, so a long SSB over
+  could be cut. Invisible to APRS, where bursts are milliseconds. On the VX-6R it
+  is Set Mode 67 `TOT`.
 - **Watch for RFI on the USB cable.** At 5 W, RF crashed the USB link and stuck
   the radio in transmit. Root cause was a quarter-wave whip with no ground
   plane — poorly matched, radiating into the shack. A half-wave on a tripod
   (SWR under 1.2:1 to 5 W) plus a ferrite choke fixed it properly.
 - **`up` refuses to start if the audio device is missing**, since PTT would
-  still key the radio and transmit an unmodulated carrier.
+  still key the radio and transmit an unmodulated carrier. For a CM108 radio it
+  also refuses without a usable PTT device, which would otherwise leave a gateway
+  that looks healthy and can never transmit.
+- **A radio without CAT is only as right as its front panel.** Nothing in software
+  can confirm the VX-6R is on 144.390 MHz, or switched on.
 
 ## Tearing it down
 
@@ -794,8 +1036,9 @@ dropped (verified: `CapEff` and `CapBnd` both zero), `no-new-privileges`,
 Docker's seccomp profile active, read-only root filesystem with only `/tmp`
 writable, non-root, 64 PIDs, 512 MB, and no published ports.
 
-Device access is **only this radio's nodes** — its two serial ports and its
-single ALSA card (`controlC1`, `pcmC1D0c`, `pcmC1D0p`, `timer`). Notably it does
+Device access is **only this radio's nodes** — the FTX-1's two serial ports, or a
+Digirig's single `/dev/hidraw` PTT node, plus the radio's single ALSA card
+(`controlC1`, `pcmC1D0c`, `pcmC1D0p`, `timer`). Notably it does
 *not* get the whole `/dev/snd` directory, which the common recipe passes and
 which would include the laptop's built-in microphone.
 
@@ -841,7 +1084,7 @@ involved in the build.
 ```bash
 cp pi.secrets.example pi.secrets
 $EDITOR pi.secrets            # Pi login password + WiFi SSIDs and PSKs
-$EDITOR pi.conf               # hostname, user, country, SSH key
+$EDITOR pi.conf               # hostname, user, country, SSH key, PI_RADIO
 
 ./build_pi_image.sh check     # validate before downloading ~500 MB
 ./build_pi_image.sh build     # download, customise, write pi-build/aprs-igate-pi.img
@@ -873,7 +1116,8 @@ customised offline, and what the first-boot units do is in §16 of the
 | One `.nmconnection` per WiFi network, mode 600 | NetworkManager profiles; network 1 has the highest autoconnect priority |
 | `/etc/modprobe.d/cfg80211-regdom.conf`, `/etc/default/crda`, `igate-wifi-country.service` | WiFi regulatory domain, three ways (see below) |
 | The whole project in `/opt/aprs-igate` | `igate.conf` installed unchanged; symlinked to `~/aprs-igate` on first boot. The build host's own `igate.local.conf`, if any, is excluded |
-| `/opt/aprs-igate/igate.local.conf` | Written fresh for the Pi: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (`igate-web.service` runs it instead), plus commented examples for device overrides |
+| `/opt/aprs-igate/igate.local.conf` | Written fresh for the Pi: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (`igate-web.service` runs it instead), `RADIO` if `PI_RADIO` is set, plus commented examples for device overrides |
+| `/etc/udev/rules.d/99-igate-cm108.rules` | Lets the `audio` group key a CM108 interface such as the Digirig Lite. Installed whatever the radio, so switching to one later needs no root access |
 | `igate-firstboot.service` | Installs `direwolf libhamlib-utils alsa-utils avahi-daemon`, adds the user to `dialout` and `audio` |
 | `aprs-igate.service` | `deploy_igate.sh up` at boot, if `PI_AUTOSTART = yes` |
 
@@ -890,8 +1134,9 @@ change something.
 
 The trade is that nothing in `run/` survives a reboot — the packet log starts
 empty and `journalctl` cannot show a previous boot. The remaining risk is the
-radio rather than the card: PTT rides the USB serial link, so power lost
-mid-transmission leaves the radio keyed with only its time-out timer to end it.
+radio rather than the card: with the FTX-1, PTT is a CAT command over USB, so
+power lost mid-transmission leaves the radio keyed with only its time-out timer to
+end it.
 See §16.8 of the design document, and §15 for the read-only-root and battery-HAT
 options that would close the rest.
 
@@ -913,11 +1158,11 @@ suffices; together they survive an OS release changing its mind.
 
 ### Before trusting it on the air
 
-`ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` come from the radio profile, written on
-the build host, and the Pi enumerates its own hardware. The Pi's
-`igate.local.conf` carries a comment saying so. Check on the Pi with `arecord -l`
-and `ls -l /dev/serial/by-id/`; if anything differs, override it in that
-`igate.local.conf`, then `sudo systemctl restart aprs-igate`.
+Device names come from the radio profile, and the Pi numbers its own hardware.
+The Pi's `igate.local.conf` carries a comment saying so. Check on the Pi with
+`./deploy_igate.sh config`, `arecord -l`, and `ls -l /dev/ttyUSB* /dev/ttyACM*`
+for the FTX-1 or `ls -l /dev/hidraw*` for a Digirig. If anything differs, override
+it in that `igate.local.conf`, then `sudo systemctl restart aprs-igate`.
 
 Two other things worth knowing about the 3A+ specifically: it has one USB-A
 port, so a radio and anything else need a hub, and 512 MB of RAM, which is why
@@ -927,7 +1172,8 @@ bare-metal rather than under Docker.
 ### Settings
 
 `pi.conf` (committed) holds hostname, user, image variant, locale, install
-directory and autostart. `pi.secrets` (gitignored) holds `PI_USER_PASSWORD` and
+directory, autostart, and `PI_RADIO`, the radio profile the Pi drives (blank uses
+`RADIO` from `igate.conf`; `check` rejects a name with no profile). `pi.secrets` (gitignored) holds `PI_USER_PASSWORD` and
 `WIFI_<n>_SSID` / `WIFI_<n>_PSK` / `WIFI_<n>_HIDDEN`, numbered from 1 — the
 builder reads until a number is missing. `PI_IMAGE_PATH` points at an image
 already on disk to skip the download.
