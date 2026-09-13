@@ -19,6 +19,7 @@ the Pi.
 - [Part 6 — Point the config at the Pi's hardware](#part-6--point-the-config-at-the-pis-hardware)
 - [Part 7 — Confirm it's working](#part-7--confirm-its-working)
 - [Checking status](#checking-status)
+- [The web monitor](#the-web-monitor)
 - [Running the monitor](#running-the-monitor)
 - [Editing the whitelist](#editing-the-whitelist)
 - [Managing the service](#managing-the-service)
@@ -204,12 +205,19 @@ completely.
 ./build_pi_image.sh flash /dev/sdX
 ```
 
+**`/dev/sdX` is not a real device, deliberately.** Every flash command in this
+document uses it, so that a command pasted without thinking fails instead of
+overwriting something that matters. Replace it with what `lsblk` showed you — a
+USB reader is usually `/dev/sdb` or similar, a built-in card slot is usually
+`/dev/mmcblk0`.
+
 The script refuses anything that isn't a whole removable or hotplug disk —
 so it won't take a partition (`/dev/sdb1`) or your system drive — refuses
 anything with a mounted partition, shows you `lsblk` output for the target, and
 makes you type the device name a second time. Writing takes a few minutes.
 
-If your card auto-mounted, unmount it first (`umount /dev/sdX*`) — don't just
+If your card auto-mounted, unmount it first (`udisksctl unmount -b /dev/sdX1`,
+repeating for each mounted partition) — don't just
 eject it in the file manager, which may also power the reader down.
 
 Raspberry Pi Imager works too, if you'd rather: choose **Use custom** and select
@@ -261,8 +269,9 @@ ssh igate@192.168.1.42
 ```
 
 First connection asks you to accept the host key. If you've flashed this card
-before, SSH will refuse with a host key mismatch — that's expected, since the
-new card generated new keys:
+before, SSH will refuse with a host key mismatch — expected, since every flashed
+card generates its own keys. Clear the old entry, either after seeing the warning
+or as a matter of course right after flashing:
 
 ```bash
 ssh-keygen -R aprs-igate.local
@@ -469,6 +478,50 @@ See [Troubleshooting](#troubleshooting) for what the common failures mean.
 
 ---
 
+## The web monitor
+
+The image runs a read-only web page on the LAN, so you can watch packet flow from
+a phone or laptop without an SSH session:
+
+```
+http://aprs-igate.local:8080/
+```
+
+Live packet flow with the same labels as the terminal monitor, plus a panel
+showing the callsign, whitelist, resolved filter, beacon and transmit path. It
+works on a phone; the timestamp column collapses on narrow screens.
+
+**On Android, use the IP address, not `aprs-igate.local`.** mDNS is built into
+macOS and iOS and is configured on most Linux desktops, but Android browsers have
+no mDNS resolver, so the `.local` name simply does not resolve there:
+
+```
+http://192.168.1.42:8080/        <- the Pi's address; find it with: hostname -I
+```
+
+Worth reserving that address in your router's DHCP settings, since the name is
+not an option from every device.
+
+Check it's up:
+
+```bash
+systemctl status igate-web --no-pager
+ss -tln | grep 8080
+```
+
+Turn it off per-build with `PI_WEB_MONITOR = no` in `pi.conf`, or right now with
+`sudo systemctl disable --now igate-web`.
+
+**Read-only, and unauthenticated.** It cannot edit the whitelist, restart the
+gateway, or show the raw log — there is no POST handler at all, and the APRS-IS
+passcode is dropped rather than merely masked. But anyone on your WiFi can view
+it, so treat it as a trusted-LAN tool. Whitelist edits stay on SSH, where you
+have key-based authentication; see "Editing the whitelist" below.
+
+If you want it reachable away from home, add a VPN (WireGuard or Tailscale)
+rather than forwarding a port — a VPN makes a remote device look local and needs
+no change to the page.
+
 ## Running the monitor
 
 This is the day-to-day view:
@@ -581,6 +634,8 @@ The gateway runs under systemd as `aprs-igate.service`.
 | Task | Command |
 |---|---|
 | Is it running? | `systemctl status aprs-igate` |
+| Web monitor state | `systemctl status igate-web` |
+| Calibrate audio levels | `cd ~/aprs-igate && ./deploy_igate.sh audio` |
 | Start / stop | `sudo systemctl start aprs-igate` / `sudo systemctl stop aprs-igate` |
 | Apply a config change | `sudo systemctl restart aprs-igate` |
 | Why did it fail? | `journalctl -u aprs-igate -n 50` |
@@ -658,7 +713,28 @@ deliberately, while you are sitting in front of it.
 sudo shutdown -h now
 ```
 
-Wait for the green LED to stop flickering and go dark, then pull the power.
+As a one-liner from your laptop, note the **`-t`**: `sudo` needs a terminal to
+prompt for a password, and `ssh host 'cmd'` does not allocate one, so without it
+you get *"a terminal is required to read the password"*.
+
+```bash
+ssh -t igate@aprs-igate.local 'sudo shutdown -h now'
+```
+
+Either way the session ends with `Connection reset by peer` — that is the Pi
+going down, not an error.
+
+**What the LEDs do at the end of a shutdown:** the green ACT LED usually flashes
+several times and then stops, and the red PWR LED **stays lit**. Red staying on
+is not a sign that anything is still running — the Pi cannot switch off its own
+power rail, so red is lit whenever power is applied and it never goes out by
+itself. Depending on firmware, green may end up dark or simply stop flickering.
+
+What you are waiting for is the *flickering* to stop, not for either LED to go
+out. Once the SSH session has dropped and green has settled, twenty seconds is
+ample — and on this build the card is barely written in the first place (§16.8),
+so an imperfect moment to unplug is a much smaller risk than it would otherwise
+be.
 
 **Can you just pull the plug instead?** Largely yes — the image is built for it.
 
@@ -876,6 +952,27 @@ synchronized: yes`. Nothing needs fixing, and APRS is unaffected.
 *free* — Direwolf has the capture device open, which is exactly what you want
 while the gateway is running. It reads `1/1` when the gateway is stopped.
 
+**The web page loads on a laptop but not on a phone.** Almost always mDNS:
+Android browsers cannot resolve `.local`, so use the Pi's IP address instead
+(`hostname -I` on the Pi). If the IP also fails, the phone is not on the same
+network segment — check it is on your main WiFi rather than a guest network, and
+that the router does not have client isolation (sometimes "AP isolation")
+enabled, which blocks device-to-device traffic entirely.
+
+**The web page doesn't load.** Confirm the service and the port:
+
+```bash
+systemctl status igate-web --no-pager
+journalctl -u igate-web -n 30 --no-pager
+ss -tln | grep 8080
+```
+
+A blank page with the chips reading `unreachable` means the page loaded but
+`/api/status` failed — check the journal. `feed reconnecting` means the page is
+fine but the monitor subprocess isn't producing lines, which usually means the
+gateway itself is stopped. If the page renders but stays empty, that may simply
+be a quiet band; give it a few minutes.
+
 **`swapon --show` reports `/dev/zram0`.** Expected. Raspberry Pi OS Trixie swaps
 to compressed RAM rather than to a file on the card, so it writes nothing to the
 card and is left in place deliberately — on 512 MB it is worth having.
@@ -887,14 +984,31 @@ file is fine; don't expect to run a browser.
 
 ## Starting over
 
-The card is disposable — nothing on the Pi is state you can't rebuild. To reset,
-rebuild and reflash:
+The card is disposable — nothing on the Pi is state you can't rebuild. The full
+cycle, in order:
 
 ```bash
 cd ~/git_repos/aprs_igate_bidirectional_whitelist
-./build_pi_image.sh build
-./build_pi_image.sh flash /dev/sdX
+./build_pi_image.sh check                  # confirm settings before building
+./build_pi_image.sh build                  # reuses the cached download
+
+# stop the running Pi cleanly, then move the card to this machine
+ssh -t igate@aprs-igate.local 'sudo shutdown -h now'
+
+udisksctl unmount -b /dev/sdX1             # repeat for each mounted partition
+findmnt | grep media                        # must print nothing
+./build_pi_image.sh flash /dev/sdX         # sdX is a placeholder — use lsblk
+
+# a new card means new SSH host keys, so drop the old one BEFORE reconnecting
+ssh-keygen -R aprs-igate.local
 ```
+
+That `ssh-keygen -R` is not optional housekeeping. Every flashed card generates
+its own host keys, so without it your next connection fails with a host key
+mismatch warning that looks alarming and is entirely expected.
+
+Then boot the Pi and allow the usual 5–10 minutes: first boot reinstalls packages,
+because the filesystem is new.
 
 To clear the cached download and built image as well:
 

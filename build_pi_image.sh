@@ -9,7 +9,10 @@
 # Usage:
 #   ./build_pi_image.sh check          Validate pi.conf and pi.secrets only.
 #   ./build_pi_image.sh build          Produce the customised image.
-#   ./build_pi_image.sh flash /dev/sdX Write a built image to an SD card.
+#   ./build_pi_image.sh flash /dev/sdX  Write a built image to an SD card.
+#       sdX is a placeholder on purpose, so a thoughtless paste cannot destroy a
+#       real disk. Find the device with lsblk: a USB reader is typically
+#       /dev/sdb, a built-in card slot /dev/mmcblk0.
 #
 # Settings are in pi.conf; credentials in pi.secrets (gitignored).
 # Requires sudo for loop-mounting the image.
@@ -104,6 +107,11 @@ validate() {
   note "variant      Raspberry Pi OS Lite (${CFG[PI_IMAGE_VARIANT]})"
   note "wifi         ${count} network(s), country ${CFG[PI_WIFI_COUNTRY]}"
   note "autostart    ${CFG[PI_AUTOSTART]:-yes}"
+  if [[ "${CFG[PI_WEB_MONITOR]:-yes}" == "yes" ]]; then
+    note "web monitor  enabled, port ${CFG[PI_WEB_PORT]:-8080} (read-only, no auth — LAN only)"
+  else
+    note "web monitor  disabled"
+  fi
 
   local pubkey; pubkey="$(expand_tilde "${CFG[PI_SSH_PUBKEY]:-}")"
   if [[ -n "$pubkey" && -f "$pubkey" ]]; then
@@ -146,7 +154,9 @@ fetch_image() {
   fi
 
   step "Preparing working image"
-  rm -f "$OUTPUT_IMG"
+  # The marker must die with the old image: a stale one would vouch for a fresh
+  # decompression that has not been customised yet.
+  rm -f "$OUTPUT_IMG" "${OUTPUT_IMG}.built"
   if [[ "$SOURCE_IMG" == *.xz ]]; then
     note "decompressing..."
     xz -dc "$SOURCE_IMG" > "$OUTPUT_IMG"
@@ -247,6 +257,12 @@ autoconnect-priority=${prio}
 [wifi]
 mode=infrastructure
 ssid=${ssid}
+# Associate with the hardware MAC rather than a randomised one. A DHCP
+# reservation on the router is keyed to that address, and it is the only stable
+# way to reach the web monitor from a device whose browser cannot resolve
+# .local — Android, in particular. NetworkManager's default here has varied
+# between releases, so state it rather than inherit it.
+cloned-mac-address=permanent
 $([[ "$hidden" == "yes" ]] && echo "hidden=true")
 
 [wifi-security]
@@ -532,6 +548,42 @@ WantedBy=multi-user.target
 EOF
   sudo cp "$tmp" "${sysd}/aprs-igate.service"
   sudo chmod 644 "${sysd}/aprs-igate.service"
+
+  # Read-only LAN monitor. Hardened more than the gateway itself because this is
+  # the only thing on the Pi that listens on the network besides sshd: it writes
+  # nothing, needs no privilege, and is capped so it cannot starve Direwolf's
+  # DSP on a 512 MB machine.
+  cat > "$tmp" <<EOF
+[Unit]
+Description=Read-only LAN web monitor for the APRS iGate
+After=network.target aprs-igate.service
+Wants=aprs-igate.service
+ConditionPathExists=${dir}/igate_web.py
+
+[Service]
+Type=simple
+User=${user}
+WorkingDirectory=${dir}
+Environment=IGATE_WEB_PORT=${CFG[PI_WEB_PORT]:-8080}
+ExecStart=/usr/bin/python3 ${dir}/igate_web.py
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+MemoryMax=96M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  sudo cp "$tmp" "${sysd}/igate-web.service"
+  sudo chmod 644 "${sysd}/igate-web.service"
   rm -f "$tmp"
 
   # The first-boot script itself.
@@ -562,7 +614,7 @@ done
 # these out of the library package); alsa-utils supplies arecord and amixer.
 # gawk is not optional: the monitor uses strftime(), a gawk extension, and
 # Debian ships mawk as the default awk.
-PKGS="direwolf libhamlib-utils alsa-utils avahi-daemon gawk"
+PKGS="direwolf libhamlib-utils alsa-utils avahi-daemon gawk python3"
 
 # Retry the whole update-then-install cycle, not just the install.
 #
@@ -687,6 +739,13 @@ EOF
   else
     note "aprs-igate.service installed but not enabled (PI_AUTOSTART is not yes)"
   fi
+
+  if [[ "${CFG[PI_WEB_MONITOR]:-yes}" == "yes" ]]; then
+    sudo ln -sf /etc/systemd/system/igate-web.service "${wants}/igate-web.service"
+    note "igate-web.service enabled on port ${CFG[PI_WEB_PORT]:-8080} (read-only, LAN)"
+  else
+    note "igate-web.service installed but not enabled (PI_WEB_MONITOR is not yes)"
+  fi
 }
 
 configure_locale() {
@@ -758,11 +817,21 @@ cmd_build() {
   cleanup
   trap - EXIT INT TERM
 
+  # Written only here, after every customisation stage has succeeded. If the
+  # build dies anywhere earlier this file does not exist, and flash refuses.
+  {
+    echo "built=$(date -Is)"
+    echo "hostname=${CFG[PI_HOSTNAME]}"
+    echo "user=${CFG[PI_USER]}"
+    echo "variant=${CFG[PI_IMAGE_VARIANT]}"
+    echo "web_monitor=${CFG[PI_WEB_MONITOR]:-yes}:${CFG[PI_WEB_PORT]:-8080}"
+  } > "${OUTPUT_IMG}.built"
+
   echo
   echo "Image ready: ${OUTPUT_IMG}"
   echo
   echo "Write it to an SD card with:"
-  echo "  ./build_pi_image.sh flash /dev/sdX"
+  echo "  ./build_pi_image.sh flash /dev/sdX     <- replace sdX; find it with lsblk"
   echo "or with Raspberry Pi Imager, choosing 'Use custom' and selecting that file."
   echo
   echo "On first boot the Pi joins WiFi, installs Direwolf and hamlib, and starts"
@@ -778,8 +847,26 @@ cmd_build() {
 
 cmd_flash() {
   local dev="${1:-}"
-  [[ -n "$dev" ]] || die "usage: $0 flash /dev/sdX"
+  [[ -n "$dev" ]] || die "usage: $0 flash <device>   e.g. /dev/mmcblk0 (built-in reader) or /dev/sdb (USB). Check with lsblk."
   [[ -f "$OUTPUT_IMG" ]] || die "no built image at $OUTPUT_IMG — run '$0 build' first"
+
+  # An image that exists but was never customised is the dangerous case: it boots,
+  # expands its filesystem, and then sits there with no account, no WiFi and no
+  # SSH, which is easily mistaken for a hardware or SD card fault.
+  local marker="${OUTPUT_IMG}.built"
+  if [[ ! -f "$marker" ]]; then
+    echo "Error: ${OUTPUT_IMG} exists but was never finished." >&2
+    echo "  No completion marker (${marker})." >&2
+    echo "  A build that dies partway — a missed sudo password at the loop mount is" >&2
+    echo "  the usual cause — leaves a decompressed but UNCUSTOMISED image: no SSH," >&2
+    echo "  no user account, and no WiFi credentials. Re-run '$0 build' and check it" >&2
+    echo "  ends with 'Image ready:'." >&2
+    exit 1
+  fi
+  if [[ "$marker" -ot "$OUTPUT_IMG" ]]; then
+    die "${OUTPUT_IMG} is newer than its completion marker — re-run '$0 build'."
+  fi
+  echo "Image completed: $(sed -n 's/^built=//p' "$marker")"
   [[ -b "$dev" ]] || die "$dev is not a block device"
 
   # Writing to the wrong device destroys it silently, so refuse anything that is
@@ -799,7 +886,14 @@ cmd_flash() {
     || die "$dev is neither removable nor hotplug. Refusing — check the device name with 'lsblk'."
 
   if lsblk -no MOUNTPOINT "$dev" 2>/dev/null | grep -q .; then
-    die "$dev has mounted partitions. Unmount them first (umount ${dev}*)."
+    # udisksctl rather than umount: these are almost always desktop-mounted
+    # removable media, and udisksctl also tells the desktop the card was
+    # released, so it does not helpfully remount it a moment later.
+    echo "Error: $dev has mounted partitions. Unmount them first:" >&2
+    lsblk -rno PATH,MOUNTPOINT "$dev" 2>/dev/null \
+      | awk '$2 != "" { print "  udisksctl unmount -b " $1 }' >&2
+    echo "  (plain 'umount' may work too, but leaves the desktop free to remount it.)" >&2
+    exit 1
   fi
 
   echo "About to OVERWRITE this device:"
@@ -820,7 +914,8 @@ main() {
     build) cmd_build ;;
     flash) cmd_flash "${2:-}" ;;
     *)
-      echo "Usage: $0 {check|build|flash /dev/sdX}" >&2
+      echo "Usage: $0 {check|build|flash <device>}" >&2
+      echo "  flash device: /dev/mmcblk0 for a built-in reader, /dev/sdX for USB (check lsblk)" >&2
       exit 1
       ;;
   esac

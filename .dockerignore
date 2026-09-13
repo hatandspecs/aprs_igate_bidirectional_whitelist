@@ -2,3 +2,8 @@ run/
 igate.secrets
 *.md
 .git/
+
+# The web monitor runs on the HOST, not in the container: it shells out to
+# deploy_igate.sh, which in docker mode shells out to docker.
+igate_web.py
+web/

@@ -894,21 +894,45 @@ cmd_down() {
   if [[ "$MODE" == docker ]]; then _docker_down; else _bare_down; fi
 }
 
-cmd_status() {
-  load_and_resolve "${1:-}"
-  local running="false" detail=""
+# Liveness is mode-specific — a container in docker mode, pidfiles in bare-metal.
+# Anything that needs to know must go through here rather than guessing, or it
+# gets one of the two modes wrong. Sets STATE_RUNNING and STATE_DETAIL.
+_gather_state() {
+  STATE_RUNNING="false"; STATE_DETAIL=""
   if [[ "$MODE" == docker ]]; then
     require_docker
     if is_running; then
-      running="true"
-      detail="$(docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}  {{.Status}}')"
+      STATE_RUNNING="true"
+      STATE_DETAIL="$(docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}  {{.Status}}')"
     fi
   else
     if bare_is_running; then
-      running="true"
-      detail="direwolf pid $(cat "$BARE_DIREWOLF_PID"), rigctld pid $(cat "$BARE_RIGCTLD_PID" 2>/dev/null || echo '?')"
+      STATE_RUNNING="true"
+      STATE_DETAIL="direwolf pid $(cat "$BARE_DIREWOLF_PID"), rigctld pid $(cat "$BARE_RIGCTLD_PID" 2>/dev/null || echo '?')"
     fi
   fi
+}
+
+# Machine-readable liveness with no side effects: `status` also rewrites
+# run/status.html, which makes it unsuitable for anything that polls (the web
+# monitor does, every 15 seconds). Exit status is the answer; the detail line is
+# for display.
+cmd_is_running() {
+  load_and_resolve "${1:-}"
+  _gather_state
+  if [[ "$STATE_RUNNING" == "true" ]]; then
+    echo "$STATE_DETAIL"
+    return 0
+  fi
+  echo "not running"
+  return 1
+}
+
+cmd_status() {
+  load_and_resolve "${1:-}"
+  local running detail
+  _gather_state
+  running="$STATE_RUNNING"; detail="$STATE_DETAIL"
 
   if [[ "$running" == "true" ]]; then
     echo "iGate running (${MODE}): ${detail}"
@@ -1132,6 +1156,97 @@ _clear_run_dir() {
   fi
 }
 
+cmd_audio() {
+  load_and_resolve "${1:-}"
+  local card; card="$(audio_card_number)"
+  if [[ -z "$card" ]]; then
+    echo "Cannot parse a card number from ADEVICE='${CFG[ADEVICE]:-}'." >&2
+    exit 1
+  fi
+
+  echo "ALSA card ${card} (from ADEVICE=${CFG[ADEVICE]})"
+  echo "Configured: TX_AUDIO_LEVEL=${CFG[TX_AUDIO_LEVEL]:-unset}  RX_AUDIO_LEVEL=${CFG[RX_AUDIO_LEVEL]:-unset}"
+  echo
+  if command -v amixer >/dev/null; then
+    echo "Mixer controls and their ranges:"
+    # The range is the point: a bare number in igate.conf is meaningless without
+    # it, and amixer clamps a too-large value silently rather than complaining.
+    printf '  %-34s %-9s %-26s %s\n' NAME TYPE RANGE CURRENT
+    amixer -c "$card" contents 2>/dev/null \
+      | gawk '
+          /^numid=/ { name=$0; sub(/.*name=/,"",name); gsub(/'"'"'/,"",name); type=""; rng="" }
+          /^[[:space:]]*; type=/ {
+            type=$0; sub(/.*type=/,"",type); sub(/,.*/,"",type)
+            if ($0 ~ /min=/) { rng=$0; sub(/.*min=/,"min=",rng) }
+          }
+          /^[[:space:]]*: values=/ {
+            v=$0; sub(/.*values=/,"",v)
+            if (name != "") printf "  %-34s %-9s %-26s %s\n", name, type, rng, v
+            name=""
+          }
+        ' || true
+  else
+    echo "amixer not found (install alsa-utils)." >&2
+  fi
+
+  echo
+  if command -v amixer >/dev/null; then
+    amixer -c "$card" cget name='Mic Capture Volume' 2>/dev/null | gawk '
+      /min=/ { for (i=1; i<=NF; i++) { } ; m=$0; sub(/.*max=/,"",m); sub(/,.*/,"",m); max=m }
+      /: values=/ { v=$0; sub(/.*values=/,"",v); sub(/,.*/,"",v); cur=v }
+      END {
+        if (max == "" || cur == "") { exit }
+        printf "Capture gain: %s of %s", cur, max
+        if (cur+0 >= max+0) {
+          print " — AT MAXIMUM. This knob is exhausted; raise the radio'"'"'s output level."
+        } else {
+          printf " (%.0f%% of range) — headroom remains here.\n", 100*cur/max
+        }
+      }'
+  fi
+
+  echo
+  echo "What Direwolf actually reports for received audio:"
+  if [[ -f "$BARE_LOG" ]]; then
+    grep -oE 'audio level = [0-9]+' "$BARE_LOG" | tail -20 \
+      | gawk '{ lvl[NR]=$4; sum+=$4; if ($4>max) max=$4 }
+              END { if (NR) printf "  last %d readings: mean %.1f, peak %d\n", NR, sum/NR, max
+                    else print "  no readings yet — is anything being decoded?" }'
+  else
+    echo "  no log yet (docker mode: use 'docker logs ${CONTAINER_NAME} | grep \"audio level\"')"
+  fi
+
+  cat <<'GUIDE'
+
+Direwolf advises a received audio level around 50, and warns below that. Treat it
+as advisory, not a fault: 1200 baud AFSK is robust, 16-bit samples at 5-10% of
+full scale still carry ~12 bits, and a station reporting 4-9 may decode
+everything it can hear. The figure also varies with how strong the recently heard
+stations were, so two samples at identical gain can differ by 2x.
+
+A low reading is only worth acting on if it costs decodes. Establish that first:
+count decodes over a fixed window, change ONE thing, count again. Comparing
+against a neighbouring iGate on aprs.fi over the same period is the strongest
+check available. Note that raising a radio output level when capture gain is
+already at maximum can only move toward clipping, which does degrade decoding.
+
+Two knobs, and the second is usually the one that matters:
+
+  1. RX_AUDIO_LEVEL in igate.conf — the codec's capture gain. Write it as a
+     percentage ("80%") rather than a bare number; the raw scale differs between
+     devices and amixer clamps a too-large value without saying so. Compare the
+     configured value against the ranges above: if it is already at max, this
+     knob is exhausted and the level cannot be raised here.
+
+  2. The radio's own USB audio output level. On a Yaesu that is a menu item
+     (USB AF OUTPUT LEVEL or similar). If the codec gain is at maximum and
+     Direwolf still reports a low level, this is what is limiting it.
+
+After each change: sudo systemctl restart aprs-igate  (or ./deploy_igate.sh restart)
+then leave the monitor running for a few minutes and re-run this command.
+GUIDE
+}
+
 cmd_uninstall() {
   load_and_resolve "${1:-}"
   # The Raspberry Pi image installs systemd units that this script did not
@@ -1187,9 +1302,11 @@ main() {
     status) cmd_status "${2:-}" ;;
     logs) cmd_logs "${2:-}" ;;
     monitor) cmd_monitor "${2:-}" ;;
+    audio) cmd_audio "${2:-}" ;;
+    is-running) cmd_is_running "${2:-}" ;;
     uninstall) cmd_uninstall "${2:-}" ;;
     *)
-      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|uninstall} [config-file]" >&2
+      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|is-running|uninstall} [config-file]" >&2
       exit 1
       ;;
   esac

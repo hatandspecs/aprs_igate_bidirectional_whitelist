@@ -26,6 +26,7 @@ Prototype platform: Fedora laptop + Yaesu FTX-1 Optima (USB-C)
   - [13.4 Container security model](#134-container-security-model)
   - [13.5 Operational tooling](#135-operational-tooling)
   - [13.6 Transmit path, receive filter, and beacon](#136-transmit-path-receive-filter-and-beacon)
+  - [13.7 Read-only LAN web monitor](#137-read-only-lan-web-monitor)
 - [14. Operating constraints](#14-operating-constraints)
   - [14.1 Log tags do not mean what they appear to](#141-log-tags-do-not-mean-what-they-appear-to)
   - [14.2 Uplink logging requires `-d i`](#142-uplink-logging-requires--d-i)
@@ -520,6 +521,17 @@ suppresses that.
 `status` reports state and writes `run/status.html`, a static page showing the
 whitelist and resolved filter.
 
+`audio` exists because a level cannot be set correctly by choosing a number.
+Mixer values in `igate.conf` are raw ALSA values on a scale that differs between
+devices, and `amixer` clamps a too-large value silently rather than reporting it —
+on one real control (`Mic Boost Volume`, `min=0,max=3`) a configured `35` becomes
+`3` with no indication. `audio` prints every control with its range and current
+value beside the configured setting, and the recent audio levels Direwolf has
+actually reported, which turns "the level looks low" into a measurement with an
+unambiguous next action: raise the capture gain, or — if it is already at maximum
+— change the radio's own USB audio output level, which is then what is limiting
+it. Percentages are the preferred form in the config for the same reason.
+
 Direwolf echoes its APRS-IS login line, which contains the passcode in clear
 text. `monitor` redacts it. The raw `logs` output does not, so prefer `monitor`
 when sharing terminal output or screenshots.
@@ -565,6 +577,55 @@ the honest value for this design is `R`, receive-only. The station is
 transmit-capable, but its transmit path is whitelist-only, so it will never
 relay another operator's message. Advertising `T` or `2` would invite someone to
 rely on delivery that does not happen.
+
+### 13.7 Read-only LAN web monitor
+
+`igate_web.py` serves one page on the local network showing live packet flow and
+the resolved whitelist. Standard library only, so there is nothing to install on
+a 512 MB machine.
+
+It serves both deployment modes without knowing which is in use, because it asks
+the script rather than inspecting the gateway: `monitor` for the packet stream and
+`is-running` for liveness. That second command exists for this reason — liveness
+is a container in docker mode and pidfiles in bare-metal, and an earlier version
+of the page read `run/*.pid` directly, which reported every healthy containerised
+deployment as stopped. `status` was unsuitable to call instead because it also
+rewrites `run/status.html`, and the page polls. In docker mode the server runs on
+the host, since it invokes `docker` by way of the script.
+
+Three decisions carry the design.
+
+**It streams `deploy_igate.sh monitor` as a subprocess rather than annotating
+packets itself.** The `[ig>tx]`/`[0L]` pairing that separates gated from dropped
+is subtle enough to have been implemented wrongly twice (§14.6), and a second
+copy would drift from the first while looking authoritative. A consequence worth
+naming: streaming `monitor` also inherits its passcode redaction, where serving
+`run/direwolf.log` would publish the APRS-IS passcode to everyone on the network.
+`IGLOGIN_PASSCODE` is additionally dropped from the status endpoint, so the page
+has no field that could carry it even if redaction were removed upstream.
+
+**One subprocess is fanned out to every viewer**, rather than one per connection;
+five open browsers must not become five `tail -f | gawk` pipelines competing with
+Direwolf's DSP. Viewers are capped, and a client that cannot keep up is dropped
+rather than allowed to block the reader for everyone else. Server-Sent Events
+rather than WebSockets: the data is one-way, browsers reconnect on their own, and
+it needs no library on either end.
+
+**It is read-only by construction rather than by permission check.** There is no
+POST handler, no path that writes `igate.conf`, and no file-serving code at all —
+the only two URLs are the page and the event stream, so there is no traversal
+surface. This is the same judgement as disabling the AGW and KISS ports (§16.5):
+the whitelist is the only thing between APRS-IS and the transmitter, and an
+unauthenticated LAN service able to change it would be that exposure with extra
+steps. Viewing is safe to leave open on a trusted network; editing stays on SSH,
+where authentication already exists.
+
+Remote access, if it is ever wanted, belongs at the network layer. A VPN makes a
+remote device indistinguishable from a local one and requires no change to the
+page, where forwarding a port would place a hand-written HTTP server on the
+public internet — and the exposure that matters there is not the APRS data, which
+is public anyway, but a foothold on the network the Pi shares with everything
+else.
 
 ---
 
@@ -727,10 +788,25 @@ belongs only in a test.
   removes this and accepts the same `Dockerfile` and flags.
 - **No custom seccomp profile.** The default blocks approximately 44 syscalls; a
   Direwolf-specific allowlist would be tighter but requires ongoing maintenance.
-- **Audio levels read low on the Raspberry Pi.** Direwolf reports received
-  audio around 6–8 where roughly 50 is ideal. Decoding works, but weak stations
-  are likely being missed. `RX_AUDIO_LEVEL` was calibrated on a different host
-  and has not been re-tuned for this one.
+- **Received audio reads below Direwolf's advisory, and the significance is
+  unestablished.** Direwolf reports 4–9 where it suggests around 50. Note the
+  sequence: the "level is too low" warning appeared only after the capture gain
+  was reduced from 35 to 28 by a mistaken change, and stopped once 35 was
+  restored. At the station's long-standing setting Direwolf does not warn, so the
+  warning was induced rather than discovered. The capture control is at its maximum (0–35, set to
+  35), so no codec gain remains; only the radio's own output level into its USB
+  codec is left, and raising that with capture gain already maxed can only move
+  toward clipping, which does degrade AFSK.
+  
+  What is missing is evidence that the low reading costs anything. The station
+  decodes many distinct stations cleanly at this level, and the reported figure
+  varied from 4.0 to 7.4 at identical gain, so it partly tracks the strength of
+  whichever stations were recently heard rather than the configuration. The
+  measurement that would settle it is comparative: decodes per unit time against
+  a neighbouring iGate over the same window, or before-and-after counts across a
+  single change. Until then this is an open question, not a defect — and an
+  earlier attempt to "fix" it by setting 80% instead of a raw 35 silently halved
+  the capture gain, because 35 was already the ceiling.
 - **Audio levels are not self-calibrating.** The values in `igate.conf` were
   determined empirically for one radio at one power level. A calibration routine
   that transmits and checks for a digipeat would remove the manual step.
@@ -758,6 +834,28 @@ belongs only in a test.
   control line (`RTS`/`DTR`) is inherently fail-safe: losing power drops the
   line and the radio unkeys itself. That is a point in favour of an interface
   that keys this way, alongside supporting a second radio.
+- **Graywolf is an unevaluated alternative to Direwolf.** Graywolf (Chris Snell,
+  NW5W; GPL-2.0) is a from-scratch APRS stack rather than a Direwolf front-end: a
+  Rust DSP modem, a Go service for AX.25, APRS and iGate work, and a built-in web
+  UI. It claims to beat Direwolf's best mode on every track of the WA8LMF test CD,
+  and it publishes `armv7l` builds, so the hardware here is not an obstacle.
+
+  It is not a drop-in substitute, and the reason is specific. This station's
+  guarantee rests on Direwolf semantics that were verified empirically, including
+  one bypass found only by observing it fire: `IGMSP`, which transmitted a message
+  sender's position regardless of all filtering (§13.3). None of that verification
+  transfers. The gating question for any evaluation is therefore not modem
+  performance but whether the candidate can express *only APRS messages addressed
+  to these callsigns may ever be transmitted, with no exceptions, courtesy or
+  otherwise* — and whether it has its own equivalent of `IGMSP` waiting to be
+  discovered. Published documentation states that filters are configurable in both
+  directions but does not say what the Internet-to-RF filter can express.
+
+  An evaluation should therefore happen on separate hardware and a separate card,
+  leaving a known-good station untouched, and should begin with that question
+  rather than with benchmarks. Note also that better demodulation would not
+  address the current low-audio symptom, which is mixer gain (§13.5) and free to
+  correct.
 - **Only one radio and interface combination is supported.** The configuration
   assumes a transceiver presenting its own USB audio codec and two serial ports.
   A handheld driven through an external sound-card interface is a different

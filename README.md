@@ -75,6 +75,8 @@ return to a freshly-cloned state.
 | `status` | Running or not; also writes `run/status.html` |
 | `logs` | Follow the raw Direwolf log |
 | `monitor` | Follow the log **annotated** — recommended. `monitor raw` omits decode detail. Needs `gawk` |
+| `audio` | Report mixer control ranges, current values, and what Direwolf sees — for calibrating levels |
+| `is-running` | Exit 0 if the gateway is up, 1 if not; prints a one-line detail. Mode-aware, no side effects — for scripts |
 | `uninstall` | Tear down to a zero state |
 
 All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
@@ -131,6 +133,60 @@ if it is missing, `monitor` says so rather than showing an empty screen.
 
 `./deploy_igate.sh status` also writes `run/status.html` — a static page showing
 state, whitelist, and resolved filter. Open with `xdg-open run/status.html`.
+
+## Web monitor (LAN)
+
+`igate_web.py` serves one page on the local network showing live packet flow and
+the resolved whitelist. Python standard library only — nothing to install.
+
+```
+http://aprs-igate.local:8080/        # or http://<pi-ip>:8080/
+```
+
+Use the IP address from Android — its browsers have no mDNS resolver, so
+`.local` does not resolve there. macOS, iOS and most Linux desktops are fine.
+
+It works in **both deployment modes**, because it asks `deploy_igate.sh` rather
+than inspecting the gateway itself: `monitor` for the packet stream and
+`is-running` for liveness, each of which already knows whether it is looking at a
+container or at pidfiles.
+
+**On the Pi (bare-metal)** it runs as `igate-web.service`, enabled by
+`PI_WEB_MONITOR` in `pi.conf`.
+
+**In Docker mode** run it on the **host**, not in the container — it shells out
+to `deploy_igate.sh`, which shells out to `docker`. It is excluded from the build
+context by `.dockerignore` for that reason.
+
+```bash
+./igate_web.py                       # or: IGATE_WEB_PORT=9000 ./igate_web.py
+```
+
+It shows the same annotated `RF RX` / `RF->IS UP` / `IS GATED` / `IS DROP` flow as
+`monitor`, colour-coded, with Direwolf's decode indented beneath each frame, plus
+a panel with the callsign, whitelist, resolved filter, beacon and transmit path.
+Responsive — it is meant to be usable on a phone.
+
+**It is read-only by construction, not by permission check.** There is no POST
+handler and no code path that can edit the whitelist, restart the gateway, or
+serve the raw log. Three specific decisions:
+
+- **It streams `deploy_igate.sh monitor` as a subprocess** rather than
+  reimplementing the annotation. The `[ig>tx]`/`[0L]` pairing that distinguishes
+  gated from dropped has been wrong twice; one implementation is enough.
+- **That also inherits the passcode redaction.** Serving `run/direwolf.log`
+  directly would publish your APRS-IS passcode to everyone on the network.
+  `IGLOGIN_PASSCODE` is dropped from the status endpoint entirely.
+- **One subprocess, fanned out.** Five open browsers do not mean five
+  `tail -f | gawk` pipelines on a single-board computer. Viewers are capped at 8.
+
+**It is unauthenticated, so it is for a trusted LAN only.** Editing the whitelist
+stays on SSH deliberately: the whitelist is the only thing between APRS-IS and
+your transmitter, and an unauthenticated page that could change it is the same
+exposure as the KISS port this project closes by default. If you want it reachable
+away from home, a VPN (WireGuard or Tailscale) makes a remote device look local
+and needs no change to the page — that is much safer than forwarding a port to a
+hand-written HTTP server.
 
 ## Testing it
 
@@ -363,10 +419,34 @@ callsign, not a chosen password — but keep it out of version control anyway.
 ### Audio levels — important
 
 ```
-TX_AUDIO_LEVEL = 10    # too high over-deviates: audible but decodes NOWHERE
-RX_AUDIO_LEVEL = 35    # too low decodes nothing
+TX_AUDIO_LEVEL = 10     # raw; too high over-deviates: audible but decodes NOWHERE
+RX_AUDIO_LEVEL = 80%    # too low and marginal signals are missed
 DISABLE_AGC = yes
 ```
+
+**Prefer percentages.** A bare number is a raw mixer value on a scale that
+differs between devices, and `amixer` clamps a too-large value **silently** — on
+one real control (`Mic Boost Volume`, `min=0,max=3`) a configured `35` becomes
+`3` with no warning. `./deploy_igate.sh audio` prints every control with its
+range and current value, so you can tell the difference between "35% of the way
+up" and "pinned at maximum".
+
+`TX_AUDIO_LEVEL` stays a raw `10` because that was calibrated empirically against
+this radio at 1 W, where 23 (the device default) and 33 both over-deviated and
+decoded nowhere. Don't convert it without recalibrating.
+
+**Calibrating RX.** Direwolf decodes best around an audio level of 50; too high
+clips and decoding gets *worse*, not better. `./deploy_igate.sh audio` reports
+what Direwolf is actually seeing:
+
+```
+What Direwolf actually reports for received audio:
+  last 20 readings: mean 7.4, peak 8
+```
+
+Raise `RX_AUDIO_LEVEL`, restart, watch for a few minutes, re-run. If the capture
+control is already at maximum and the level is still low, the limit is **the
+radio's own USB audio output level** (a menu item on a Yaesu), not this setting.
 
 These reset to (wrong) device defaults whenever the radio's USB re-enumerates,
 and both failure modes are **silent**. `up` re-applies them every start. If you
