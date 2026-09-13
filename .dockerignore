@@ -7,3 +7,6 @@ igate.secrets
 # deploy_igate.sh, which in docker mode shells out to docker.
 igate_web.py
 web/
+
+# Per-machine configuration; the container reads none of it.
+igate.local.conf

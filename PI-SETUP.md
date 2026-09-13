@@ -44,9 +44,13 @@ cd aprs-igate
 ./deploy_igate.sh monitor
 ```
 
-The gateway itself behaves exactly as on the laptop — same `igate.conf`, same
-commands, same strict whitelist. The only difference is `DEPLOY_MODE`, which is
-`bare-metal` on the Pi rather than `docker`.
+The gateway itself behaves exactly as on the laptop — the same `igate.conf`, byte
+for byte, the same commands, the same strict whitelist. What differs is a small
+per-machine file, `igate.local.conf`, which the image writes for the Pi: it says
+`DEPLOY_MODE = bare-metal`, and it is where any Pi-specific device paths go. The
+shared `igate.conf` never needs editing for the Pi, so copying it across never
+breaks anything. "Configuration layers" in [README.md](README.md) explains what
+can override what.
 
 ---
 
@@ -175,7 +179,8 @@ What went into it:
 | One NetworkManager profile per WiFi network | Mode 600, priority-ordered |
 | `/etc/igate/authorized_keys` | Your public key, if configured; moved into place on first boot |
 | WiFi country, three ways | Kernel module parameter, `/etc/default/crda`, and a service that runs before NetworkManager |
-| `/opt/aprs-igate` | The whole project, with `DEPLOY_MODE = bare-metal` |
+| `/opt/aprs-igate` | The whole project. `igate.conf` is installed unchanged; your laptop's own `igate.local.conf`, if you have one, is left out |
+| `/opt/aprs-igate/igate.local.conf` | Settings for the Pi only: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (the systemd unit runs it instead), and commented examples for device overrides |
 | Three systemd units | WiFi country → first-boot setup → the gateway |
 
 Your `igate.secrets` is copied at mode 600. Your `pi.secrets` is **not** — the
@@ -293,17 +298,19 @@ Then check the gateway itself:
 systemctl status aprs-igate
 ```
 
-**On the very first boot this will probably have failed, and that's expected.**
-The audio and serial device names were copied from your laptop and almost
-certainly don't match the Pi. Part 6 fixes that.
+With the FTX-1 plugged in, this normally shows `Active: active (exited)` on the
+first boot: the radio profile's device names match what a Pi 3A+ assigns. If it
+failed instead, the Pi numbered the radio's devices differently, and Part 6 fixes
+that. Do Part 6's check either way.
 
 ---
 
 ## Part 6 — Point the config at the Pi's hardware
 
 The Pi enumerates its own USB hardware, so `ADEVICE`, `CAT_DEVICE` and
-`PTT_DEVICE` need checking. The installed `igate.conf` carries a comment at the
-top saying exactly this.
+`PTT_DEVICE` need checking. Their defaults come from the radio profile,
+`radios/ftx1.conf`, which was written on your laptop; the Pi's `igate.local.conf`
+carries a comment at the top saying so.
 
 With the radio plugged in and powered on:
 
@@ -316,9 +323,10 @@ arecord -l
 card 0: Device [Yaesu FTX-1], device 0: USB Audio [USB Audio]
 ```
 
-The card number is what matters. `card 0` means `ADEVICE = plughw:0,0`. On the
-Pi this is usually card 0, because unlike your laptop the Pi has no built-in
-capture device competing for the slot.
+The card number is what matters: `card 1` means `ADEVICE = plughw:1,0`, which is
+what the profile uses and what a Pi 3A+ with the FTX-1 has been observed to
+assign. A different number means overriding `ADEVICE` below. `card 0` means
+`plughw:0,0`, and so on.
 
 Then the serial ports:
 
@@ -330,19 +338,26 @@ The FTX-1 presents two: a `ttyUSB` for CAT and a `ttyACM` for PTT. If you see
 several, `dmesg | tail -30` right after plugging the radio in tells you which
 belongs to what.
 
-Edit the config:
+If the Pi's values differ from the profile, **override them in the Pi's
+`igate.local.conf`** — not in `igate.conf`, which is shared with every machine, and
+not in `radios/ftx1.conf`, which describes the radio wherever it is used:
 
 ```bash
 cd ~/aprs-igate
-nano igate.conf
+nano igate.local.conf
 ```
 
 (`~/aprs-igate` is a symlink to `/opt/aprs-igate`, which is where the project
 actually lives. Either path works.)
 
-Set the three device lines to match. Leave everything else — `MYCALL`,
-`RADIO_MODE = PKTFM`, the audio levels, the whitelist — exactly as calibrated on
-the laptop.
+Uncomment and set only the lines that differ — for example:
+
+```
+ADEVICE = plughw:0,0
+```
+
+Leave everything else alone: `MYCALL`, `RADIO_MODE = PKTFM`, the audio levels, the
+whitelist. If the Pi's devices already match the profile, there is nothing to add.
 
 Check your work without starting anything:
 
@@ -351,7 +366,9 @@ Check your work without starting anything:
 ```
 
 It prints every resolved setting, masks the passcode, and shows the Direwolf
-filter your whitelist compiles to. Then start it:
+filter your whitelist compiles to. It then lists which layer each setting came
+from: `DEPLOY_MODE` should be credited to `igate.local.conf`, and any override you
+added appears under *Overrides in effect*. Then start it:
 
 ```bash
 sudo systemctl restart aprs-igate
@@ -511,6 +528,13 @@ ss -tln | grep 8080
 
 Turn it off per-build with `PI_WEB_MONITOR = no` in `pi.conf`, or right now with
 `sudo systemctl disable --now igate-web`.
+
+On the Pi, `igate-web.service` is what runs it, not `deploy_igate.sh`. That is why
+the Pi's `igate.local.conf` says `WEB_MONITOR = no`. It stops `up` starting a
+second copy that would fight the service for port 8080. On a laptop in docker
+mode it is the other way round: `./deploy_igate.sh up` starts the monitor, at
+`http://localhost:8080/` on the laptop. `aprs-igate.local` is always the Pi's
+name, never the laptop's.
 
 **Read-only, and unauthenticated.** It cannot edit the whitelist, restart the
 gateway, or show the raw log — there is no POST handler at all, and the APRS-IS
@@ -833,6 +857,25 @@ from the second attempt onward. They also carry `igate-firstboot.timer`, which
 re-runs setup every 10 minutes until it succeeds, and depend on it with `Wants=`
 rather than `Requires=` — so a failed attempt no longer blocks the gateway
 indefinitely, and an archive outage heals itself without anyone logging in.
+
+**`docker not found`, or the Pi tries to run Docker.** The Pi's
+`igate.local.conf` is missing, so `DEPLOY_MODE` has fallen back to its default,
+`docker`. `./deploy_igate.sh config` confirms it, listing `DEPLOY_MODE` under
+*built-in default*. Recreate the file:
+
+```bash
+echo 'DEPLOY_MODE = bare-metal' > ~/aprs-igate/igate.local.conf
+sudo systemctl restart aprs-igate
+```
+
+`down` still works in this state — it stops a running bare-metal gateway even when
+the mode resolves to docker — so the gateway can always be stopped first.
+
+This is also the one step needed before **updating a Pi built before
+`igate.local.conf` existed** with newer files from the repository. The old
+`igate.conf` on such a Pi carries `DEPLOY_MODE = bare-metal` itself; the current
+one deliberately does not. Create the local file first, then copy the new files
+across.
 
 **`systemctl status aprs-igate` shows `failed`.**
 

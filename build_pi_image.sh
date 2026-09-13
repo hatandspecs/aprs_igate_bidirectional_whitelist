@@ -359,28 +359,60 @@ install_project() {
     --exclude 'pi-build/' \
     --exclude '__pycache__/' \
     --exclude 'pi.secrets' \
+    --exclude 'igate.local.conf' \
     "${SCRIPT_DIR}/" "${dest}/"
 
-  # The Pi runs bare-metal. Rewrite only the installed copy.
-  sudo sed -i 's/^DEPLOY_MODE *=.*/DEPLOY_MODE = bare-metal/' "${dest}/igate.conf"
+  # igate.conf is installed exactly as it is in the repository. It is the shared
+  # station configuration, and a copy of it has to work unchanged on any machine —
+  # so nothing specific to the Pi is written into it. What is true only of the Pi
+  # goes in the Pi's own igate.local.conf, written fresh here. The build host's
+  # igate.local.conf is excluded above: it describes that machine, not this one.
+  local tmp; tmp="$(mktemp)"
+  cat > "$tmp" <<'LOCAL'
+# igate.local.conf — settings true of THIS machine only. Written by
+# build_pi_image.sh for the pi-gate. Gitignored; see igate.local.conf.example.
+#
+# Layers, lowest priority first; each overrides only the keys it sets:
+#   1. radios/<RADIO>.conf   how to drive the radio      hardware keys only
+#   2. igate.conf            the station                 any key
+#   3. igate.local.conf      THIS FILE: one machine      DEPLOY_MODE, RADIO,
+#                                                        WEB_*, hardware keys only
+#   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
+#   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
+#
+# This file may not set the whitelist, beacon, callsign, APRS-IS login or
+# transmit path; those live only in igate.conf and a local file that tries is
+# refused. `./deploy_igate.sh config` shows which layer supplied every setting.
 
-  # The Pi is a different machine: its audio card and serial ports are
-  # enumerated at first boot, not known now. Flag them at the top of the file.
-  local hdr; hdr="$(mktemp)"
-  {
-    echo "# NOTE: ADEVICE, CAT_DEVICE and PTT_DEVICE below were copied from the"
-    echo "# build host. Verify them on the Pi with 'arecord -l' and"
-    echo "# 'ls /dev/ttyUSB* /dev/ttyACM*' before trusting the gateway."
-    sudo cat "${dest}/igate.conf"
-  } > "$hdr"
-  sudo cp "$hdr" "${dest}/igate.conf"
-  rm -f "$hdr"
+# The Pi runs Direwolf directly under systemd, not in a container.
+DEPLOY_MODE = bare-metal
+
+# The web monitor runs as its own hardened systemd unit here, igate-web.service
+# (PI_WEB_MONITOR and PI_WEB_PORT in pi.conf), which restarts it on failure and
+# caps its memory. This stops deploy_igate.sh starting a second copy on the same
+# port. Check it with: systemctl status igate-web
+WEB_MONITOR = no
+
+# Device paths come from the radio profile and were written on the build host.
+# Check them here with 'arecord -l' and 'ls -l /dev/serial/by-id/'. If this Pi
+# enumerates them differently, override them below rather than editing the
+# shared profile:
+#   ADEVICE = plughw:0,0
+#   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
+#   PTT_DEVICE = /dev/ttyACM0
+
+# To run this Pi with a different radio than igate.conf names:
+#   RADIO = ftx1
+LOCAL
+  sudo cp "$tmp" "${dest}/igate.local.conf"
+  sudo chmod 644 "${dest}/igate.local.conf"
+  rm -f "$tmp"
 
   sudo chmod 600 "${dest}/igate.secrets"
   # The tmpfs needs an existing directory to mount over; rsync excluded run/.
   sudo mkdir -p "${dest}/run"
   note "installed to /opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
-  note "DEPLOY_MODE set to bare-metal in the installed copy"
+  note "igate.local.conf written with DEPLOY_MODE = bare-metal; igate.conf installed unchanged"
 }
 
 # The pi-gate is unplugged rather than shut down, so the design goal is that

@@ -27,6 +27,7 @@ Prototype platform: Fedora laptop + Yaesu FTX-1 Optima (USB-C)
   - [13.5 Operational tooling](#135-operational-tooling)
   - [13.6 Transmit path, receive filter, and beacon](#136-transmit-path-receive-filter-and-beacon)
   - [13.7 Read-only LAN web monitor](#137-read-only-lan-web-monitor)
+  - [13.8 Configuration layers](#138-configuration-layers)
 - [14. Operating constraints](#14-operating-constraints)
   - [14.1 Log tags do not mean what they appear to](#141-log-tags-do-not-mean-what-they-appear-to)
   - [14.2 Uplink logging requires `-d i`](#142-uplink-logging-requires--d-i)
@@ -170,7 +171,7 @@ Exact menu labels on this radio are new, so treat these as the settings to locat
 
 ## 7. Direwolf Configuration
 
-`deploy_igate.sh` generates this file from `igate.conf` on every start (§13); it
+`deploy_igate.sh` generates this file from the configuration layers on every start (§13.8); it
 is shown here to document what the gateway actually requires. Substitute the
 audio card number, hamlib rig model and passcode for the station.
 
@@ -315,9 +316,9 @@ Once the criteria pass, the configuration moves to a permanent build largely
 unchanged. Host and radio for that build are not yet decided. The differences to
 expect:
 
-- `ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` change to match the chosen host's
-  audio interface and the chosen radio's data connector. `RIG_MODEL` changes to
-  that radio's hamlib model. Everything from `IGSERVER` down is unaffected.
+- A different radio is a different radio profile, and a different host's device
+  paths belong in that host's `igate.local.conf` (§13.8). The station's own
+  settings — everything that decides what it transmits — are unaffected by either.
 - Whichever radio is chosen, confirm it has a data/packet mode that routes
   transmit audio from the host interface rather than the microphone input
   (§13.1), and check whether it presents CAT and PTT on one port or two
@@ -339,14 +340,16 @@ deployment rather than a hand-edited `direwolf.conf`.
 
 | File | Purpose |
 |------|---------|
-| `igate.conf` | The only file edited by the operator. Plain `key = value`. |
+| `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, transmit path, radio. Identical on every machine. |
+| `radios/<name>.conf` | Radio profiles: how to drive one radio. Hardware keys only. |
+| `igate.local.conf` | One machine: deployment mode, radio, device overrides. Gitignored; template in `igate.local.conf.example`. |
 | `igate.secrets` | APRS-IS passcode. Gitignored. |
-| `deploy_igate.sh` | Single entry point: `config`, `build`, `up`, `down`, `restart`, `status`, `logs`, `monitor`, `uninstall`. |
+| `deploy_igate.sh` | Single entry point: `config`, `build`, `up`, `down`, `restart`, `status`, `logs`, `monitor`, `audio`, `is-running`, `uninstall`. |
 | `Dockerfile`, `entrypoint.sh` | Container image and process startup. |
 | `run/` | Generated at runtime: rendered `direwolf.conf`, status page, logs. Gitignored. |
 
-`direwolf.conf` is a build artefact, regenerated from `igate.conf` on every
-start and never edited directly.
+`direwolf.conf` is a build artefact, regenerated from the configuration layers
+(§13.8) on every start and never edited directly.
 
 ### 13.1 Radio requirements
 
@@ -522,7 +525,7 @@ suppresses that.
 whitelist and resolved filter.
 
 `audio` exists because a level cannot be set correctly by choosing a number.
-Mixer values in `igate.conf` are raw ALSA values on a scale that differs between
+Mixer values in a radio profile are raw ALSA values on a scale that differs between
 devices, and `amixer` clamps a too-large value silently rather than reporting it —
 on one real control (`Mic Boost Volume`, `min=0,max=3`) a configured `35` becomes
 `3` with no indication. `audio` prints every control with its range and current
@@ -590,8 +593,35 @@ the script rather than inspecting the gateway: `monitor` for the packet stream a
 is a container in docker mode and pidfiles in bare-metal, and an earlier version
 of the page read `run/*.pid` directly, which reported every healthy containerised
 deployment as stopped. `status` was unsuitable to call instead because it also
-rewrites `run/status.html`, and the page polls. In docker mode the server runs on
-the host, since it invokes `docker` by way of the script.
+rewrites `run/status.html`, and the page polls.
+
+The server runs on the host in both modes, never in the container. It invokes
+`docker` by way of the script, and the only means of granting a container that is
+the Docker socket, which is root on the host — granted to the one process that
+accepts network connections. Two mechanisms start it, one per kind of host:
+
+- **On the Pi**, `igate-web.service` runs it with a restart policy, a memory cap
+  and filesystem protection. The Pi's generated `igate.local.conf` sets
+  `WEB_MONITOR = no` so `deploy_igate.sh` never starts a competing copy on the
+  same port.
+- **Elsewhere**, `WEB_MONITOR = yes` makes `up` start it and `down` stop it. `up`
+  starts it even when the gateway is already running, which is the path back
+  after a reboot: Docker's restart policy restores the container, but nothing
+  restores a host process. A monitor that fails to start, typically on a port
+  already in use, produces a warning and leaves `up`'s result unchanged, because
+  the gateway is already on the air by then.
+
+Three process-handling details were each wrong once. First, the pidfile holds the
+server's own PID only because `nohup` execs Python. `setsid` in that position
+forks when its caller leads a process group, which leaves `$!` naming an exited
+process; the startup check then reported a running monitor as failed and lost
+track of it. Second, liveness compares `/proc/<pid>/cmdline` with `igate_web.py`
+rather than relying on `kill -0` alone, so a pidfile that outlived a reboot cannot
+name an unrelated process that `down` would then signal. Third, the server
+starts the `monitor` pipeline in its own session and signals that session on
+SIGTERM or Ctrl+C. Python's default SIGTERM disposition exits without cleanup,
+and `tail -f` never learns its reader has gone, because nothing more is written
+to the pipe. Without that handler every stop left the pipeline running.
 
 Three decisions carry the design.
 
@@ -626,6 +656,61 @@ page, where forwarding a port would place a hand-written HTTP server on the
 public internet — and the exposure that matters there is not the APRS data, which
 is public anyway, but a foothold on the network the Pi shares with everything
 else.
+
+### 13.8 Configuration layers
+
+Settings are resolved from five layers, lowest priority first. Each overrides only
+the keys it sets.
+
+| Layer | File | Describes | May set |
+|-------|------|-----------|---------|
+| 1 | `radios/<RADIO>.conf` | how to drive one radio | hardware keys |
+| 2 | `igate.conf`, or a config named on the command line | the station | any key |
+| 3 | `igate.local.conf` | one machine | `DEPLOY_MODE`, `RADIO`, `WEB_MONITOR`, `WEB_PORT`, `WEB_BIND`, hardware keys |
+| 4 | `igate.secrets` | the APRS-IS passcode | `IGLOGIN_PASSCODE` |
+| 5 | environment | one invocation | `IGATE_MODE`, `IGATE_PASSCODE` |
+
+The division follows what each fact is about. A station's callsign, whitelist and
+beacon are the same wherever it runs; a radio's CAT model, mixer controls and
+calibrated levels are the same whichever machine drives it; a deployment mode and a
+USB device path are true of one machine only. Held in a single file, every copy of
+that file carried one machine's facts to the next — copying it to the Pi replaced
+`DEPLOY_MODE = bare-metal` with a workstation's `docker`, and the image builder had
+to edit the shared file to make it fit. `igate.conf` is now installed on the Pi
+byte for byte, the build writes the Pi's own `igate.local.conf`, and the build
+host's local file is excluded from the image.
+
+**Transmit policy is confined to layer 2.** The whitelist, beacon, callsign,
+APRS-IS login and transmit path appear on neither restricted layer's list, so a
+radio profile or local file cannot set them, and one that tries is refused with the
+keys named. Selecting a radio or configuring a machine therefore cannot change what
+the station transmits, and the policy governing a running gateway is always the one
+in the committed file. The lists are allowlists rather than denylists, so a setting
+added later is protected without anyone remembering to protect it. `igate.secrets`
+is held to its single key for the same reason: it is gitignored, and anything else
+in it would be an override no reviewer of the repository could see.
+
+`RADIO` is resolved in two passes, because the local file may select a different
+radio from `igate.conf` and the profile cannot be loaded until that is settled. The
+second pass applies every layer from scratch, in priority order.
+
+The capability keys, `CAT` and `PTT_METHOD`, describe what a radio can do, and the
+start paths branch on them rather than on a profile's name. Their values and
+combinations are validated: PTT by CAT command with no CAT link is refused, since
+nothing could key the radio.
+
+A defective layer does not disable every command. `config` and `up` refuse to
+proceed, but commands that do not need the radio keep working, and a layer's
+allowed keys still load when forbidden ones are present — so a local file with a
+stray policy key still supplies `DEPLOY_MODE`. `down` stops a running bare-metal
+gateway even when the mode resolves to `docker`, which is what a Pi with a missing
+local file would resolve to. A configuration error can prevent the gateway from
+starting; it cannot leave a transmitter running that the tooling cannot stop.
+
+`config` reports provenance: the layer that supplied each setting, the full override
+chain for any key set by more than one layer, and any ignored keys. A config with no
+`RADIO` line reads every hardware key from itself, as all configs did before profiles
+existed, and renders and starts identically (§15.1).
 
 ---
 
@@ -807,14 +892,14 @@ belongs only in a test.
   single change. Until then this is an open question, not a defect — and an
   earlier attempt to "fix" it by setting 80% instead of a raw 35 silently halved
   the capture gain, because 35 was already the ceiling.
-- **Audio levels are not self-calibrating.** The values in `igate.conf` were
+- **Audio levels are not self-calibrating.** The values in each radio profile are
   determined empirically for one radio at one power level. A calibration routine
   that transmits and checks for a digipeat would remove the manual step.
-- **Mixer control names are assumed.** `apply_audio_levels` looks for
-  `Speaker Playback Volume` and `Mic Capture Volume`; other codecs will differ.
-  It warns rather than failing. A different radio and interface will very likely
-  need different names, which is the main thing standing between the current
-  configuration and a second supported radio.
+- **Mixer control names must be discovered per interface.** They are profile
+  settings (`MIXER_TX_CONTROL`, `MIXER_RX_CONTROL`, `MIXER_AGC_CONTROL`),
+  defaulting to the FTX-1 codec's names. A wrong name does nothing except print a
+  note at startup, so a new profile's names should be confirmed with
+  `deploy_igate.sh audio` rather than assumed.
 - **The SD card is write-avoiding, not read-only.** §16.8 removes the routine
   writers, so power removal has almost nothing to interrupt, but a deliberate
   configuration change still writes to the card and the window is non-zero. A
@@ -856,15 +941,17 @@ belongs only in a test.
   rather than with benchmarks. Note also that better demodulation would not
   address the current low-audio symptom, which is mixer gain (§13.5) and free to
   correct.
-- **Only one radio and interface combination is supported.** The configuration
-  assumes a transceiver presenting its own USB audio codec and two serial ports.
-  A handheld driven through an external sound-card interface is a different
-  shape: audio on a separate USB device, and PTT typically by serial control
-  line rather than by CAT command, with no CAT channel at all on radios that
-  have none. `PTT_TYPE` already accepts `RTS` and `DTR`, and `RADIO_SET_ON_UP`
-  can be turned off, so the pieces are present; what is untested is the
-  combination. A Yaesu VX-6R with a DigiRig Lite is the candidate for evaluating
-  this and has not been attempted.
+- **Only one radio is implemented, though the structure for more exists.** Radio
+  profiles and capability keys (§13.8) make a second radio a second profile. What
+  does not exist yet are start paths for a radio without CAT control and for
+  hardware PTT: `CAT = none` and `PTT_METHOD = cm108`, `rts` or `dtr` are
+  recognised and refused, because every start path still launches `rigctld` and
+  the container entrypoint requires CAT settings. A Yaesu VX-6R on a Digirig Lite
+  is the planned second profile. It has no CAT control, so frequency and mode can
+  neither be set nor verified in software, and it keys by CM108 GPIO over HID,
+  which needs `/dev/hidraw` access on the host and in the container and a udev
+  rule on whichever machine owns the device. That PTT method is also inherently
+  fail-safe, unlike PTT by CAT command.
 ### 15.1 Verified behaviour
 
 | Function | Evidence |
@@ -878,6 +965,11 @@ belongs only in a test.
 | Unattended restart | After a reboot, first-boot setup is condition-skipped on its relocated marker, the `run/` tmpfs remounts from `fstab` before the service starts, and the gateway is gating 14 seconds later with no intervention |
 | Forced digipeat path | `TX_VIA` places the named digipeater in the transmitted path; a round trip completes through it in both directions |
 | Receive path filter | With `RX_VIA` set, the same frame heard twice — once direct, once repeated — is refused and gated respectively, one second apart |
+| Radio profiles preserve behaviour | With the FTX-1's settings moved into `radios/ftx1.conf` and the station separated from the machine, every start path — docker and bare-metal, with and without a host device override, the forced-path test config, and a config file written before profiles existed — renders a byte-identical `direwolf.conf` and issues identical `docker run`, `rigctld`, `direwolf`, `amixer` and `rigctl` invocations to the code before the change |
+| Pi image uses the layers | The installed `igate.conf` is byte-identical to the repository's, the Pi receives a generated `igate.local.conf` with `DEPLOY_MODE = bare-metal` and `WEB_MONITOR = no`, a build host's own `igate.local.conf` does not reach the image, and the installed tree resolves bare-metal from its local file |
+| Refactored configuration on the air | One `igate.conf` and one `radios/ftx1.conf` carried a full SMS round trip, RF to APRS-IS and APRS-IS to RF with the handheld's acknowledgements heard, on the FTX-1 in docker mode on the laptop and in bare-metal mode on a freshly built Pi 3A+. On the Pi the gateway started itself at boot on the profile's device names unchanged (`plughw:1,0`, `/dev/ttyUSB0`, `/dev/ttyACM0`). `config` there credited `DEPLOY_MODE` and `WEB_MONITOR` to `igate.local.conf`, `RADIO` to `igate.conf` and the passcode to `igate.secrets`, with those two overrides and no others |
+| Configuration layers | A local file's `DEPLOY_MODE`, `RADIO` and device paths override the station config and radio profile, with each override chain reported by `config`; a local file or profile that sets the whitelist or beacon is refused, while `down` still honours its `DEPLOY_MODE`; stray keys in `igate.secrets` are ignored and reported; and `down` stops a running bare-metal gateway when the mode resolves to docker, including with no docker binary installed |
+| Web monitor lifecycle | In docker mode on the laptop, `up` against a running gateway started only the monitor, and the page, status endpoint and event stream answered on the LAN address. In isolation: a second `up` is a no-op; `down` leaves no server and no `monitor` pipeline, and so does Ctrl+C; a busy port is reported with the cause, leaves no pidfile, and does not fail `up`; a pidfile naming an unrelated live process is neither reported as the monitor nor signalled; `WEB_MONITOR = no` starts nothing; `WEB_BIND = 127.0.0.1` listens on loopback only; invalid `WEB_MONITOR` and `WEB_PORT` values are refused |
 
 ---
 
@@ -1028,9 +1120,9 @@ requires enabling `KISS_PORT` for its duration.
 
 The project is installed to `/opt/aprs-igate`, outside `/home` for the reason in
 §16.2, and symlinked to `~/aprs-igate` on first boot so that it is one `cd` away
-after logging in. The Pi runs bare-metal; `build_pi_image.sh` rewrites
-`DEPLOY_MODE = bare-metal` into the installed copy of `igate.conf` and leaves the
-working copy untouched.
+after logging in. The Pi runs bare-metal. `build_pi_image.sh` installs
+`igate.conf` unchanged and writes `DEPLOY_MODE = bare-metal` into a fresh
+`igate.local.conf` for the Pi, excluding the build host's own local file (§13.8).
 On a Pi 3A+ the case for the container is weak: 512 MB of RAM is not much to
 spend on a container runtime, and the isolation argument is weaker on a
 single-purpose appliance that has nothing else to be isolated from. The same
@@ -1038,11 +1130,11 @@ reasoning drives the 32-bit `armhf` image default.
 
 The 3A+ has one USB-A port, so a radio plus anything else needs a hub.
 
-`ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` are copied from the build host and will
-not generally match the Pi, which enumerates its own hardware. The installed
-`igate.conf` is prefixed with a comment recording this. They are left as copied
-rather than blanked so that the file remains valid and the correct shape is
-visible.
+`ADEVICE`, `CAT_DEVICE` and `PTT_DEVICE` come from the radio profile, written on
+the build host, and will not necessarily match the Pi, which enumerates its own
+hardware. The generated `igate.local.conf` records this and carries commented
+overrides, so a correction lands in the Pi's own file rather than in the shared
+profile or `igate.conf`.
 
 ### 16.7 Secrets on the card
 

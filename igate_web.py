@@ -29,6 +29,7 @@ import os
 import queue
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -86,12 +87,16 @@ class MonitorStream:
     def _run(self):
         while True:
             try:
+                # Its own session, so stop() can signal the whole pipeline
+                # `monitor` runs (`tail -f | gawk`, or `docker logs -f | gawk`)
+                # rather than only the shell at its head.
                 self.proc = subprocess.Popen(
                     self.cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
                     bufsize=1,
+                    start_new_session=True,
                 )
             except OSError as exc:
                 self._publish({"kind": "note", "text": f"cannot start monitor: {exc}"})
@@ -117,6 +122,17 @@ class MonitorStream:
             # The gateway was stopped or restarted. Say so, then reconnect.
             self._publish({"kind": "note", "text": "monitor ended — retrying in 5s"})
             time.sleep(5)
+
+    def stop(self):
+        """Signal the monitor pipeline. Without this, `tail -f` outlives the
+        server and follows the log forever, because nothing ever writes to the
+        pipe that would tell it the reader has gone."""
+        proc = self.proc
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     def subscribe(self):
         q = queue.Queue(maxsize=500)
@@ -300,16 +316,28 @@ def main():
         os.path.join(script_dir, "deploy_igate.sh"), "monitor",
     ]
 
+    # Bound before the monitor starts, so a busy port fails without having
+    # started a pipeline that would then need cleaning up.
+    httpd = ThreadingHTTPServer((BIND, PORT), Handler)
+    httpd.daemon_threads = True
+
     SETTINGS = Settings(script_dir)
     STREAM = MonitorStream(cmd)
 
-    httpd = ThreadingHTTPServer((BIND, PORT), Handler)
-    httpd.daemon_threads = True
+    # SIGTERM is how both `deploy_igate.sh down` and systemd stop this. Python's
+    # default for it exits without running any cleanup, which would leave the
+    # monitor pipeline running; raising SystemExit reaches the finally below.
+    def _terminate(_signum, _frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _terminate)
+
     print(f"igate-web listening on http://{BIND}:{PORT}/  (read-only)", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        STREAM.stop()
 
 
 if __name__ == "__main__":

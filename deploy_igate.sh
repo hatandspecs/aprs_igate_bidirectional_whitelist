@@ -8,8 +8,9 @@
 #                                     config (like `docker-compose config`).
 #   ./deploy_igate.sh build [file]    docker mode: build the image.
 #                                     bare-metal mode: install direwolf/hamlib.
-#   ./deploy_igate.sh up [file]       Render direwolf.conf and start it.
-#   ./deploy_igate.sh down [file]     Stop it.
+#   ./deploy_igate.sh up [file]       Render direwolf.conf and start it, plus the
+#                                     LAN web monitor if WEB_MONITOR = yes.
+#   ./deploy_igate.sh down [file]     Stop it, and the web monitor.
 #   ./deploy_igate.sh restart [file]  down, then up.
 #   ./deploy_igate.sh status [file]   Is it running; also writes run/status.html.
 #   ./deploy_igate.sh logs [file]     Follow the raw Direwolf log.
@@ -22,8 +23,24 @@
 #                                     hamlib/alsa-utils (shared with other ham
 #                                     radio software — see README.md).
 #
-# DEPLOY_MODE in igate.conf picks docker (default) or bare-metal; override
-# per-invocation with the IGATE_MODE env var.
+#   ./deploy_igate.sh audio [file]    Mixer ranges and received levels.
+#   ./deploy_igate.sh is-running [file] Exit 0 if up; no side effects.
+#
+# Settings are resolved from layers, lowest priority first; each overrides only
+# the keys it sets (see load_and_resolve, and `config` for what came from where):
+#
+#   1. radios/<RADIO>.conf   how to drive the radio      hardware keys only
+#   2. igate.conf            the station                 any key
+#   3. igate.local.conf      one machine (gitignored)    DEPLOY_MODE, RADIO,
+#                                                        WEB_*, hardware keys only
+#   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
+#   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
+#
+# The whitelist, beacon, callsign, APRS-IS login and transmit path can only come
+# from igate.conf. A profile or local file that sets them is refused, so which
+# radio or which machine runs the gateway never changes what it transmits. A
+# config with no RADIO keeps its hardware keys inline, as every config did before
+# profiles existed, and still works unchanged.
 #
 # The APRS-IS passcode is never required to live in igate.conf. It is
 # resolved in this order (highest priority first): the IGATE_PASSCODE
@@ -35,6 +52,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CONFIG="${SCRIPT_DIR}/igate.conf"
 SECRETS_FILE="${SCRIPT_DIR}/igate.secrets"
+LOCAL_CONFIG="${SCRIPT_DIR}/igate.local.conf"
 RUN_DIR="${SCRIPT_DIR}/run"
 RENDERED_CONF="${RUN_DIR}/direwolf.conf"
 STATUS_HTML="${RUN_DIR}/status.html"
@@ -48,40 +66,81 @@ BARE_DIREWOLF_PID="${RUN_DIR}/direwolf.pid"
 BARE_RIGCTLD_PID="${RUN_DIR}/rigctld.pid"
 BARE_LOG="${RUN_DIR}/direwolf.log"
 
+WEB_PID="${RUN_DIR}/igate-web.pid"
+WEB_LOG="${RUN_DIR}/igate-web.log"
+
 declare -A CFG
 MODE=""
 
 # --- config file parsing (plain "key = value", # comments, blank lines) ---
-load_config() {
-  local file="$1"
-  [[ -f "$file" ]] || { echo "Config file not found: $file" >&2; exit 1; }
-
-  local line key val
+# Emits one "key<TAB>value" line per setting. A comment runs from the first # to
+# the end of the line, so a value can never contain one.
+_parse_conf() {
+  local file="$1" line key val
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
     line="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$line")"
     [[ -z "$line" || "$line" != *"="* ]] && continue
     key="$(sed -e 's/[[:space:]]*$//' <<<"${line%%=*}")"
     val="$(sed -e 's/^[[:space:]]*//' <<<"${line#*=}")"
-    CFG["$key"]="$val"
+    printf '%s\t%s\n' "$key" "$val"
   done < "$file"
 }
 
+# Every setting is applied through here, so the provenance `config` reports is
+# exact: CFG_SRC holds the layer that supplied each key's final value, and
+# CFG_OVERRIDDEN the full chain for any key more than one layer set.
+_set_key() {  # key value source-label
+  local key="$1" val="$2" src="$3"
+  if [[ -n "${CFG_SRC[$key]:-}" && "${CFG_SRC[$key]}" != "$src" ]]; then
+    CFG_OVERRIDDEN[$key]="${CFG_OVERRIDDEN[$key]:-${CFG_SRC[$key]}} -> ${src}"
+  fi
+  CFG["$key"]="$val"
+  CFG_SRC["$key"]="$src"
+}
+
+# An unrestricted layer: the main config may set anything.
+load_config() {  # file [source-label]
+  local file="$1" label="${2:-$(basename "$1")}" key val
+  [[ -f "$file" ]] || { echo "Config file not found: $file" >&2; exit 1; }
+  while IFS=$'\t' read -r key val; do
+    _set_key "$key" "$val" "$label"
+  done < <(_parse_conf "$file")
+}
+
+# igate.secrets holds the passcode and nothing else. It is gitignored, so any
+# other key in it would override the committed config invisibly — including the
+# whitelist. Other keys are ignored and reported by `config`.
 apply_secrets() {
+  local key val ignored=""
   if [[ -f "$SECRETS_FILE" ]]; then
-    load_config "$SECRETS_FILE"
+    while IFS=$'\t' read -r key val; do
+      if [[ "$key" == IGLOGIN_PASSCODE ]]; then
+        _set_key "$key" "$val" igate.secrets
+      else
+        ignored+="$key "
+      fi
+    done < <(_parse_conf "$SECRETS_FILE")
+    if [[ -n "$ignored" ]]; then
+      LAYER_WARNINGS+="igate.secrets: ignored keys other than IGLOGIN_PASSCODE: ${ignored}"$'\n'
+    fi
   fi
   if [[ -n "${IGATE_PASSCODE:-}" ]]; then
-    CFG[IGLOGIN_PASSCODE]="$IGATE_PASSCODE"
+    _set_key IGLOGIN_PASSCODE "$IGATE_PASSCODE" "IGATE_PASSCODE environment variable"
   fi
 }
 
+# IGATE_MODE, when set, is the top layer for DEPLOY_MODE.
 resolve_mode() {
-  MODE="${IGATE_MODE:-${CFG[DEPLOY_MODE]:-docker}}"
+  if [[ -n "${IGATE_MODE:-}" ]]; then
+    _set_key DEPLOY_MODE "$IGATE_MODE" "IGATE_MODE environment variable"
+  fi
+  MODE="${CFG[DEPLOY_MODE]:-docker}"
+  [[ -n "${CFG_SRC[DEPLOY_MODE]:-}" ]] || CFG_SRC[DEPLOY_MODE]="built-in default"
   case "$MODE" in
     docker|bare-metal) ;;
     *)
-      echo "Invalid mode '$MODE' (DEPLOY_MODE in config or IGATE_MODE env var)." >&2
+      echo "Invalid mode '$MODE' (DEPLOY_MODE, from ${CFG_SRC[DEPLOY_MODE]})." >&2
       echo "Must be 'docker' or 'bare-metal'." >&2
       exit 1
       ;;
@@ -89,12 +148,123 @@ resolve_mode() {
 }
 
 CONFIG_IN_USE=""
+RADIO_PROFILE=""
+LOCAL_CONFIG_IN_USE=""
+LAYER_ERRORS=""
+LAYER_WARNINGS=""
+
+declare -A CFG_SRC=()
+declare -A CFG_OVERRIDDEN=()
+
+# Which keys each restricted layer may set. Transmit policy — the whitelist,
+# beacon, callsign, APRS-IS login and transmit path — is on neither list, so it
+# can only ever come from the main config.
+declare -A PROFILE_KEY_OK=() LOCAL_KEY_OK=()
+for _k in RADIO_DESCRIPTION CAT PTT_METHOD RIG_MODEL CAT_DEVICE CAT_BAUD \
+          PTT_DEVICE PTT_TYPE ACHANNELS ADEVICE MIXER_TX_CONTROL \
+          MIXER_RX_CONTROL MIXER_AGC_CONTROL TX_AUDIO_LEVEL RX_AUDIO_LEVEL \
+          DISABLE_AGC RADIO_SET_ON_UP RADIO_FREQ RADIO_MODE RADIO_PASSBAND; do
+  PROFILE_KEY_OK[$_k]=1
+  LOCAL_KEY_OK[$_k]=1
+done
+unset _k
+# The local file describes a machine, so it may also say how that machine runs
+# the gateway, which radio is attached to it, and whether and where it serves the
+# web monitor.
+for _k in DEPLOY_MODE RADIO WEB_MONITOR WEB_PORT WEB_BIND; do
+  LOCAL_KEY_OK[$_k]=1
+done
+unset _k
+
+available_radios() {
+  local f names=""
+  for f in "${SCRIPT_DIR}"/radios/*.conf; do
+    [[ -f "$f" ]] && names+="$(basename "$f" .conf) "
+  done
+  echo "${names:-(none found in ${SCRIPT_DIR}/radios)}"
+}
+
+# A restricted layer: allowed keys are applied, anything else is collected into
+# LAYER_ERRORS, which validate_config refuses to proceed with. Allowed keys load
+# even when forbidden ones are present, so a local file with a stray
+# WHITELIST_CALLS still tells `down` the machine runs bare-metal.
+load_layer() {  # file label allowlist-array-name reason
+  local file="$1" label="$2" reason="$4" key val bad=""
+  local -n _allowed="$3"
+  while IFS=$'\t' read -r key val; do
+    if [[ -n "${_allowed[$key]:-}" ]]; then
+      _set_key "$key" "$val" "$label"
+    else
+      bad+="$key "
+    fi
+  done < <(_parse_conf "$file")
+  if [[ -n "$bad" ]]; then
+    LAYER_ERRORS+="Config: ${label} sets keys it may not: ${bad}— ${reason}"$'\n'
+  fi
+  return 0
+}
+
 load_and_resolve() {
   local file="${1:-$DEFAULT_CONFIG}"
+  local main_label; main_label="$(basename "$file")"
   CONFIG_IN_USE="$file"
-  load_config "$file"
+  RADIO_PROFILE=""; LOCAL_CONFIG_IN_USE=""; LAYER_WARNINGS=""
+
+  # Pass 1 only settles RADIO. The main config names the station's radio and the
+  # local file may name another for this machine, and the profile cannot be
+  # loaded until that is decided.
+  CFG=(); CFG_SRC=(); CFG_OVERRIDDEN=(); LAYER_ERRORS=""
+  load_config "$file" "$main_label"
+  if [[ -f "$LOCAL_CONFIG" ]]; then
+    load_layer "$LOCAL_CONFIG" igate.local.conf LOCAL_KEY_OK "."
+  fi
+  local radio="${CFG[RADIO]:-}"
+
+  # Pass 2 applies every layer from scratch, lowest priority first. A problem in
+  # a layer is recorded rather than fatal: validate_config refuses to render or
+  # start with one, but commands that do not need the radio — `down` above all —
+  # must still work, so a mistyped RADIO can never leave a transmitter running
+  # that this script cannot stop.
+  CFG=(); CFG_SRC=(); CFG_OVERRIDDEN=(); LAYER_ERRORS=""
+
+  # Layer 1: the radio profile.
+  if [[ -n "$radio" ]]; then
+    local profile="${SCRIPT_DIR}/radios/${radio}.conf"
+    if [[ ! "$radio" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+      LAYER_ERRORS+="Config: RADIO = '${radio}' is not a valid profile name (lower-case letters, digits, '.', '_', '-')."$'\n'
+    elif [[ ! -f "$profile" ]]; then
+      LAYER_ERRORS+="Config: RADIO = '${radio}', but ${profile} does not exist. Available: $(available_radios)"$'\n'
+    else
+      load_layer "$profile" "radios/${radio}.conf" PROFILE_KEY_OK \
+        "a radio profile holds hardware settings only."
+      RADIO_PROFILE="$profile"
+    fi
+  fi
+
+  # Layer 2: the station.
+  load_config "$file" "$main_label"
+
+  # Layer 3: this machine.
+  if [[ -f "$LOCAL_CONFIG" ]]; then
+    load_layer "$LOCAL_CONFIG" igate.local.conf LOCAL_KEY_OK \
+      "igate.local.conf may set only DEPLOY_MODE, RADIO, WEB_MONITOR, WEB_PORT, WEB_BIND and hardware keys."
+    LOCAL_CONFIG_IN_USE="$LOCAL_CONFIG"
+  fi
+
+  # Layers 4 and 5: the passcode, then the environment.
   apply_secrets
   resolve_mode
+
+  # What the radio can do. Everything downstream branches on these rather than on
+  # the profile's name, so another radio is another profile rather than more code.
+  # Unset means the FTX-1 behaviour this project has always had, which is exactly
+  # what a config without RADIO needs.
+  if [[ -z "${CFG[CAT]:-}" ]]; then
+    CFG[CAT]=hamlib; CFG_SRC[CAT]="built-in default"
+  fi
+  if [[ -z "${CFG[PTT_METHOD]:-}" ]]; then
+    CFG[PTT_METHOD]=rig; CFG_SRC[PTT_METHOD]="built-in default"
+  fi
 }
 
 require() {
@@ -109,14 +279,66 @@ require() {
   fi
 }
 
+# Capability values and combinations. Rejected here, at `config` and `up`, so a
+# configuration that cannot key the radio fails before anything is started rather
+# than on the air.
+validate_capabilities() {
+  case "${CFG[CAT]}" in
+    hamlib|none) ;;
+    *) echo "Config: CAT = '${CFG[CAT]}' is not valid. Use hamlib or none." >&2; exit 1 ;;
+  esac
+  case "${CFG[PTT_METHOD]}" in
+    rig|cm108|rts|dtr) ;;
+    *) echo "Config: PTT_METHOD = '${CFG[PTT_METHOD]}' is not valid. Use rig, cm108, rts or dtr." >&2; exit 1 ;;
+  esac
+
+  # PTT by CAT command needs a CAT connection to send it over.
+  if [[ "${CFG[PTT_METHOD]}" == rig && "${CFG[CAT]}" != hamlib ]]; then
+    echo "Config: PTT_METHOD = rig requires CAT = hamlib — with no CAT link there is nothing to key the radio over." >&2
+    exit 1
+  fi
+
+  # Valid, but the start paths do not exist yet: both still assume rigctld. Refused
+  # outright rather than half-working, because the half that would work is the
+  # transmitter.
+  if [[ "${CFG[CAT]}" == none ]]; then
+    echo "Config: CAT = none is not supported yet; every start path still assumes rigctld." >&2
+    exit 1
+  fi
+  if [[ "${CFG[PTT_METHOD]}" != rig ]]; then
+    echo "Config: PTT_METHOD = ${CFG[PTT_METHOD]} is not supported yet; only rig is implemented." >&2
+    exit 1
+  fi
+}
+
+validate_web() {
+  case "${CFG[WEB_MONITOR]:-no}" in
+    yes|no) ;;
+    *) echo "Config: WEB_MONITOR = '${CFG[WEB_MONITOR]}' is not valid. Use yes or no." >&2; exit 1 ;;
+  esac
+  local port="${CFG[WEB_PORT]:-8080}"
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    echo "Config: WEB_PORT = '${port}' is not a port number." >&2
+    exit 1
+  fi
+}
+
 validate_config() {
+  if [[ -n "$LAYER_ERRORS" ]]; then
+    printf '%s' "$LAYER_ERRORS" >&2
+    exit 1
+  fi
   require MYCALL
   require ADEVICE
-  require RIG_MODEL
-  require CAT_DEVICE
-  require CAT_BAUD
-  require PTT_DEVICE
-  require PTT_TYPE
+  validate_capabilities
+  validate_web
+  if [[ "${CFG[CAT]}" == hamlib ]]; then
+    require RIG_MODEL
+    require CAT_DEVICE
+    require CAT_BAUD
+    require PTT_DEVICE
+    require PTT_TYPE
+  fi
   require IGLOGIN_CALL
   require IGLOGIN_PASSCODE
   require WHITELIST_CALLS
@@ -314,11 +536,92 @@ port_desc() {
   if [[ "${1:-0}" == "0" ]]; then echo "0 (disabled)"; else echo "$1 (LISTENING ON ALL INTERFACES)"; fi
 }
 
+radio_desc() {
+  if [[ -n "$RADIO_PROFILE" ]]; then
+    echo "${CFG[RADIO]} (radios/${CFG[RADIO]}.conf, selected in ${CFG_SRC[RADIO]})"
+  else
+    echo "none — hardware keys come from $(basename "$CONFIG_IN_USE") itself"
+  fi
+}
+
+web_desc() {
+  local port="${CFG[WEB_PORT]:-8080}" bind="${CFG[WEB_BIND]:-0.0.0.0}"
+  if [[ "${CFG[WEB_MONITOR]:-no}" == yes ]]; then
+    if [[ "$bind" == 0.0.0.0 ]]; then
+      echo "yes — started by up, stopped by down; port ${port} on all interfaces"
+    else
+      echo "yes — started by up, stopped by down; ${bind}:${port}"
+    fi
+  elif [[ -f /etc/systemd/system/igate-web.service ]]; then
+    echo "no — igate-web.service runs it instead"
+  else
+    echo "no (not started by this script)"
+  fi
+}
+
+local_desc() {
+  if [[ -n "$LOCAL_CONFIG_IN_USE" ]]; then
+    echo "igate.local.conf (settings for this machine)"
+  else
+    echo "none"
+  fi
+}
+
+# Which layer supplied every setting, and every override — so "why does this
+# have that value" is answered by `config` rather than by reading five files.
+print_layers() {
+  local key label keys
+  local -A by_src=()
+  for key in "${!CFG_SRC[@]}"; do
+    by_src["${CFG_SRC[$key]}"]+="$key "
+  done
+  _sorted() { tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' '; }
+
+  echo "Where settings came from, lowest priority first:"
+  for label in "${RADIO_PROFILE:+radios/${CFG[RADIO]}.conf}" "$(basename "$CONFIG_IN_USE")" \
+               igate.local.conf igate.secrets \
+               "IGATE_MODE environment variable" "IGATE_PASSCODE environment variable" \
+               "built-in default"; do
+    [[ -z "$label" ]] && continue
+    keys="${by_src[$label]:-}"
+    case "$label" in
+      radios/*|"$(basename "$CONFIG_IN_USE")")
+        printf '  %-36s %s keys\n' "$label" "$(wc -w <<<"$keys" | tr -d ' ')" ;;
+      igate.local.conf)
+        if [[ -z "$LOCAL_CONFIG_IN_USE" ]]; then
+          printf '  %-36s %s\n' "$label" "(not present)"
+        else
+          printf '  %-36s %s\n' "$label" "$(_sorted <<<"$keys")"
+        fi ;;
+      *)
+        [[ -n "$keys" ]] && printf '  %-36s %s\n' "$label" "$(_sorted <<<"$keys")" ;;
+    esac
+  done
+
+  echo "Overrides in effect:"
+  if (( ${#CFG_OVERRIDDEN[@]} == 0 )); then
+    echo "  none"
+  else
+    for key in $(printf '%s\n' "${!CFG_OVERRIDDEN[@]}" | sort); do
+      printf '  %-20s %s\n' "$key" "${CFG_OVERRIDDEN[$key]}"
+    done
+  fi
+
+  if [[ -n "$LAYER_WARNINGS" ]]; then
+    echo "Warnings:"
+    printf '%s' "$LAYER_WARNINGS" | sed 's/^/  /'
+  fi
+}
+
 print_config() {
   local filter
   filter="$(build_filter)"
   cat <<EOF
 DEPLOY_MODE      = ${MODE}
+LOCAL_CONFIG     = $(local_desc)
+RADIO            = $(radio_desc)
+CAT              = ${CFG[CAT]}
+PTT_METHOD       = ${CFG[PTT_METHOD]}
 MYCALL           = ${CFG[MYCALL]}
 MODEM            = ${CFG[MODEM]}
 ACHANNELS        = ${CFG[ACHANNELS]}
@@ -337,10 +640,27 @@ RX_VIA           = $(rx_via_desc)
 BEACON           = $(beacon_desc)
 AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
 KISS_PORT        = $(port_desc "${CFG[KISS_PORT]:-0}")
+WEB_MONITOR      = $(web_desc)
 IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}
 
 Resolved Direwolf FILTER: IG 0 ${filter}
+
+$(print_layers)
 EOF
+}
+
+# Direwolf's PTT line for PTT_METHOD. Only "rig" is implemented; the others are
+# refused by validate_capabilities until their start paths exist.
+build_ptt_directive() {
+  case "${CFG[PTT_METHOD]:-rig}" in
+    rig)
+      cat <<'PTT'
+# rigctld bridges the radio's separate CAT and PTT serial ports; Direwolf
+# just talks to it over loopback. See README.md.
+PTT RIG 2 localhost:4532
+PTT
+      ;;
+  esac
 }
 
 render_conf() {
@@ -356,9 +676,7 @@ CHANNEL 0
 MYCALL   ${CFG[MYCALL]}
 MODEM    ${CFG[MODEM]}
 
-# rigctld bridges the radio's separate CAT and PTT serial ports; Direwolf
-# just talks to it over loopback. See README.md.
-PTT RIG 2 localhost:4532
+$(build_ptt_directive)
 
 # Direwolf listens for AGW and KISS TCP clients and binds them to 0.0.0.0, with
 # no authentication of any kind — anything that can reach the KISS port can
@@ -521,7 +839,8 @@ require_audio_device() {
     echo "ERROR: ADEVICE='${adev}' refers to ALSA card ${card}, but /dev/snd/controlC${card} does not exist." >&2
     echo "  The radio's USB audio codec is not connected (or re-enumerated to a different card)." >&2
     echo "  Refusing to start: PTT would still key the radio, transmitting a carrier with no audio." >&2
-    echo "  Check the USB cable, then run 'arecord -l' and update ADEVICE in igate.conf if the card number changed." >&2
+    echo "  Check the USB cable, then run 'arecord -l'. If this machine numbers the card differently," >&2
+    echo "  set ADEVICE in igate.local.conf (see igate.local.conf.example)." >&2
     exit 1
   fi
 }
@@ -544,18 +863,25 @@ apply_audio_levels() {
   rx="${CFG[RX_AUDIO_LEVEL]:-}"
   agc="${CFG[DISABLE_AGC]:-yes}"
 
+  # Control names differ between codecs, and a wrong name does nothing but print
+  # a Note — so they are profile settings, defaulting to the FTX-1's codec. Run
+  # `./deploy_igate.sh audio` to see the names a given interface really has.
+  local tx_ctl="${CFG[MIXER_TX_CONTROL]:-Speaker Playback Volume}"
+  local rx_ctl="${CFG[MIXER_RX_CONTROL]:-Mic Capture Volume}"
+  local agc_ctl="${CFG[MIXER_AGC_CONTROL]:-Auto Gain Control}"
+
   if [[ -n "$tx" ]]; then
-    amixer -c "$card" cset name='Speaker Playback Volume' "${tx},${tx}" >/dev/null 2>&1 \
+    amixer -c "$card" cset name="${tx_ctl}" "${tx},${tx}" >/dev/null 2>&1 \
       && echo "Audio: TX level ${tx}" \
-      || echo "Note: could not set TX level (no 'Speaker Playback Volume' on card ${card})." >&2
+      || echo "Note: could not set TX level (no '${tx_ctl}' on card ${card})." >&2
   fi
   if [[ -n "$rx" ]]; then
-    amixer -c "$card" cset name='Mic Capture Volume' "${rx},${rx}" >/dev/null 2>&1 \
+    amixer -c "$card" cset name="${rx_ctl}" "${rx},${rx}" >/dev/null 2>&1 \
       && echo "Audio: RX level ${rx}" \
-      || echo "Note: could not set RX level (no 'Mic Capture Volume' on card ${card})." >&2
+      || echo "Note: could not set RX level (no '${rx_ctl}' on card ${card})." >&2
   fi
   if [[ "$agc" == "yes" ]]; then
-    amixer -c "$card" cset name='Auto Gain Control' off >/dev/null 2>&1 \
+    amixer -c "$card" cset name="${agc_ctl}" off >/dev/null 2>&1 \
       && echo "Audio: AGC off"
   fi
 }
@@ -672,6 +998,106 @@ bare_stop() {
     kill "$pid" 2>/dev/null || true
     rm -f "$BARE_RIGCTLD_PID"
   fi
+}
+
+# --- LAN web monitor ---
+# igate_web.py runs on the host in both modes, never in the container: it runs
+# `deploy_igate.sh monitor` and `is-running`, which run docker, and the only way
+# to give a container that is the docker socket — root on the host, handed to
+# the one process that listens on the network. On the Pi, igate-web.service runs
+# it under systemd instead, and the Pi's igate.local.conf sets WEB_MONITOR = no so
+# the two never compete for the port.
+
+# Checked against the command line, not only with kill -0: after a reboot a
+# leftover pidfile can name an unrelated process that now has the same number.
+web_is_running() {
+  local pid
+  [[ -f "$WEB_PID" ]] || return 1
+  pid="$(cat "$WEB_PID")"
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/${pid}/cmdline" ]] || return 1
+  tr '\0' ' ' < "/proc/${pid}/cmdline" | grep -q 'igate_web\.py'
+}
+
+# The address a phone on the same network would use: the source address of the
+# default route, which skips docker's bridge addresses that `hostname -I` lists.
+lan_address() {
+  local ip
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i+1); exit } }')"
+  [[ -n "$ip" ]] || ip="$(hostname -I 2>/dev/null | awk '{ print $1 }')"
+  [[ -n "$ip" ]] || ip="<this-machine-ip>"
+  echo "$ip"
+}
+
+web_urls() {
+  local port="${CFG[WEB_PORT]:-8080}" bind="${CFG[WEB_BIND]:-0.0.0.0}"
+  if [[ "$bind" == 0.0.0.0 ]]; then
+    echo "http://localhost:${port}/ on this machine, http://$(lan_address):${port}/ from the LAN"
+  else
+    echo "http://${bind}:${port}/"
+  fi
+}
+
+# Optional by design: a monitor that fails to start is reported, never fatal. The
+# gateway is already on the air by the time this runs, and a busy port must not
+# turn a working `up` into a failed one.
+web_up() {
+  [[ "${CFG[WEB_MONITOR]:-no}" == yes ]] || return 0
+  if web_is_running; then
+    echo "Web monitor already running: $(web_urls)"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null; then
+    echo "Warning: WEB_MONITOR = yes, but python3 is not installed; web monitor not started." >&2
+    return 0
+  fi
+
+  mkdir -p "$RUN_DIR"
+  : > "$WEB_LOG"
+  # nohup execs python3, so $! is the server's own pid. No setsid: it forks when
+  # its caller leads a process group, which would leave $! naming a process that
+  # has already exited. The server stops its `monitor` pipeline itself on SIGTERM.
+  IGATE_WEB_PORT="${CFG[WEB_PORT]:-8080}" IGATE_WEB_BIND="${CFG[WEB_BIND]:-0.0.0.0}" \
+    nohup python3 "${SCRIPT_DIR}/igate_web.py" >> "$WEB_LOG" 2>&1 < /dev/null &
+  echo $! > "$WEB_PID"
+
+  # igate_web.py prints its "listening on" line only after the socket is bound,
+  # so this distinguishes started from about-to-fail on a busy port.
+  local i
+  for i in $(seq 1 20); do
+    grep -q 'listening on' "$WEB_LOG" 2>/dev/null && break
+    web_is_running || break
+    sleep 0.25
+  done
+
+  if web_is_running && grep -q 'listening on' "$WEB_LOG" 2>/dev/null; then
+    echo "Web monitor: $(web_urls)"
+  else
+    echo "Warning: web monitor did not start (gateway unaffected). From ${WEB_LOG}:" >&2
+    tail -n 3 "$WEB_LOG" 2>/dev/null | sed 's/^/  /' >&2
+    if grep -q 'Address already in use' "$WEB_LOG" 2>/dev/null; then
+      echo "  Port ${CFG[WEB_PORT]:-8080} is taken — by an igate_web.py started by hand, or another service." >&2
+      echo "  Stop that, or set WEB_PORT in igate.local.conf, then run up again." >&2
+    fi
+    web_is_running && kill -TERM "$(cat "$WEB_PID")" 2>/dev/null
+    rm -f "$WEB_PID"
+  fi
+}
+
+# Runs whatever WEB_MONITOR now says: a monitor started before the setting was
+# turned off must still be stoppable.
+web_down() {
+  if web_is_running; then
+    local pid i
+    pid="$(cat "$WEB_PID")"
+    kill -TERM "$pid" 2>/dev/null || true
+    for i in $(seq 1 20); do
+      web_is_running || break
+      sleep 0.25
+    done
+    echo "Web monitor stopped."
+  fi
+  rm -f "$WEB_PID"
 }
 
 # Package names differ by distribution. The hamlib CLI tools (rigctl, rigctld)
@@ -864,6 +1290,10 @@ cmd_up() {
   load_and_resolve "${1:-}"
   validate_config
   if [[ "$MODE" == docker ]]; then _docker_up; else _bare_up; fi
+  # Also reached when the gateway was already running, which is what restarts
+  # the monitor after a reboot: docker brings the container back by itself, but
+  # nothing brings back a process on the host.
+  web_up
 }
 
 _docker_down() {
@@ -891,7 +1321,29 @@ _bare_down() {
 
 cmd_down() {
   load_and_resolve "${1:-}"
-  if [[ "$MODE" == docker ]]; then _docker_down; else _bare_down; fi
+  # First, so the monitor does not report the gateway's shutdown as an error.
+  web_down
+  # Stop what is actually running, not only what the mode says should be. The
+  # mode now comes from a per-machine file that can be missing or wrong; on a Pi
+  # a missing igate.local.conf resolves to docker, and `down` must still stop a
+  # bare-metal transmitter there rather than failing to find a docker binary.
+  if [[ "$MODE" == docker ]]; then
+    # Remembered rather than re-checked: once stopped, bare_is_running is false,
+    # and re-testing it would report "nothing to stop" straight after stopping it.
+    local stopped_bare=""
+    if bare_is_running; then
+      echo "Note: DEPLOY_MODE is docker (from ${CFG_SRC[DEPLOY_MODE]}), but a bare-metal gateway is running — stopping it." >&2
+      _bare_down
+      stopped_bare=yes
+    fi
+    if command -v docker >/dev/null; then
+      _docker_down
+    elif [[ -z "$stopped_bare" ]]; then
+      echo "Nothing to stop: no bare-metal gateway is running and docker is not installed."
+    fi
+  else
+    _bare_down
+  fi
 }
 
 # Liveness is mode-specific — a container in docker mode, pidfiles in bare-metal.
@@ -938,6 +1390,11 @@ cmd_status() {
     echo "iGate running (${MODE}): ${detail}"
   else
     echo "iGate not running (${MODE})."
+  fi
+  if web_is_running; then
+    echo "Web monitor running: $(web_urls)"
+  elif [[ "${CFG[WEB_MONITOR]:-no}" == yes ]]; then
+    echo "Web monitor not running (WEB_MONITOR = yes; ./deploy_igate.sh up starts it)."
   fi
 
   render_status_html "$running" "$detail"
@@ -1191,7 +1648,7 @@ cmd_audio() {
 
   echo
   if command -v amixer >/dev/null; then
-    amixer -c "$card" cget name='Mic Capture Volume' 2>/dev/null | gawk '
+    amixer -c "$card" cget name="${CFG[MIXER_RX_CONTROL]:-Mic Capture Volume}" 2>/dev/null | gawk '
       /min=/ { for (i=1; i<=NF; i++) { } ; m=$0; sub(/.*max=/,"",m); sub(/,.*/,"",m); max=m }
       /: values=/ { v=$0; sub(/.*values=/,"",v); sub(/,.*/,"",v); cur=v }
       END {
@@ -1232,7 +1689,7 @@ already at maximum can only move toward clipping, which does degrade decoding.
 
 Two knobs, and the second is usually the one that matters:
 
-  1. RX_AUDIO_LEVEL in igate.conf — the codec's capture gain. Write it as a
+  1. RX_AUDIO_LEVEL in the radio profile — the codec's capture gain. Write it as a
      percentage ("80%") rather than a bare number; the raw scale differs between
      devices and amixer clamps a too-large value without saying so. Compare the
      configured value against the ranges above: if it is already at max, this
@@ -1258,6 +1715,7 @@ cmd_uninstall() {
     echo "    sudo systemctl disable --now aprs-igate igate-firstboot igate-logrotate.timer" >&2
     echo >&2
   fi
+  web_down
   if [[ "$MODE" == docker ]]; then
     require_docker
     is_running && docker stop "$CONTAINER_NAME" >/dev/null

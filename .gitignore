@@ -10,3 +10,7 @@ pi.secrets
 
 # Downloaded and generated Raspberry Pi images.
 pi-build/
+
+# Per-machine configuration: DEPLOY_MODE, RADIO, WEB_* and hardware overrides for
+# one machine only. See igate.local.conf.example. Never commit this.
+igate.local.conf

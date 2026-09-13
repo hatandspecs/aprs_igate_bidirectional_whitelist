@@ -1,0 +1,62 @@
+# igate.local.conf — settings true of ONE machine.
+#
+# Copy this file to igate.local.conf on the machine it describes. It is
+# gitignored and never committed, so every machine keeps its own, and copying
+# igate.conf or the whole repository between machines never overwrites it. The
+# Raspberry Pi image writes one for the Pi automatically.
+#
+# Layers, lowest priority first; each overrides only the keys it sets:
+#
+#   1. radios/<RADIO>.conf   how to drive the radio      hardware keys only
+#   2. igate.conf            the station                 any key
+#   3. igate.local.conf      THIS FILE: one machine      DEPLOY_MODE, RADIO,
+#                                                        WEB_*, hardware keys only
+#   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
+#   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
+#
+# What this file MAY set:
+#   DEPLOY_MODE     docker | bare-metal
+#   RADIO           a profile name from radios/, overriding igate.conf's RADIO
+#   WEB_MONITOR     yes | no — whether `up` starts the LAN web monitor here
+#   WEB_PORT        its port (default 8080)
+#   WEB_BIND        its listening address (default 0.0.0.0, every interface)
+#   hardware keys   anything a radio profile may set: CAT, PTT_METHOD, RIG_MODEL,
+#                   CAT_DEVICE, CAT_BAUD, PTT_DEVICE, PTT_TYPE, ACHANNELS,
+#                   ADEVICE, MIXER_TX_CONTROL, MIXER_RX_CONTROL,
+#                   MIXER_AGC_CONTROL, TX_AUDIO_LEVEL, RX_AUDIO_LEVEL,
+#                   DISABLE_AGC, RADIO_SET_ON_UP, RADIO_FREQ, RADIO_MODE,
+#                   RADIO_PASSBAND
+#
+# What it may NOT set: the whitelist, beacon, callsign, APRS-IS login, transmit
+# path, or anything else that decides what the station transmits. Those live
+# only in igate.conf. A local file that tries is refused at `config` and `up`, so
+# every machine's gateway follows the same transmit policy — the one in the file
+# you can read in the repository.
+#
+# After editing, run `./deploy_igate.sh config`: it prints which layer supplied
+# every setting and every override in effect.
+
+# ---- Uncomment what applies to this machine ----
+
+# A workstation running the container needs nothing; docker is the default.
+#   DEPLOY_MODE = docker
+
+# A Raspberry Pi, or any host running Direwolf directly:
+#   DEPLOY_MODE = bare-metal
+
+# This machine enumerates the radio differently from the profile's defaults.
+# Prefer /dev/serial/by-id/ paths for serial ports; keep ADEVICE a numbered card.
+#   ADEVICE = plughw:0,0
+#   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
+#   PTT_DEVICE = /dev/ttyACM0
+
+# This machine has a different radio attached than igate.conf names:
+#   RADIO = ftx1
+
+# The web monitor. igate.conf turns it on; `up` starts it on this host and `down`
+# stops it. A laptop that joins other networks can keep it to itself:
+#   WEB_BIND = 127.0.0.1
+# Port 8080 is already used by something else on this machine:
+#   WEB_PORT = 8090
+# Something else runs the monitor here, as igate-web.service does on the Pi:
+#   WEB_MONITOR = no
