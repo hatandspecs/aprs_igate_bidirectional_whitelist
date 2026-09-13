@@ -22,6 +22,8 @@ Two design points worth keeping:
   IGATE_WEB_BIND    interface to bind (default 0.0.0.0)
   IGATE_WEB_PORT    port (default 8080)
   IGATE_MONITOR_CMD override the monitor command, for testing
+  IGATE_LIVENESS_CMD override the is-the-gateway-running check (exit 0 = running),
+                    for testing
 """
 
 import json
@@ -62,8 +64,9 @@ class MonitorStream:
     not mean five `tail -f | gawk` pipelines on a single-board computer.
     """
 
-    def __init__(self, cmd):
+    def __init__(self, cmd, is_running):
         self.cmd = cmd
+        self.is_running = is_running
         self.history = deque(maxlen=HISTORY)
         self.subscribers = set()
         self.lock = threading.Lock()
@@ -72,6 +75,11 @@ class MonitorStream:
 
     def _publish(self, event):
         with self.lock:
+            # A note identical to the last thing published tells a viewer
+            # nothing new, and repeated it would push real packets out of the
+            # bounded history.
+            if event.get("kind") == "note" and self.history and self.history[-1] == event:
+                return
             self.history.append(event)
             dead = []
             for q in self.subscribers:
@@ -85,7 +93,27 @@ class MonitorStream:
                 self.subscribers.discard(q)
 
     def _run(self):
+        # Whether the gateway was running at the last check; None before the
+        # first. The monitor is only started while it runs: with the gateway
+        # stopped, `monitor` exits at once, and restarting it every few seconds
+        # filled the page with "monitor ended" notes that never said why.
+        gateway_up = None
         while True:
+            try:
+                running = bool(self.is_running())
+            except Exception:  # a failed check must not kill the feed thread
+                running = False
+            if not running:
+                if gateway_up is not False:
+                    self._publish({"kind": "note",
+                                   "text": "gateway is not running — packets will appear here when it starts"})
+                gateway_up = False
+                time.sleep(10)
+                continue
+            if gateway_up is False:
+                self._publish({"kind": "note", "text": "gateway is running — following packets"})
+            gateway_up = True
+
             try:
                 # Its own session, so stop() can signal the whole pipeline
                 # `monitor` runs (`tail -f | gawk`, or `docker logs -f | gawk`)
@@ -119,8 +147,9 @@ class MonitorStream:
                     self._publish({"kind": "detail", "text": d.group(1)})
                 # Anything else is the monitor's legend or blank lines; skipped.
 
-            # The gateway was stopped or restarted. Say so, then reconnect.
-            self._publish({"kind": "note", "text": "monitor ended — retrying in 5s"})
+            # The monitor ends when the gateway stops or restarts. The next pass
+            # finds out which: a restart resumes silently, a stop is announced
+            # once.
             time.sleep(5)
 
     def stop(self):
@@ -322,7 +351,20 @@ def main():
     httpd.daemon_threads = True
 
     SETTINGS = Settings(script_dir)
-    STREAM = MonitorStream(cmd)
+
+    liveness_cmd = os.environ.get("IGATE_LIVENESS_CMD")
+    if liveness_cmd:
+        def is_running():
+            try:
+                return subprocess.run(shlex.split(liveness_cmd), capture_output=True,
+                                      timeout=20).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                return False
+    else:
+        def is_running():
+            return SETTINGS._liveness()[0]
+
+    STREAM = MonitorStream(cmd, is_running)
 
     # SIGTERM is how both `deploy_igate.sh down` and systemd stop this. Python's
     # default for it exits without running any cleanup, which would leave the

@@ -103,7 +103,9 @@ turn the DIAL to the item). Details are in
 - **67 `TOT` on** (factory 3 minutes), and **1 `APO` = OFF** (factory default).
 - **Squelch low, volume low.** The VOL knob is the receive level into the Digirig.
 - **DC power** for anything longer than a test (Yaesu E-DC-5B or E-DC-6). An
-  unattended gateway outlasts the battery.
+  unattended gateway outlasts the battery. Use a supply of its own, not a USB
+  port with a boost cable: a transmitting radio drawing from the same USB supply
+  as the Digirig can knock the Digirig off USB.
 
 ### Quickstart A — laptop · docker · Yaesu FTX-1
 
@@ -335,7 +337,9 @@ Pi.
 **You need:** Quickstart B's hardware, with the VX-6R, a Digirig Lite and
 Digirig's VX-6R cable in place of the FTX-1, plus **a powered USB hub** — one with
 its own power supply — between the Pi and the Digirig. Without it the Pi does not
-detect the Digirig. The VX-6R prepared as above, on DC power.
+detect the Digirig. The VX-6R prepared as above, on its battery or its own DC
+supply — **not** powered from the hub or any USB port (see
+[Why the Digirig needs a powered hub](#why-the-digirig-needs-a-powered-hub)).
 
 **1. On the laptop, configure the image for the VX-6R.**
 
@@ -371,7 +375,8 @@ ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
 ```
 
 If `lsusb` does not list the C-Media device, the Pi is not seeing the Digirig at
-all: check the hub's own supply is connected. If the Digirig is not card 1, set
+all. Turn the Digirig's USB-C plug over, since it works only one way round, and
+check the hub's own supply is connected. If the Digirig is not card 1, set
 `ADEVICE` in the Pi's `igate.local.conf`, then `sudo systemctl restart aprs-igate`.
 A card built before the image disabled HDMI audio numbers a Digirig plugged in
 after boot as card 2 (`ADEVICE = plughw:2,0`); rebuilding removes that.
@@ -720,6 +725,66 @@ RADIO = ftx1                       # the profile in radios/
 IGLOGIN_CALL = KD3CCO              # APRS-IS login (base call, no SSID)
 ```
 
+### Editing the whitelist
+
+`WHITELIST_CALLS` in `igate.conf`, comma-separated. A trailing `*` covers every
+SSID of a call; without one, only that exact station matches:
+
+```
+WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9
+```
+
+Only APRS *messages* addressed to these are ever transmitted — never their
+positions or anything else. A `*` anywhere but the end makes Direwolf reject the
+filter, which fails closed: the gateway then transmits nothing rather than too
+much.
+
+Check what it compiles to before applying it:
+
+```bash
+./deploy_igate.sh config           # look at the "Resolved Direwolf FILTER:" line
+```
+
+Then apply it where the gateway runs. The configuration is re-read on every
+start, so a restart is all it takes, and a restart re-sends the beacon about a
+minute later.
+
+| Gateway | Apply the change |
+|---|---|
+| This laptop (docker) | `./deploy_igate.sh restart` — recreates the container and restarts the web monitor |
+| A pi-gate | Edit it on the Pi over SSH, or edit here and push the file to the Pi — below |
+
+**On a pi-gate** there are two ways, both in PI-SETUP.md,
+"[Editing the whitelist](PI-SETUP.md#editing-the-whitelist)":
+
+- **Edit the Pi's own copy over SSH.** The whitelist is then that Pi's alone and
+  the repository is untouched:
+
+  ```bash
+  ssh igate@aprs-igate.local
+  cd aprs-igate && nano igate.conf
+  ./deploy_igate.sh config | grep -E 'WHITELIST_CALLS|FILTER'
+  sudo systemctl restart aprs-igate
+  ```
+
+  A card built later installs the repository's `igate.conf`, so re-apply the
+  change after rebuilding.
+
+- **Edit here and push the file**, so the repository and the Pi stay identical and
+  future cards carry the same list:
+
+  ```bash
+  scp igate.conf igate@aprs-igate.local:aprs-igate/igate.conf
+  ssh -t igate@aprs-igate.local 'cd aprs-igate && ./deploy_igate.sh config | grep -E "WHITELIST_CALLS|FILTER" && sudo systemctl restart aprs-igate && ./deploy_igate.sh status'
+  ```
+
+  Nothing specific to the Pi is overwritten: its mode, radio and device settings
+  live in its own `igate.local.conf`.
+
+Watch `monitor` afterwards: a message to a newly added call shows as `IS GATED`,
+anything else as `IS DROP`. Add only operators who want messages delivered through
+your station — it keys up carrying traffic addressed to them.
+
 ### Radio profiles
 
 `radios/ftx1.conf` describes the Yaesu FTX-1:
@@ -804,9 +869,6 @@ degrade silently, including the guard that refuses to start when the codec is
 absent. That guard is what stops the radio being keyed into an unmodulated
 carrier, so it is worth keeping index-based and letting `up` fail loudly if the
 card ever renumbers.
-
-Multiple whitelisted calls: `WHITELIST_CALLS = KD3CCO*, W3XYZ*, N0CALL-9`.
-Only *messages* addressed to these are ever transmitted.
 
 ### Forcing a digipeat path
 
@@ -1187,7 +1249,7 @@ FTX-1 enumerates in the same Pi port. The boot logs show what differed:
 | Connection to the Pi 3A+ | Result |
 |---|---|
 | FTX-1, direct | Enumerates as a USB hub (`05e3:0610`) with the radio's CAT bridge, PTT interface and codec behind it |
-| Digirig, direct | Nothing: the port never saw a device attach |
+| Digirig, direct | Nothing, with its USB-C plug either way round: the port never saw a device attach |
 | Digirig through an unpowered hub | The hub enumerates; the Pi logs `Undervoltage detected!` as it connects; the Digirig does not appear |
 | Digirig through the same hub on its own supply | The Digirig enumerates, after the hub retries the port once, and carried a full round trip |
 
@@ -1202,6 +1264,27 @@ To check the Pi's power, run `vcgencmd get_throttled` on it. `throttled=0x0`
 means no under-voltage since boot; `0x10000` or `0x50000` means it has occurred.
 A powered hub keeps the Digirig working even then, but a Pi reporting
 under-voltage deserves a better supply regardless.
+
+**The Digirig's USB-C plug works only one way round.** Inserted the other way, the
+Digirig is invisible: no `lsusb` entry, nothing in `dmesg`, and the hub reports no
+device on any port. That was observed on the Pi and on a laptop, through the same
+hub and cable, and turning the plug over fixed it at once. The fault lies in the
+Digirig's USB-C socket or the USB-A-to-C adapter; which of the two was not
+isolated. Every reinsertion is therefore an even chance, which makes a wrongly
+seated plug look like an intermittent fault. Mark the orientation that works.
+
+**Do not power the radio from the hub.** On one pi-gate the VX-6R was powered
+through a USB-to-barrel cable with a 12 V boost converter, plugged into the same
+hub as the Digirig. The Digirig dropped off USB on the gateway's first
+transmission. dmesg showed `usb 1-1.3: USB disconnect` with no under-voltage
+reported (`throttled=0x0`). Direwolf logged `Audio input device 0 error code -19`
+from then on, and the Digirig did not come back until its cable was replugged.
+A transmitting radio draws its highest current, and a boost converter draws more
+than twice its output current from the 5 V side. On the shared supply that pulls
+down the Digirig's port. The Pi regulates its own rail, which is why it saw
+nothing. Power the radio from its battery or its own DC supply, kept entirely off
+the USB side. With the VX-6R moved onto its own wall adapter, the same pi-gate
+transmitted a beacon and gated messages with the Digirig staying connected.
 
 ### Settings
 

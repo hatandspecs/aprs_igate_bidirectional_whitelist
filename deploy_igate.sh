@@ -76,14 +76,22 @@ MODE=""
 # --- config file parsing (plain "key = value", # comments, blank lines) ---
 # Emits one "key<TAB>value" line per setting. A comment runs from the first # to
 # the end of the line, so a value can never contain one.
+#
+# Trimming is done with parameter expansion rather than sed. With three sed
+# processes per line, loading the layers cost over a thousand process starts,
+# several seconds of CPU on a Pi 3A+ — paid by every `config`, every `up`, and
+# every poll the web monitor makes.
 _parse_conf() {
   local file="$1" line key val
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
-    line="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$line")"
+    line="${line#"${line%%[![:space:]]*}"}"     # leading whitespace
+    line="${line%"${line##*[![:space:]]}"}"     # trailing whitespace
     [[ -z "$line" || "$line" != *"="* ]] && continue
-    key="$(sed -e 's/[[:space:]]*$//' <<<"${line%%=*}")"
-    val="$(sed -e 's/^[[:space:]]*//' <<<"${line#*=}")"
+    key="${line%%=*}"
+    key="${key%"${key##*[![:space:]]}"}"
+    val="${line#*=}"
+    val="${val#"${val%%[![:space:]]*}"}"
     printf '%s\t%s\n' "$key" "$val"
   done < "$file"
 }
@@ -910,7 +918,10 @@ gid_of() {
 # Card number out of ADEVICE. Handles plughw:N,M / hw:N,M / plughw:N.
 # Empty for non-numeric card names.
 audio_card_number() {
-  sed -n 's/^[a-z]*hw:\([0-9][0-9]*\).*/\1/p' <<<"${CFG[ADEVICE]:-}"
+  if [[ "${CFG[ADEVICE]:-}" =~ ^[a-z]*hw:([0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+  return 0
 }
 
 require_audio_device() {
@@ -1002,8 +1013,11 @@ radio_devices_missing() {
     missing+="ALSA-card-${card} "
   fi
   if [[ "${CFG[PTT_METHOD]}" == cm108 ]]; then
-    cm108_resolve
-    if [[ -z "$CM108_PATH" ]] || ! _dev_exists "$CM108_PATH"; then
+    # A node found through the card cannot exist while the card does not, so the
+    # sysfs lookup is skipped — this runs every second while the radio is absent.
+    if [[ -z "${CFG[CM108_DEVICE]:-}" && -n "$card" && ! -e "/dev/snd/controlC${card}" ]]; then
+      missing+="CM108-PTT-device "
+    elif cm108_resolve; [[ -z "$CM108_PATH" ]] || ! _dev_exists "$CM108_PATH"; then
       missing+="CM108-PTT-device "
     else
       mg="$(_dev_mode_gid "$CM108_PATH")"; mode="${mg% *}"; gid="${mg#* }"
