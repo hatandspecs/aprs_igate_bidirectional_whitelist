@@ -785,6 +785,26 @@ Watch `monitor` afterwards: a message to a newly added call shows as `IS GATED`,
 anything else as `IS DROP`. Add only operators who want messages delivered through
 your station — it keys up carrying traffic addressed to them.
 
+**The recipient's radio or app must understand third-party packets.** The gateway
+cannot transmit a message as though it came from the sender. `SMS` is not this
+station, and transmitting under another station's callsign is exactly what
+third-party format prevents. So Direwolf wraps every message it gates in it:
+
+```
+KD3CCO-10>APDW18:}SMS>APOSMS,TCPIP,KD3CCO-10*::KD3CCO-7 :@4848324995 hello{16565
+```
+
+A Yaesu FT5D unwraps that, recognises the message as its own and acknowledges it.
+An app that ignores packets beginning `}` sees only a packet from `KD3CCO-10`
+addressed to nobody it knows, so it shows nothing and sends no acknowledgement.
+The monitor then shows `IS GATED` for every retry, and the sender's gateway keeps
+retrying. This has been seen with a whitelisted station: its own Direwolf decoded
+the gateway's transmission, so the RF path was sound, but the app on top of that
+Direwolf never registered the message. Decoding a packet is the TNC's job;
+unwrapping, displaying and acknowledging a message is the client's. Before
+relying on a new recipient, send it a test message: an acknowledgement coming back
+(`RF RX … :ackNN`) proves its software handles third-party messages.
+
 ### Radio profiles
 
 `radios/ftx1.conf` describes the Yaesu FTX-1:

@@ -758,6 +758,15 @@ change as usual.
 > to this list means your station will key up carrying messages addressed to
 > that operator.
 
+The recipient's radio or app must handle APRS **third-party** packets. Messages
+from APRS-IS go out wrapped as `KD3CCO-10>APDW18:}SMS>...::THEIRCALL :text`,
+because the gateway must not transmit under the sender's callsign. An app that
+ignores packets starting with `}` never shows the message and never acknowledges
+it. The monitor then shows `IS GATED` on every retry, and the sender's gateway
+keeps resending. Send a new recipient a test message first: an `RF RX` line
+carrying `:ack` from their call proves it works. See "Editing the whitelist" in
+[README.md](README.md#editing-the-whitelist).
+
 ---
 
 ## Managing the service
