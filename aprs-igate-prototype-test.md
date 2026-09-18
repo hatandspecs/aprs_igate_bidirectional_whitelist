@@ -1046,6 +1046,21 @@ belongs only in a test.
   as a failure to enumerate at power-up is not supported, because the cables had
   been handled around each occurrence. The practical remedy is to mark the plug's
   working orientation.
+- **A USB reset of the sound card was not recovered; it is now.** Direwolf keeps
+  the card it opened at start. A reset leaves the device present — `lsusb` and
+  `arecord -l` still list it — while every packet is lost and Direwolf logs `Audio
+  input device 0 error code -19` indefinitely. `deploy_igate.sh status` reports the
+  gateway as running, because Direwolf is alive. Neither `DEVICE_WAIT` nor the
+  unit's `Restart=on-failure` applies, since the start succeeded, so recovery was a
+  manual `systemctl restart aprs-igate`.
+
+  Two changes close this, both described in §15.2. The radio's ALSA card is
+  resolved from its USB vendor and product id rather than a fixed number, so it
+  survives moving between ports; and `deploy_igate.sh watchdog`, on a one-minute
+  timer and on a udev event, restarts the gateway when the card moves, when
+  Direwolf is gone, or when those `-19` lines accumulate. Verified against a fake
+  sysfs tree and a stubbed watchdog; not yet exercised by an actual reset on the
+  air.
 - **A radio without CAT cannot be verified from software.** For the VX-6R,
   frequency and power are front-panel state. A retuned or switched-off radio leaves
   the gateway running and hearing nothing, and `up` can only print a reminder. A
@@ -1076,7 +1091,50 @@ belongs only in a test.
 | VX-6R on a pi-gate | On a Pi 3A+ built with `PI_RADIO = vx6r`, the VX-6R on a Digirig Lite carried a full SMS round trip in bare-metal mode on Direwolf 1.7. The FT5D's message was decoded and gated up, and the SMS gateway's acknowledgement was transmitted back. A message from the SMS gateway was transmitted and acknowledged by the FT5D, and that acknowledgement was heard and gated. `config` credited `RADIO` to the generated `igate.local.conf` and found `/dev/hidraw0` on the Digirig's card, in group `audio` from the image's udev rule. It needed a powered USB hub (§16.6) and `ADEVICE = plughw:2,0`: the Digirig was plugged in after boot, and HDMI audio held card 1. The image now disables HDMI audio |
 | Waiting for late radio devices (without the Pi) | With `DEVICE_WAIT` set, `up` polls until the radio's devices are present and returns as soon as they are (devices appearing on the fourth check end the wait after 3 s). If they never appear it gives up after the limit and hands over to the usual refusals, and unset or 0 never polls. Values from 0 to 600 are accepted and anything else refused, and `igate.local.conf` may set the key. Against this laptop with no Digirig attached, a missing card and CM108 node are both reported. The generated `aprs-igate.service` carries `Restart=on-failure`, `RestartSec=30`, `StartLimitIntervalSec=0` and `TimeoutStartSec=180`, and passes `systemd-analyze verify`. The Pi's generated `igate.local.conf` sets `DEVICE_WAIT = 60`. Every FTX-1 start path is unchanged against the previous commit. On the Pi the retry has also run for real (next row) |
 | Rebuilt VX-6R pi-gate | A card built with HDMI audio disabled, swap confined to RAM, `DEVICE_WAIT = 60` and the retrying unit, with no hand edits, carried a full SMS round trip on the VX-6R through a powered hub. The Digirig came up as ALSA card 1 on the profile's default `plughw:1,0`, and `/dev/hidraw0` was found on its USB device. When the Digirig was absent from USB (later traced to its USB-C plug working in only one orientation, §15), `up` waited 60 s and refused, and systemd retried every 30 s. When the Digirig's cable was replugged, the fourth attempt found the devices, and Direwolf was connected to APRS-IS 11 s after that attempt began, with no manual restart. With the radio on its own wall adapter, a beacon and two gated messages were transmitted without the Digirig disconnecting, and a message to a newly whitelisted `KD3CCP-1` was gated. The Pi, powered from the hub, reported `throttled=0x0`. `/var/swap` does not exist on the card, confirming that `Mechanism=zram` keeps swap off the SD card |
+| VX-6R on a Pi 3B+, no hub | The Digirig Lite plugged straight into a Pi 3B+ enumerated as `0d8c:0012` behind the board's own hub chip, as ALSA card 1, with `/dev/hidraw0` resolved on that card's USB device and no `igate.local.conf` override. A message from the SMS gateway was gated onto RF and received by a second handheld. Receive decoded nothing until the VX-6R's volume, which is the audio level into the Digirig, was raised; the radio's busy indicator showed it was hearing the packets throughout. Two USB resets of the sound card were logged, one about a minute after boot and one around a service restart, each leaving Direwolf logging `error code -19` until the service was restarted |
+| Radio found by USB id (without the radio) | Against a fake sysfs tree, `ADEVICE = auto` with `USB_ID` resolves to the one sound card whose USB device carries that vendor and product id, matches case-insensitively, handles a card whose sysfs device is the USB device itself as well as one of its interfaces, ignores a card belonging to another vendor, and leaves a fixed `ADEVICE` untouched. Two cards on the same id resolve to nothing and name both cards. With no matching device the card stays unresolved, `radio_devices_missing` reports the radio itself as missing, and `up` refuses with the cards that are present listed. `USB_ID` is refused unless it is `vvvv:pppp`, and `ADEVICE = auto` without one is refused. The whole chain — auto to card 1 to `/dev/hidraw7` for PTT — resolves against the fake tree from the shipped `radios/vx6r.conf`. Against the real `/sys` on a laptop with no Digirig attached, it correctly reports no matching card |
+| Watchdog decisions (stubbed) | With `up`, `down`, liveness and device presence stubbed, `watchdog` does nothing at all before `up` has succeeded once; reports an absent radio once rather than once per run and never restarts into it, then reports its return; restarts when the gateway should be running and is not; restarts when the radio's card number has moved away from the one in the rendered `direwolf.conf`; restarts when Direwolf's `-19` count grows, and not when it is merely non-zero; treats a count that drops as a rotated log rather than as errors undone; and defers a second restart inside three minutes, saying how long ago the last one was. The restart is taken through `systemctl restart aprs-igate.service` when that unit exists, through `sudo -n` when the unprivileged call is refused, and in-process with a warning when both fail or no such unit exists. The generated `igate-watchdog.service` and `.timer` pass `systemd-analyze verify`, the sudoers drop-in passes `visudo -c`, and both units, the rule and the drop-in are installed by `build_pi_image.sh` |
 | FTX-1 unchanged by CM108 support | Against the previous commit, with every external command stubbed, each FTX-1 start path — docker and bare-metal, with a host device override, and the forced-path test config — renders a byte-identical `direwolf.conf` and prints identical output apart from one image-rebuild notice. The calls issued differ only by the image-label check and rebuild, and by `CAT=hamlib` and `PTT_METHOD=rig` added to `docker run` |
+
+### 15.2 Finding the radio, and getting back on the air
+
+Two of the open issues above are about the same thing: the gateway knew its radio
+by where it was plugged in and by the number ALSA happened to give it, and once
+started it never looked again.
+
+**Finding it.** A profile may set `ADEVICE = auto` and `USB_ID = vvvv:pppp`. The
+card number then becomes a result rather than a setting: sysfs is searched for a
+sound card whose USB device carries that vendor and product id, and `ADEVICE`
+becomes that card. `radios/vx6r.conf` uses `0d8c:0012`, the Digirig's C-Media
+chip. The lookup runs at every start, on each poll while `up` is waiting out
+`DEVICE_WAIT`, and on each watchdog check, so a device that moves ports or turns
+up late needs no edit. PTT follows, because the hidraw node is already resolved
+from the card's own USB device. Two cards matching one id resolve to nothing and
+are named: guessing between two radios means keying the wrong one. A profile with
+a fixed `ADEVICE`, such as `radios/ftx1.conf`, is unaffected.
+
+**Getting back.** `deploy_igate.sh watchdog` runs from `igate-watchdog.timer` once
+a minute, and from a udev rule the moment a USB sound card appears. It acts only
+after `up` has written `run/wanted`, which is on the tmpfs and so is cleared by a
+reboot and rewritten by the boot-time start. Each run: re-resolve the card; if the
+radio is absent, say so once and wait, because restarting would only burn
+`DEVICE_WAIT`; restart if the gateway should be running and is not; restart if the
+card has moved from the one in the rendered `direwolf.conf`; restart if Direwolf's
+count of `error code -19` and `No such device` lines has grown since the last
+check. A count that falls is read as a rotated log. Restarts are limited to one
+every three minutes, since each interrupts gating. The restart itself goes through
+`systemctl restart aprs-igate.service` where that unit exists, so the replacement
+Direwolf belongs to the gateway's cgroup rather than to the watchdog's oneshot,
+which would kill it on exit; the image grants the service account that one sudo
+command, and `KillMode=process` on the watchdog unit covers the fallback path
+where the work is done in-process. Output is a line or two when it
+acts and nothing when it does not, which is what makes a one-minute timer
+tolerable in a journal.
+
+The error-count check is what covers the reset-in-place case, where every other
+signal says the gateway is healthy: the process is alive, the device is listed and
+the card number has not moved. In docker mode, where the log is `docker logs`
+rather than a file, a two-minute window is counted instead of a running total.
 
 ---
 
@@ -1281,7 +1339,9 @@ produced no attach event at all. Through an unpowered hub the Pi logged
 `Undervoltage detected!` as the hub connected, and the Digirig still did not
 appear. Through the same hub on its own supply it enumerated, after one port retry,
 and carried traffic. A powered hub is therefore a hardware requirement for that
-radio on this board (§15).
+radio on this board (§15). A Pi 3B+ does not share it: that board carries a USB
+hub chip, and the same Digirig enumerated directly in one of its ports and gated
+traffic from there (§15.1).
 
 The hub must not also power the radio. In one configuration the VX-6R drew its
 power through a USB-to-barrel cable with a 12 V boost converter, plugged into the

@@ -61,12 +61,12 @@ Pick the one that matches your hardware. Each is complete on its own.
 | [A](#quickstart-a--laptop--docker--yaesu-ftx-1) | Linux laptop or desktop | `docker` | Yaesu FTX-1 |
 | [B](#quickstart-b--raspberry-pi-3a-pi-gate--bare-metal--yaesu-ftx-1) | Raspberry Pi 3A+ (the pi-gate) | `bare-metal` | Yaesu FTX-1 |
 | [C](#quickstart-c--laptop--docker--yaesu-vx-6r-on-a-digirig-lite) | Linux laptop or desktop | `docker` | Yaesu VX-6R on a Digirig Lite |
-| [D](#quickstart-d--raspberry-pi-3a-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite) | Raspberry Pi 3A+ (the pi-gate) | `bare-metal` | Yaesu VX-6R on a Digirig Lite |
+| [D](#quickstart-d--raspberry-pi-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite) | Raspberry Pi 3B+ or 3A+ (the pi-gate) | `bare-metal` | Yaesu VX-6R on a Digirig Lite |
 
 | Radio | Profile | Frequency and mode | PTT | State |
 |---|---|---|---|---|
 | Yaesu FTX-1 | `radios/ftx1.conf` | set and checked by `up` over CAT | CAT command, through `rigctld` | has carried traffic in both modes |
-| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal); on the Pi 3A+ it needs a powered USB hub |
+| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal); needs a powered USB hub on a Pi 3A+, but plugs straight into a Pi 3B+ |
 
 **All four start with the station settings,** which are the same on every machine:
 
@@ -279,9 +279,12 @@ arecord -l                 # the Digirig is a C-Media USB audio device — note 
 ls -l /dev/hidraw*         # one node now shows group audio: crw-rw----
 ```
 
-`radios/vx6r.conf` expects `ADEVICE = plughw:1,0`. If the card number differs, set
-`ADEVICE` in `igate.local.conf`. The hidraw node needs no setting: it is found on
-the same USB device as that card.
+`radios/vx6r.conf` sets `ADEVICE = auto`, so the card number here does not matter:
+the Digirig is found by its USB id (`USB_ID = 0d8c:0012`) at every start, in
+whatever port it is in. The hidraw node needs no setting either — it is found on
+the same USB device as that card. Two C-Media interfaces on one machine are the
+one case auto refuses: it will not guess which is the radio, and says so. Name the
+card with `ADEVICE = plughw:N,0` in `igate.local.conf` then.
 
 **3. Validate.**
 
@@ -289,10 +292,11 @@ the same USB device as that card.
 ./deploy_igate.sh config
 ```
 
-Look for `RADIO = vx6r (… selected in igate.local.conf)`, `CAT = none`, and
-`CM108_DEVICE = /dev/hidrawN (found on the USB device of ALSA card 1)`. If
-`CM108_DEVICE` says none was found, the Digirig is unplugged or `ADEVICE` names
-the wrong card.
+Look for `RADIO = vx6r (… selected in igate.local.conf)`, `CAT = none`,
+`ADEVICE = plughw:N,0 (found by USB_ID 0d8c:0012 on ALSA card N)` and
+`CM108_DEVICE = /dev/hidrawN (found on the USB device of ALSA card N)`. An
+`ADEVICE` still showing `auto` means no C-Media device is present: the Digirig is
+unplugged, or its USB-C plug is the wrong way round.
 
 **4. Start.** Tune the VX-6R to 144.390 MHz FM first; nothing else will.
 
@@ -323,23 +327,27 @@ the received level. See [Audio levels](#audio-levels--important).
 **6. Watch, stop, reboot:** exactly as Quickstart A, steps 3 and 4. The web monitor
 is at **`http://localhost:8080/`** on the laptop.
 
-### Quickstart D — Raspberry Pi 3A+ (pi-gate) · bare-metal · Yaesu VX-6R on a Digirig Lite
+### Quickstart D — Raspberry Pi (pi-gate) · bare-metal · Yaesu VX-6R on a Digirig Lite
 
 Quickstart B's pi-gate, driving the VX-6R. The image selects the radio and
 installs the Digirig's udev rule, so nothing radio-related is done by hand on the
 Pi.
 
-> **On the air, through a powered USB hub.** This setup has carried a full SMS
-> round trip on a pi-gate. Plugged straight into the Pi 3A+, the Digirig Lite was
-> not detected at all; see
+> **On the air.** This setup has carried full SMS round trips on a pi-gate: on a
+> **Pi 3B+** with the Digirig plugged straight in, and on a **Pi 3A+** through a
+> powered USB hub, which that board needs. See
 > [Why the Digirig needs a powered hub](#why-the-digirig-needs-a-powered-hub).
 
 **You need:** Quickstart B's hardware, with the VX-6R, a Digirig Lite and
-Digirig's VX-6R cable in place of the FTX-1, plus **a powered USB hub** — one with
-its own power supply — between the Pi and the Digirig. Without it the Pi does not
-detect the Digirig. The VX-6R prepared as above, on its battery or its own DC
-supply — **not** powered from the hub or any USB port (see
-[Why the Digirig needs a powered hub](#why-the-digirig-needs-a-powered-hub)).
+Digirig's VX-6R cable in place of the FTX-1.
+
+- **On a Pi 3B+** the Digirig goes straight into one of the Pi's USB ports; the
+  board has its own USB hub chip.
+- **On a Pi 3A+** add a powered USB hub, with its own supply, between the Pi and
+  the Digirig. That board does not detect the Digirig without one.
+
+The VX-6R prepared as above, on its battery or its own DC supply — **never**
+powered from a USB port or the hub.
 
 **1. On the laptop, configure the image for the VX-6R.**
 
@@ -356,9 +364,10 @@ laptop for the Pi.
 
 **2. Build and write the card:** exactly as Quickstart B, step 2.
 
-**3. Boot it.** Card into the Pi. The powered hub into the Pi's USB port with its
-supply connected, the Digirig into the hub, Digirig's cable to the VX-6R, VX-6R on
-144.390 MHz FM. Power the Pi last, and allow **5–10 minutes** for first boot.
+**3. Boot it.** Card into the Pi, then the Digirig: straight into a USB port on a
+3B+, or into the powered hub (with its supply connected) on a 3A+. Digirig's cable
+to the VX-6R, VX-6R on 144.390 MHz FM. Power the Pi last, and allow **5–10
+minutes** for first boot.
 
 **4. Log in and check.**
 
@@ -375,14 +384,15 @@ ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
 ```
 
 If `lsusb` does not list the C-Media device, the Pi is not seeing the Digirig at
-all. Turn the Digirig's USB-C plug over, since it works only one way round, and
-check the hub's own supply is connected. If the Digirig is not card 1, set
-`ADEVICE` in the Pi's `igate.local.conf`, then `sudo systemctl restart aprs-igate`.
-A card built before the image disabled HDMI audio numbers a Digirig plugged in
-after boot as card 2 (`ADEVICE = plughw:2,0`); rebuilding removes that.
+all. Turn the Digirig's USB-C plug over, since it works only one way round, and on
+a 3A+ check the hub's own supply is connected. The card number itself needs no
+attention: `radios/vx6r.conf` sets `ADEVICE = auto`, which finds the Digirig by
+USB id whatever number it lands on and whichever port it is in.
 
-**5. Confirm transmit decodes** as in Quickstart C, step 5, using
-`sudo systemctl restart aprs-igate` after any change.
+**5. Confirm receive and transmit.** If the radio plainly hears packets but the
+monitor stays empty, turn the VX-6R's **VOL knob up**: it sets the receive level
+into the Digirig, and too quiet decodes nothing. Then confirm transmit as in
+Quickstart C, step 5, using `sudo systemctl restart aprs-igate` after any change.
 
 **6. Web monitor and power:** exactly as Quickstart B, steps 5 and 6. Remember
 that the VX-6R's frequency is front-panel state: a knocked dial takes the gateway
@@ -407,9 +417,51 @@ the checkout to a freshly-cloned state. See [Tearing it down](#tearing-it-down).
 | `monitor` | Follow the log **annotated** — recommended. `monitor raw` omits decode detail. Needs `gawk` |
 | `audio` | Report mixer control ranges, current values, and what Direwolf sees — for calibrating levels |
 | `is-running` | Exit 0 if the gateway is up, 1 if not; prints a one-line detail. Mode-aware, no side effects — for scripts |
+| `watchdog` | Check the radio and the gateway, and restart if something broke. Silent when all is well; run from a timer — see [Recovering by itself](#recovering-by-itself) |
 | `uninstall` | Tear down to a zero state |
 
 All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
+
+### Recovering by itself
+
+`up` waits `DEVICE_WAIT` seconds for the radio before giving up, and on the Pi
+`aprs-igate.service` retries a failed start every 30 seconds, so a gateway whose
+radio is missing or switched off at boot comes up on its own once the radio does.
+
+That leaves two failures that happen after a start has succeeded, both of which
+leave the service "active" while nothing is being gated:
+
+* **The interface is unplugged and replugged**, possibly into another port. It can
+  come back as a different ALSA card, and Direwolf is holding the old one.
+* **The USB device is reset in place** — by RF getting into the cable, or by the
+  kernel. `lsusb` still lists it, the card number has not moved, and Direwolf runs
+  on happily logging `Audio input device 0 error code -19` and decoding nothing.
+
+`./deploy_igate.sh watchdog` is the answer to both. It takes no action at all
+until `up` has succeeded once, and then each time it runs it:
+
+1. re-resolves the radio's card from `USB_ID`, and says so once if the radio is
+   absent — an unplugged radio is waited for, not restarted into;
+2. restarts if the gateway should be running and is not;
+3. restarts if the radio is now on a different ALSA card than Direwolf is using;
+4. restarts if Direwolf has logged new audio-device errors since the last check.
+
+Where the gateway is a systemd service, the restart goes through
+`systemctl restart aprs-igate.service` so the new Direwolf belongs to that unit
+rather than to the watchdog's own; otherwise the watchdog does the stop and start
+itself. A restart interrupts whatever is being gated and can wait `DEVICE_WAIT`
+for the radio, so no more than one is done every three minutes. Output is a line or two when it
+acts and nothing when it does not, which is what makes it safe on a one-minute
+timer.
+
+The Raspberry Pi image installs `igate-watchdog.timer` (every minute) and a udev
+rule that asks for the same check the moment a USB sound card appears, so a replug
+usually recovers within seconds. See [PI-SETUP.md](PI-SETUP.md). On a laptop in
+docker mode nothing runs it automatically; run it by hand, or from `cron`:
+
+```bash
+* * * * * cd ~/aprs_igate_bidirectional_whitelist && ./deploy_igate.sh watchdog
+```
 
 ## Monitoring
 
@@ -825,7 +877,8 @@ PTT_TYPE = RIG                     # RIG = PTT via CAT command; also RTS, DTR
 ```
 CAT = none                         # no CAT: no rigctld, frequency set by hand
 PTT_METHOD = cm108                 # PTT on a GPIO pin of the USB sound card
-ADEVICE = plughw:1,0               # the Digirig's card, from `arecord -l`
+ADEVICE = auto                     # the card is found by USB_ID, in any port
+USB_ID = 0d8c:0012                 # C-Media CM108, as lsusb prints it
 CM108_DEVICE =                     # blank: found on ADEVICE's USB device
 CM108_GPIO = 3                     # the Digirig Lite keys on GPIO3
 TX_AUDIO_LEVEL = 50%               # Digirig's starting point; decodes
@@ -843,6 +896,25 @@ more code:
 | `hamlib` | `cm108` | `rigctld` for frequency and mode only; Direwolf `PTT CM108` | accepted; no profile uses it yet |
 | `none` | `rig` | — | refused: no CAT link to key the radio over |
 | any | `rts`, `dtr` | — | recognised, refused until a start path exists |
+
+**How the radio's sound card is found.** `ADEVICE = auto` together with
+`USB_ID = vvvv:pppp` makes the card number a result rather than a setting. Every
+time the gateway starts — and again on each poll while `up` is waiting for the
+radio, and on each watchdog check — sysfs is searched for a sound card whose USB
+device carries that vendor and product id, and `ADEVICE` becomes that card. So the
+interface can be moved between USB ports, unplugged and replugged, or turn up
+after boot, with nothing to edit. `config` shows where the number came from:
+
+```
+ADEVICE          = plughw:1,0 (found by USB_ID 0d8c:0012 on ALSA card 1)
+USB_ID           = 0d8c:0012
+```
+
+Two cards matching the same id is the one case it refuses: it says which cards
+matched and starts nothing, because guessing between two radios means keying the
+wrong one. Name the right card with `ADEVICE = plughw:N,0` in that machine's
+`igate.local.conf`, which overrides `auto` and ignores `USB_ID`. A profile with a
+fixed `ADEVICE` — `radios/ftx1.conf` — behaves exactly as it always did.
 
 **How CM108 PTT finds its device.** A CM108 chip's GPIO pins appear as a
 `/dev/hidrawN` node on the same USB device as its sound card. With `CM108_DEVICE`
@@ -881,14 +953,15 @@ which across boots.
 These are exactly the values that differ between machines, so set them in that
 machine's `igate.local.conf` rather than in the shared radio profile.
 
-**`ADEVICE` is the opposite: keep it numeric.** ALSA accepts
+**`ADEVICE` is the opposite: `auto`, or numeric.** ALSA accepts
 `plughw:CARD=Device`, but `deploy_igate.sh` parses a card *number* out of
 `ADEVICE` for two jobs — `amixer -c N` when applying your audio levels, and the
 preflight check that `/dev/snd/controlCN` exists. A name-based value makes both
 degrade silently, including the guard that refuses to start when the codec is
 absent. That guard is what stops the radio being keyed into an unmodulated
 carrier, so it is worth keeping index-based and letting `up` fail loudly if the
-card ever renumbers.
+card ever renumbers. `ADEVICE = auto` resolves to a number before any of that
+runs, so it keeps both properties and adds tolerance of renumbering.
 
 ### Forcing a digipeat path
 
@@ -1284,6 +1357,14 @@ To check the Pi's power, run `vcgencmd get_throttled` on it. `throttled=0x0`
 means no under-voltage since boot; `0x10000` or `0x50000` means it has occurred.
 A powered hub keeps the Digirig working even then, but a Pi reporting
 under-voltage deserves a better supply regardless.
+
+**A Pi 3B+ takes the Digirig directly.** The 3B+ carries a USB hub chip on the
+board — its `lsusb` lists two Microchip hubs and the Ethernet controller — and the
+same Digirig, cable and adapter enumerated in one of its four ports with no
+external hub: `0d8c:0012` on the bus, ALSA card 1, and `/dev/hidraw0` found on
+that card's USB device. From there it gated a message from APRS-IS onto RF, which
+a second handheld received. The powered hub above is a Pi 3A+ requirement, not a
+Digirig one.
 
 **The Digirig's USB-C plug works only one way round.** Inserted the other way, the
 Digirig is invisible: no `lsusb` entry, nothing in `dmesg`, and the hub reports no

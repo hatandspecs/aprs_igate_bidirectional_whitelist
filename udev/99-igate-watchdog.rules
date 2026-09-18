@@ -1,0 +1,23 @@
+# Immediate reaction to a radio interface being plugged in, unplugged or reset.
+#
+# igate-watchdog.timer already checks every minute, which is enough to recover
+# but long enough to notice. This rule asks for the same check the moment a USB
+# sound card appears, so a replug is usually recovered before the next beacon is
+# due. It matches `add` only: systemd cannot start a unit from the removal of
+# the device it is keyed to, and an unplugged radio is the one case where the
+# watchdog waits rather than acting anyway.
+#
+# The rule only starts the check; deploy_igate.sh watchdog decides whether
+# anything is actually wrong, so it is harmless on a machine with other USB
+# audio devices, and it does nothing at all until the gateway has been started
+# once (it takes no action without run/wanted).
+#
+# Install it on the machine the interface plugs into:
+#
+#   sudo cp udev/99-igate-watchdog.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#
+# It needs igate-watchdog.service, which the Raspberry Pi image installs. On a
+# machine without that unit the rule does nothing.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", ENV{ID_BUS}=="usb", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="igate-watchdog.service"

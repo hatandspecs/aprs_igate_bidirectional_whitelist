@@ -25,6 +25,8 @@
 #
 #   ./deploy_igate.sh audio [file]    Mixer ranges and received levels.
 #   ./deploy_igate.sh is-running [file] Exit 0 if up; no side effects.
+#   ./deploy_igate.sh watchdog [file]   Restart the gateway if the radio moved,
+#                                       was replugged, or its USB device reset.
 #
 # Settings are resolved from layers, lowest priority first; each overrides only
 # the keys it sets (see load_and_resolve, and `config` for what came from where):
@@ -66,6 +68,13 @@ NETWORK_SUBNET="172.28.7.0/29"
 BARE_DIREWOLF_PID="${RUN_DIR}/direwolf.pid"
 BARE_RIGCTLD_PID="${RUN_DIR}/rigctld.pid"
 BARE_LOG="${RUN_DIR}/direwolf.log"
+
+# Written by `up`, removed by `down`: it is how `watchdog` tells "stopped
+# because the radio fell over" from "stopped because someone stopped it". Lives
+# on the Pi's run/ tmpfs, so a reboot clears it and the boot-time `up` writes it
+# again.
+WANTED_MARKER="${RUN_DIR}/wanted"
+WATCHDOG_STATE="${RUN_DIR}/watchdog.state"
 
 WEB_PID="${RUN_DIR}/igate-web.pid"
 WEB_LOG="${RUN_DIR}/igate-web.log"
@@ -170,7 +179,7 @@ declare -A CFG_OVERRIDDEN=()
 # can only ever come from the main config.
 declare -A PROFILE_KEY_OK=() LOCAL_KEY_OK=()
 for _k in RADIO_DESCRIPTION CAT PTT_METHOD RIG_MODEL CAT_DEVICE CAT_BAUD \
-          PTT_DEVICE PTT_TYPE CM108_DEVICE CM108_GPIO \
+          PTT_DEVICE PTT_TYPE CM108_DEVICE CM108_GPIO USB_ID \
           ACHANNELS ADEVICE MIXER_TX_CONTROL \
           MIXER_RX_CONTROL MIXER_AGC_CONTROL TX_AUDIO_LEVEL RX_AUDIO_LEVEL \
           DISABLE_AGC RADIO_SET_ON_UP RADIO_FREQ RADIO_MODE RADIO_PASSBAND; do
@@ -275,6 +284,9 @@ load_and_resolve() {
   if [[ -z "${CFG[PTT_METHOD]:-}" ]]; then
     CFG[PTT_METHOD]=rig; CFG_SRC[PTT_METHOD]="built-in default"
   fi
+
+  ADEVICE_AUTO_NOTE=""
+  resolve_auto_adevice
 }
 
 require() {
@@ -326,7 +338,7 @@ validate_capabilities() {
         echo "Config: CM108_DEVICE = '${dev}' must be /dev/hidrawN, or blank to find it from ADEVICE." >&2
         exit 1
       fi
-      if [[ -z "$dev" && -z "$(audio_card_number)" ]]; then
+      if [[ -z "$dev" && -z "$(audio_card_number)" && "${CFG[ADEVICE]:-}" != auto ]]; then
         echo "Config: PTT_METHOD = cm108 finds its device from ADEVICE's card number, and ADEVICE = '${CFG[ADEVICE]}' has none." >&2
         echo "  Use a numbered ADEVICE (plughw:N,0), or set CM108_DEVICE." >&2
         exit 1
@@ -343,6 +355,19 @@ validate_web() {
   local port="${CFG[WEB_PORT]:-8080}"
   if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
     echo "Config: WEB_PORT = '${port}' is not a port number." >&2
+    exit 1
+  fi
+}
+
+validate_usb_id() {
+  local id="${CFG[USB_ID]:-}"
+  if [[ -n "$id" && ! "$id" =~ ^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$ ]]; then
+    echo "Config: USB_ID = '${id}' is not valid. Use vendor:product as lsusb prints it, e.g. 0d8c:0012." >&2
+    exit 1
+  fi
+  if [[ "${CFG[ADEVICE]:-}" == auto && -z "$id" ]]; then
+    echo "Config: ADEVICE = auto needs USB_ID (vendor:product) to find the radio's sound card." >&2
+    echo "  Run lsusb with the radio plugged in, or set ADEVICE to plughw:N,0." >&2
     exit 1
   fi
 }
@@ -364,6 +389,7 @@ validate_config() {
   require ADEVICE
   validate_capabilities
   validate_web
+  validate_usb_id
   validate_device_wait
   if [[ "${CFG[CAT]}" == hamlib ]]; then
     require RIG_MODEL
@@ -602,6 +628,11 @@ hw_value() {  # key
       if [[ "${CFG[CAT]}" != hamlib ]]; then echo "not used (CAT = ${CFG[CAT]})"; return; fi ;;
     PTT_DEVICE|PTT_TYPE)
       if [[ "${CFG[PTT_METHOD]}" != rig ]]; then echo "not used (PTT_METHOD = ${CFG[PTT_METHOD]})"; return; fi ;;
+    USB_ID)
+      # ADEVICE is rewritten from auto to a card number as soon as the lookup
+      # succeeds, so the note is what says whether auto is in use.
+      if [[ -z "${CFG[USB_ID]:-}" ]]; then echo "not set (ADEVICE names the card)"; return; fi
+      if [[ -z "$ADEVICE_AUTO_NOTE" ]]; then echo "${CFG[USB_ID]} (not used: ADEVICE names the card)"; return; fi ;;
   esac
   echo "${CFG[$1]:-}"
 }
@@ -611,6 +642,9 @@ cm108_desc() {
   local card; card="$(audio_card_number)"
   if [[ -n "${CFG[CM108_DEVICE]:-}" ]]; then
     echo "${CM108_PATH} (set in ${CFG_SRC[CM108_DEVICE]})"
+  elif [[ -z "$card" && "${CFG[ADEVICE]:-}" == auto ]]; then
+    # Nothing to look under: the sound card itself has not been found yet.
+    echo "found from the sound card once it is present"
   elif [[ -n "$CM108_PATH" ]]; then
     echo "${CM108_PATH} (found on the USB device of ALSA card ${card})"
   else
@@ -694,7 +728,8 @@ PTT_METHOD       = ${CFG[PTT_METHOD]}
 MYCALL           = ${CFG[MYCALL]}
 MODEM            = ${CFG[MODEM]}
 ACHANNELS        = ${CFG[ACHANNELS]}
-ADEVICE          = ${CFG[ADEVICE]}
+ADEVICE          = $(adevice_desc)
+USB_ID           = $(hw_value USB_ID)
 RIG_MODEL        = $(hw_value RIG_MODEL)
 CAT_DEVICE       = $(hw_value CAT_DEVICE)
 CAT_BAUD         = $(hw_value CAT_BAUD)
@@ -915,6 +950,56 @@ gid_of() {
 # hard way: PTT rides the serial port while audio rides the USB codec, so if
 # the codec is gone (unplugged, re-enumerated) Direwolf still keys the radio
 # and transmits an unmodulated carrier — audible, but nothing can decode it.
+# --- finding the radio's sound card by what it is, not where it is ---
+# USB_ID (vvvv:pppp) names the radio's USB device. With ADEVICE = auto the card
+# number is looked up at every start, and again on each poll while `up` waits, so
+# the radio can be plugged into any port, or turn up late, without editing config.
+ADEVICE_AUTO_NOTE=""
+
+# ALSA card numbers whose USB device matches USB_ID, one per line.
+radio_usb_cards() {
+  local id="${CFG[USB_ID]:-}" c dev usb v p
+  [[ -n "$id" ]] || return 0
+  id="${id,,}"
+  for c in "${SYSFS_ROOT}"/class/sound/card*; do
+    [[ -e "$c/device" ]] || continue
+    dev="$(readlink -f "$c/device" 2>/dev/null)" || continue
+    # A USB card's device is one interface of the USB device; the ids live on the
+    # device itself, one level up.
+    usb="$dev"
+    [[ -r "$usb/idVendor" ]] || usb="${dev%/*}"
+    [[ -r "$usb/idVendor" && -r "$usb/idProduct" ]] || continue
+    v="$(cat "$usb/idVendor" 2>/dev/null)"; p="$(cat "$usb/idProduct" 2>/dev/null)"
+    [[ "${v,,}:${p,,}" == "$id" ]] && printf '%s\n' "${c##*/card}"
+  done
+  return 0
+}
+
+# Turns ADEVICE = auto into plughw:N,0 when exactly one card matches. Two matching
+# cards are left unresolved on purpose: picking one could key the wrong radio.
+resolve_auto_adevice() {
+  [[ "${CFG[ADEVICE]:-}" == auto ]] || return 0
+  local -a cards=()
+  mapfile -t cards < <(radio_usb_cards)
+  if (( ${#cards[@]} == 1 )); then
+    CFG[ADEVICE]="plughw:${cards[0]},0"
+    ADEVICE_AUTO_NOTE="found by USB_ID ${CFG[USB_ID]} on ALSA card ${cards[0]}"
+  elif (( ${#cards[@]} > 1 )); then
+    ADEVICE_AUTO_NOTE="USB_ID ${CFG[USB_ID]} matches ALSA cards ${cards[*]} — set ADEVICE to say which"
+  else
+    ADEVICE_AUTO_NOTE="no sound card with USB_ID ${CFG[USB_ID]:-unset} is present"
+  fi
+  return 0
+}
+
+adevice_desc() {
+  if [[ -n "$ADEVICE_AUTO_NOTE" ]]; then
+    echo "${CFG[ADEVICE]} (${ADEVICE_AUTO_NOTE})"
+  else
+    echo "${CFG[ADEVICE]:-}"
+  fi
+}
+
 # Card number out of ADEVICE. Handles plughw:N,M / hw:N,M / plughw:N.
 # Empty for non-numeric card names.
 audio_card_number() {
@@ -925,7 +1010,17 @@ audio_card_number() {
 }
 
 require_audio_device() {
+  # Last chance to resolve: `up` reaches here directly when DEVICE_WAIT is 0.
+  resolve_auto_adevice
   local adev="${CFG[ADEVICE]:-}" card
+  if [[ "$adev" == auto ]]; then
+    echo "ERROR: ADEVICE = auto, but ${ADEVICE_AUTO_NOTE}." >&2
+    echo "  Sound cards present:" >&2
+    cat /proc/asound/cards 2>/dev/null | sed 's/^/    /' >&2
+    echo "  Check the radio is plugged in, or set ADEVICE in igate.local.conf." >&2
+    echo "  Refusing to start: PTT would still key the radio, transmitting a carrier with no audio." >&2
+    exit 1
+  fi
   card="$(audio_card_number)"
   if [[ -z "$card" ]]; then
     echo "Note: cannot parse a card number from ADEVICE='${adev}'; skipping audio device check." >&2
@@ -942,8 +1037,9 @@ require_audio_device() {
 }
 
 # --- CM108 PTT: a GPIO pin on the USB sound card (Digirig Lite and similar) ---
-# Tests point this at a fake sysfs tree.
-SYSFS_ROOT="/sys"
+# Where the sound card and its hidraw node are looked up. Tests point it at a
+# fake sysfs tree; nothing in normal operation sets it.
+SYSFS_ROOT="${IGATE_SYSFS_ROOT:-/sys}"
 CM108_PATH=""
 CM108_GID=""
 
@@ -1006,8 +1102,15 @@ cm108_udev_help() {
 # Prints what is not there yet, space-separated; nothing when all is present.
 # A CM108 node counts as missing until udev has given it its group, since the
 # node appears a moment before the rule is applied to it.
+# Callers read this through $(...), which is a subshell: anything it resolves is
+# lost on return. Callers that act on the answer call resolve_auto_adevice first,
+# in their own shell, and this only reports.
 radio_devices_missing() {
   local card missing="" mg mode gid
+  if [[ "${CFG[ADEVICE]:-}" == auto ]]; then
+    printf '%s' "radio-sound-card(USB_ID ${CFG[USB_ID]:-unset})"
+    return 0
+  fi
   card="$(audio_card_number)"
   if [[ -n "$card" && ! -e "/dev/snd/controlC${card}" ]]; then
     missing+="ALSA-card-${card} "
@@ -1040,12 +1143,17 @@ radio_devices_missing() {
 wait_for_radio_devices() {
   local limit="${CFG[DEVICE_WAIT]:-0}" missing waited=0
   (( limit > 0 )) || return 0
+  # The radio may still be enumerating, so the card lookup is redone on every
+  # poll, not only at the start: a device that appears mid-wait is picked up on
+  # whatever card number it lands on.
+  resolve_auto_adevice
   missing="$(radio_devices_missing)"
   [[ -n "$missing" ]] || return 0
   echo "Waiting up to ${limit}s for the radio's devices: ${missing}"
   while (( waited < limit )); do
     sleep 1
     waited=$((waited + 1))
+    resolve_auto_adevice
     missing="$(radio_devices_missing)"
     if [[ -z "$missing" ]]; then
       echo "Radio devices present after ${waited}s."
@@ -1610,6 +1718,7 @@ cmd_up() {
   load_and_resolve "${1:-}"
   validate_config
   if [[ "$MODE" == docker ]]; then _docker_up; else _bare_up; fi
+  mkdir -p "$RUN_DIR"; : > "$WANTED_MARKER"
   # Also reached when the gateway was already running, which is what restarts
   # the monitor after a reboot: docker brings the container back by itself, but
   # nothing brings back a process on the host.
@@ -1641,6 +1750,9 @@ _bare_down() {
 
 cmd_down() {
   load_and_resolve "${1:-}"
+  # Before anything is stopped, so a watchdog tick that lands mid-shutdown does
+  # not read it as a crash and start everything again.
+  rm -f "$WANTED_MARKER"
   # First, so the monitor does not report the gateway's shutdown as an error.
   web_down
   # Stop what is actually running, not only what the mode says should be. The
@@ -1702,6 +1814,177 @@ cmd_is_running() {
   fi
   echo "not running"
   return 1
+}
+
+# --- watchdog: bringing the gateway back without a human ---
+# systemd restarts `up` when it fails, which covers a radio that is missing at
+# boot. It does not cover the two failures seen in service, both of which leave
+# the unit "active" while nothing is being gated:
+#
+#   1. The USB interface is unplugged and replugged. It may come back as a
+#      different ALSA card, and Direwolf is holding the old one.
+#   2. The USB device is reset in place, by RF ingress on the cable or by the
+#      kernel. lsusb still lists it, but Direwolf's open handle is dead and it
+#      logs "Audio input device 0 error code -19" until it is restarted.
+#
+# So this runs on a timer, and on a udev event when a sound card appears.
+
+# The ALSA card Direwolf was actually started with, read back from the config it
+# was started from rather than from what the config files resolve to now.
+running_card() {
+  local line
+  [[ -f "$RENDERED_CONF" ]] || return 0
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^ADEVICE[[:space:]]+[a-z]*hw:([0-9]+) ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done < "$RENDERED_CONF"
+  return 0
+}
+
+# How many "device gone" complaints Direwolf has logged. Errno 19 (ENODEV) is
+# what a reset device gives back on an already-open handle.
+audio_error_count() {
+  local window="${1:-120}"
+  if [[ "$MODE" == docker ]]; then
+    command -v docker >/dev/null || { echo 0; return 0; }
+    docker logs --since "${window}s" "$CONTAINER_NAME" 2>&1 |
+      grep -c -e 'error code -19' -e 'No such device' || true
+  else
+    [[ -f "$BARE_LOG" ]] || { echo 0; return 0; }
+    grep -c -e 'error code -19' -e 'No such device' "$BARE_LOG" || true
+  fi
+  return 0
+}
+
+_wd_state_get() {  # key
+  local line
+  [[ -f "$WATCHDOG_STATE" ]] || return 0
+  while IFS= read -r line; do
+    [[ "$line" == "$1="* ]] && { printf '%s\n' "${line#*=}"; return 0; }
+  done < "$WATCHDOG_STATE"
+  return 0
+}
+
+_wd_state_set() {  # key value
+  local line out=""
+  if [[ -f "$WATCHDOG_STATE" ]]; then
+    while IFS= read -r line; do
+      [[ "$line" == "$1="* ]] || out+="${line}"$'\n'
+    done < "$WATCHDOG_STATE"
+  fi
+  out+="$1=$2"$'\n'
+  mkdir -p "$RUN_DIR"
+  printf '%s' "$out" > "$WATCHDOG_STATE"
+}
+
+# A restart takes up to DEVICE_WAIT seconds and interrupts whatever is being
+# gated, so no more than one every WATCHDOG_MIN_INTERVAL seconds. A radio that
+# is genuinely broken then gets one attempt every few minutes instead of a loop.
+WATCHDOG_MIN_INTERVAL=180
+
+_wd_restart() {  # reason
+  local now last
+  now="$(date +%s)"
+  last="$(_wd_state_get last_restart)"
+  if [[ -n "$last" ]] && (( now - last < WATCHDOG_MIN_INTERVAL )); then
+    echo "watchdog: ${1} — waiting, last restart was $(( now - last ))s ago"
+    return 0
+  fi
+  _wd_state_set last_restart "$now"
+  echo "watchdog: ${1} — restarting the gateway"
+  # The audio-error tally belongs to the process about to be replaced; take the
+  # baseline now so the same errors do not trigger the next check too.
+  _wd_state_set audio_errors "$(audio_error_count)"
+  _wd_do_restart
+  echo "watchdog: restart complete"
+}
+
+# Where the gateway is a systemd service, restart it through systemd: the new
+# Direwolf then belongs to that unit's cgroup and not to the watchdog's, which
+# would take it down again when the watchdog run ends. Falls back to doing the
+# work here, which is the path on a laptop started from cron.
+_wd_do_restart() {
+  local unit=aprs-igate.service
+  if command -v systemctl >/dev/null 2>&1 && systemctl cat "$unit" >/dev/null 2>&1; then
+    if systemctl restart "$unit" 2>/dev/null; then
+      echo "watchdog: restarted ${unit}"
+      return 0
+    fi
+    # The Pi image gives this account exactly this one sudo command.
+    if sudo -n systemctl restart "$unit" 2>/dev/null; then
+      echo "watchdog: restarted ${unit} (sudo)"
+      return 0
+    fi
+    echo "watchdog: cannot restart ${unit} through systemd; restarting it directly instead" >&2
+  fi
+  cmd_down "$WATCHDOG_CONFIG" || true
+  cmd_up "$WATCHDOG_CONFIG"
+}
+
+WATCHDOG_CONFIG=""
+
+cmd_watchdog() {
+  WATCHDOG_CONFIG="${1:-}"
+  load_and_resolve "$WATCHDOG_CONFIG"
+
+  # Nothing to watch over until `up` has succeeded once. Silent, because this
+  # runs every minute whether or not the gateway was ever started here.
+  [[ -f "$WANTED_MARKER" ]] || return 0
+
+  local missing running_at resolved_at errors last_errors
+  resolve_auto_adevice
+  missing="$(radio_devices_missing)"
+  if [[ -n "$missing" ]]; then
+    # The radio is not there at all. Restarting would only burn DEVICE_WAIT and
+    # fail; when it comes back, the checks below pick it up on the next tick.
+    # Said once, not once a minute for as long as the radio is unplugged.
+    if [[ "$(_wd_state_get missing)" != "$missing" ]]; then
+      echo "watchdog: waiting for the radio (missing: ${missing})"
+      _wd_state_set missing "$missing"
+    fi
+    _wd_state_set audio_errors 0
+    return 0
+  fi
+  if [[ -n "$(_wd_state_get missing)" ]]; then
+    echo "watchdog: the radio is back"
+    _wd_state_set missing ""
+  fi
+
+  _gather_state
+  if [[ "$STATE_RUNNING" != "true" ]]; then
+    _wd_restart "the gateway should be running and is not"
+    return 0
+  fi
+
+  # Replugged, possibly into another port: Direwolf is holding a card number
+  # that is no longer this radio's.
+  running_at="$(running_card)"
+  resolved_at="$(audio_card_number)"
+  if [[ -n "$running_at" && -n "$resolved_at" && "$running_at" != "$resolved_at" ]]; then
+    _wd_restart "the radio is on ALSA card ${resolved_at} now, Direwolf is using card ${running_at}"
+    return 0
+  fi
+
+  # Reset in place: the device is listed, the card number has not moved, and
+  # Direwolf is still alive — but its handle is dead and it says so in the log.
+  errors="$(audio_error_count)"
+  last_errors="$(_wd_state_get audio_errors)"
+  if [[ "$MODE" == docker ]]; then
+    # A time window, so there is nothing to compare against.
+    (( errors > 0 )) && { _wd_restart "Direwolf is logging audio device errors (${errors} in the last 2 minutes)"; return 0; }
+  else
+    # A running total. A smaller number than last time means the log rotated,
+    # not that errors were undone.
+    if [[ -n "$last_errors" ]] && (( errors > last_errors )); then
+      _wd_state_set audio_errors "$errors"
+      _wd_restart "Direwolf logged $(( errors - last_errors )) new audio device errors"
+      return 0
+    fi
+    _wd_state_set audio_errors "$errors"
+  fi
+  return 0
 }
 
 cmd_status() {
@@ -2036,7 +2319,8 @@ cmd_uninstall() {
   if [[ -f /etc/systemd/system/aprs-igate.service ]]; then
     echo "Note: systemd units from the Pi image are present and are NOT removed here." >&2
     echo "  To stop it starting at boot as well:" >&2
-    echo "    sudo systemctl disable --now aprs-igate igate-firstboot igate-logrotate.timer" >&2
+    echo "    sudo systemctl disable --now aprs-igate igate-web igate-firstboot \\" >&2
+    echo "      igate-logrotate.timer igate-watchdog.timer" >&2
     echo >&2
   fi
   web_down
@@ -2086,9 +2370,10 @@ main() {
     monitor) cmd_monitor "${2:-}" ;;
     audio) cmd_audio "${2:-}" ;;
     is-running) cmd_is_running "${2:-}" ;;
+    watchdog) cmd_watchdog "${2:-}" ;;
     uninstall) cmd_uninstall "${2:-}" ;;
     *)
-      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|is-running|uninstall} [config-file]" >&2
+      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|is-running|watchdog|uninstall} [config-file]" >&2
       exit 1
       ;;
   esac

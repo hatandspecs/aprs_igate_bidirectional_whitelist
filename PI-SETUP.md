@@ -64,18 +64,21 @@ can override what.
 | microSD card, 8 GB or larger | Class 10 / A1 or better. Card quality is the single most common cause of a Pi that boots unreliably — buy a name brand |
 | microSD reader for your laptop | Built-in slot is fine |
 | 5 V 2.5 A micro-USB supply | **Not** a phone charger you had lying around. An underpowered Pi browns out under load, and on this project that means the USB link to the radio dropping mid-transmission — the exact failure that sticks the radio in TX |
-| The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, Digirig's VX-6R audio/PTT cable, **and a powered USB hub** (with its own power supply) between the Pi and the Digirig |
+| The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, and Digirig's VX-6R audio/PTT cable. On a **Pi 3A+** also a powered USB hub (with its own supply) between the Pi and the Digirig; a **Pi 3B+** takes the Digirig directly |
 | The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README. A VX-6R left running needs DC power (Yaesu E-DC-5B or E-DC-6); the battery does not last. **Not** from the hub or a USB boost cable — see Troubleshooting |
 
 The 3A+ has **one** USB port. The FTX-1 plugs straight into it. **The Digirig
-Lite does not work plugged straight in:** the Pi does not detect it at all, with
-its USB-C plug either way round. Put a
-powered USB hub between them. The evidence is in
-[README.md](README.md#why-the-digirig-needs-a-powered-hub), and the symptom is
-under Troubleshooting.
+Lite does not work plugged straight in on a 3A+:** the Pi does not detect it at
+all, with its USB-C plug either way round. Put a powered USB hub between them. The
+evidence is in [README.md](README.md#why-the-digirig-needs-a-powered-hub), and the
+symptom is under Troubleshooting.
 
-Both radios have carried traffic on a pi-gate, the VX-6R through a powered hub.
-See the Quickstarts in [README.md](README.md#quickstarts).
+**A Pi 3B+ needs no hub.** It has a USB hub chip on the board, and the same
+Digirig enumerates in any of its four ports.
+
+Both radios have carried traffic on a pi-gate: the VX-6R through a powered hub on
+a 3A+, and directly on a 3B+. See the Quickstarts in
+[README.md](README.md#quickstarts).
 
 **On your laptop**
 
@@ -190,9 +193,11 @@ What went into it:
 | `/opt/aprs-igate` | The whole project. `igate.conf` is installed unchanged; your laptop's own `igate.local.conf`, if you have one, is left out |
 | `/opt/aprs-igate/igate.local.conf` | Settings for the Pi only: `DEPLOY_MODE = bare-metal`, `WEB_MONITOR = no` (the systemd unit runs it instead), `RADIO` if `PI_RADIO` is set, and commented examples for device overrides |
 | `/etc/udev/rules.d/99-igate-cm108.rules` | Lets the `audio` group key a Digirig (CM108) through its `/dev/hidraw` node. Installed whatever the radio |
+| `/etc/udev/rules.d/99-igate-watchdog.rules` | Asks for a watchdog check the moment a USB sound card appears, so a replugged interface recovers in seconds rather than at the next minute |
+| `/etc/sudoers.d/010-igate-watchdog` | Lets the service account run `systemctl restart aprs-igate.service`, and nothing else, so the watchdog can restart the gateway through systemd |
 | `dtoverlay=vc4-kms-v3d,noaudio` in `config.txt` | Turns off HDMI audio, which otherwise takes an ALSA card number at boot, so the radio's sound card is always card 1 |
 | `/etc/rpi/swap.conf.d/50-igate.conf` | Keeps swap in compressed RAM with no writeback file on the card |
-| Three systemd units | WiFi country → first-boot setup → the gateway |
+| Five systemd units | WiFi country → first-boot setup → the gateway → the web monitor → the watchdog |
 
 Your `igate.secrets` is copied at mode 600. Your `pi.secrets` is **not** — the
 WiFi keys are already in the NetworkManager profiles and the Pi has no use for
@@ -249,9 +254,10 @@ When it finishes, pull the card out.
 1. Card into the Pi (contacts facing the board; it only goes in one way).
 2. The radio into the Pi's USB port, and the radio on.
    - **FTX-1:** its USB cable. `up` sets 144.390 MHz **D-FM** over CAT.
-   - **VX-6R:** a powered USB hub into the USB port with its own supply
-     connected, the Digirig into the hub, and Digirig's cable to the radio. The
-     Digirig plugged straight into the Pi is not detected.
+   - **VX-6R:** on a 3B+, the Digirig straight into a USB port. On a 3A+, a
+     powered USB hub into the USB port with its own supply connected and the
+     Digirig into the hub; a 3A+ does not detect the Digirig plugged straight in.
+     Then Digirig's cable to the radio.
      Tune it to **144.390 MHz FM by hand**, and set it up as in "Yaesu VX-6R on a
      Digirig Lite" in [README.md](README.md#yaesu-vx-6r-on-a-digirig-lite),
      receive battery saver off above all. Nothing on the Pi can set or check the
@@ -350,12 +356,24 @@ arecord -l
 card 0: Device [Yaesu FTX-1], device 0: USB Audio [USB Audio]
 ```
 
-The card number is what matters: `card 1` means `ADEVICE = plughw:1,0`, which is
-what the profile uses and what a Pi 3A+ with the FTX-1 has been observed to
-assign. A different number means overriding `ADEVICE` below. `card 0` means
+What this tells you depends on the profile.
+
+`radios/vx6r.conf` sets `ADEVICE = auto`, so the card number is not a setting at
+all: the Digirig is found by its USB id (`USB_ID = 0d8c:0012`) at every start, in
+whatever port it is in. `arecord -l` is then only a confirmation that the kernel
+sees the card. `./deploy_igate.sh config` shows which number it resolved to:
+
+```
+ADEVICE          = plughw:1,0 (found by USB_ID 0d8c:0012 on ALSA card 1)
+```
+
+`radios/ftx1.conf` sets a fixed `ADEVICE = plughw:1,0`, so there the card number
+does matter: a different number means overriding `ADEVICE` below. `card 0` means
 `plughw:0,0`, and so on. The image turns HDMI audio off so the radio is card 1
 every time. On a card built before that change, a radio plugged in after boot
-comes up as card 2, and it can do so after a reboot too.
+comes up as card 2, and it can do so after a reboot too. To make the FTX-1 behave
+like the VX-6R here, set `ADEVICE = auto` and `USB_ID` to what `lsusb` shows for
+the radio.
 
 **FTX-1: the serial ports.**
 
@@ -379,9 +397,10 @@ Bus 001 Device 002: ID 2109:2817 VIA Labs, Inc. USB2.0 Hub
 Bus 001 Device 005: ID 0d8c:0012 C-Media Electronics, Inc. USB Audio Device
 ```
 
-The `0d8c` line is the Digirig, and the hub line is your powered hub (its make will
-vary). If only the root hub is listed, nothing else here can work. See "VX-6R:
-`lsusb` shows only the root hub" under Troubleshooting.
+The `0d8c` line is the Digirig. The other entries are hubs: a 3A+ shows the
+powered hub you added (its make will vary), and a 3B+ shows its own on-board hubs
+and Ethernet controller. If no `0d8c` line appears, nothing else here can work.
+See "VX-6R: `lsusb` shows only the root hub" under Troubleshooting.
 
 **VX-6R: the Digirig's PTT node.** The Digirig has no serial port. Its PTT is a
 GPIO pin on its sound chip, reached through a `/dev/hidraw` node:
@@ -397,8 +416,8 @@ crw-rw---- 1 root audio 243, 0 ... /dev/hidraw0
 The Digirig's node should show group `audio` and `crw-rw----`: the image's udev
 rule does that. Nothing needs setting, because `deploy_igate.sh` finds the node on
 the same USB device as the `ADEVICE` card. `config` shows it on the `CM108_DEVICE`
-line. If that line says none was found, `ADEVICE` names the wrong card or the
-Digirig is not plugged in. If the node shows `root root` and `crw-------`, the
+line. If that line says none was found, the Digirig is not plugged in, or — on a
+profile with a fixed `ADEVICE` — it names the wrong card. If the node shows `root root` and `crw-------`, the
 rule did not apply: unplug and replug the Digirig.
 
 If the Pi's values differ from the profile, **override them in the Pi's
@@ -777,6 +796,7 @@ The gateway runs under systemd as `aprs-igate.service`.
 |---|---|
 | Is it running? | `systemctl status aprs-igate` |
 | Web monitor state | `systemctl status igate-web` |
+| Watchdog state | `systemctl status igate-watchdog.timer` and `journalctl -u igate-watchdog -n 30` |
 | Calibrate audio levels | `cd ~/aprs-igate && ./deploy_igate.sh audio` |
 | Start / stop | `sudo systemctl start aprs-igate` / `sudo systemctl stop aprs-igate` |
 | Apply a config change | `sudo systemctl restart aprs-igate` |
@@ -794,8 +814,60 @@ seconds for the radio's USB devices (`DEVICE_WAIT` in the Pi's
 `Restart=on-failure` runs it again every 30 seconds for as long as it takes. A
 radio plugged in or switched on after boot therefore needs nothing from you;
 `systemctl status aprs-igate` shows `activating (auto-restart)` while it waits.
-A gateway that started successfully and then died is not restarted by this.
-`sudo systemctl restart aprs-igate` covers that case.
+A gateway that started successfully and then died is not restarted by this — that
+is what the watchdog below is for.
+
+### The watchdog
+
+`igate-watchdog.timer` runs `./deploy_igate.sh watchdog` every minute, and a udev
+rule runs the same check the moment a USB sound card appears. Together they cover
+the failures `Restart=on-failure` cannot see, because they happen after a start
+has succeeded and leave the unit `active (exited)`:
+
+* Direwolf died, or was killed.
+* The interface was unplugged and replugged, possibly into a different USB port,
+  and came back as a different ALSA card.
+* The USB device was **reset in place** — RF getting into the cable does this.
+  `lsusb` still lists it, the card number has not moved, and Direwolf keeps
+  running while logging `Audio input device 0 error code -19` and decoding
+  nothing. This is the failure that used to need a human.
+
+The check is silent when nothing is wrong, so anything in its journal is
+something it did:
+
+```bash
+journalctl -u igate-watchdog -n 30 --no-pager
+```
+
+```
+watchdog: waiting for the radio (missing: ALSA-card-1 CM108-PTT-device)
+watchdog: the radio is back
+watchdog: Direwolf logged 3 new audio device errors — restarting the gateway
+watchdog: restart complete
+```
+
+An unplugged radio is waited for rather than restarted into, and said once rather
+than once a minute. Restarts are limited to one every three minutes, since each
+one interrupts gating and can wait `DEVICE_WAIT` for the radio.
+
+The restart goes through `systemctl restart aprs-igate.service`, which is what the
+sudoers drop-in is for: done that way, the new Direwolf belongs to the gateway's
+own unit and systemd's view stays accurate. If systemd cannot be reached the
+watchdog says so and does the stop and start itself.
+
+To turn it off: `sudo systemctl disable --now igate-watchdog.timer`.
+
+**On a Pi built before the watchdog existed**, copy the current project over (see
+"Managing the service" above for the `scp` path), then:
+
+```bash
+sudo cp /opt/aprs-igate/udev/99-igate-watchdog.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+```
+
+and write the two units by hand — `build_pi_image.sh` has their exact text in
+`install_systemd_units`. Rebuilding the card is less work and is the supported
+path.
 
 You can also drive the script directly (`./deploy_igate.sh up` / `down` /
 `restart`), which does the same work. Prefer `systemctl` so systemd's view of
@@ -853,6 +925,19 @@ cd aprs-igate && ./deploy_igate.sh status
 
 `active (exited)` and two PIDs means unattended restarts work. Do this once,
 deliberately, while you are sitting in front of it.
+
+Worth proving in the same sitting, because it is the failure that actually happens
+in the field: pull the radio interface's USB plug out while the gateway is
+running, wait ten seconds, and put it back — in a *different* port. Within a
+minute, and usually within a few seconds:
+
+```bash
+journalctl -u igate-watchdog -f
+```
+
+should show the radio going missing, coming back, and the gateway being restarted,
+and `./deploy_igate.sh config` should show `ADEVICE` resolved to whatever card
+number it landed on this time.
 
 ## Shutting down and powering off
 
@@ -1094,6 +1179,34 @@ USB settings sometimes suggested for this, `dwc_otg.speed=1` in `cmdline.txt` or
 and are not needed: a freshly built card has neither and works through a powered
 hub.
 
+**Direwolf logs `Audio input device 0 error code -19: No such device` while the
+Digirig is still plugged in.** The sound card was reset, not removed: `dmesg`
+shows a line like `usb 1-1.1.3: reset full-speed USB device number 4`, while
+`lsusb` still lists `0d8c` and `arecord -l` still shows the card. A reset
+invalidates the handle Direwolf opened at start, and Direwolf does not reopen it,
+so every packet after that is lost. `./deploy_igate.sh status` still reports the
+gateway as running, because Direwolf itself is alive.
+
+The watchdog recovers this within a minute — it counts those log lines and
+restarts when the count grows — so on a current image the symptom to look for is a
+gateway that restarts itself every few minutes rather than one that goes quiet:
+
+```bash
+journalctl -u igate-watchdog -n 30 --no-pager
+```
+
+To recover immediately, or on a Pi without the watchdog:
+
+```bash
+sudo systemctl restart aprs-igate
+```
+
+Recovering from it is not the same as fixing it. Resets have been seen a minute or
+so after boot, and immediately after a transmission. The second case points at RF getting into the USB cable: lower the
+radio's transmit power, add ferrite chokes to the Digirig's cables near the Pi,
+and move the antenna away from the Pi and its cabling. Lowering the VX-6R to its
+minimum power stopped it in one case.
+
 **VX-6R: the gateway keeps retrying and never starts.** The web
 monitor shows `state stopped` and `gateway is not running — packets will appear
 here when it starts`.
@@ -1137,9 +1250,14 @@ the first transmission after boot, with `vcgencmd get_throttled` still reporting
 `0x0`. Power the radio from its battery or its own DC supply instead. To recover,
 replug the Digirig's cable at the hub (unplugging the hub's power also reboots a
 Pi powered from it), then `sudo systemctl restart aprs-igate`. The service does not
-restart it by itself, because its start had already succeeded. If the radio is
+restart it by itself; the watchdog does. If the radio is
 already on its own supply, suspect RF: lower transmit power, move the antenna away
 from the Pi, hub and cables, and add ferrite chokes on the Digirig's cables.
+
+On a current image the watchdog handles the replug for you: it sees the device
+come back — in whatever port, on whatever card number — and restarts the gateway.
+The cause still needs fixing; a gateway that spends its time restarting is not
+gating.
 
 **VX-6R: `up` refuses with an error about `/dev/hidraw`.** The Digirig's PTT
 device could not be used, and the message says which of three things is wrong:
@@ -1158,6 +1276,21 @@ can tell what frequency the VX-6R is on. Check its display reads 144.390, that i
 is switched on (Set Mode 1 `APO` off), that receive battery saver is off (Set
 Mode 53 `RXSAVE`), and that the VOL knob is not at zero — it is the receive level
 into the Digirig.
+
+A radio that plainly receives, its busy lamp flickering on each packet, while the
+monitor stays empty is usually that volume knob: too quiet, and nothing decodes.
+Measure what is arriving. Direwolf holds the sound card, so stop it first:
+
+```bash
+sudo systemctl stop aprs-igate
+arecord -D plughw:1,0 -f S16_LE -r 48000 -c 1 -V mono -d 30 /dev/null
+sudo systemctl start aprs-igate
+```
+
+The meter should swing to roughly 20-70% while a station is transmitting. Flat
+means no audio is reaching the Pi; pinned at 100% means far too much. Turn the VOL
+knob a few clicks and measure again. `./deploy_igate.sh audio` reports the levels
+Direwolf measured on recent packets; it prefers around 50.
 
 **`monitor` shows nothing, but the gateway is decoding.** Check `logs` — if raw
 output is flowing, the annotator is the problem, not the gateway. It uses
@@ -1282,7 +1415,8 @@ rm -rf pi-build/
 To stop the gateway on a Pi you want to keep but repurpose:
 
 ```bash
-sudo systemctl disable --now aprs-igate igate-firstboot
+sudo systemctl disable --now aprs-igate igate-web igate-firstboot \
+  igate-logrotate.timer igate-watchdog.timer
 ```
 
 ---

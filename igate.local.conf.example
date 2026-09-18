@@ -25,7 +25,7 @@
 #                   refusing (default 0: no wait). The Pi image sets 60
 #   hardware keys   anything a radio profile may set: CAT, PTT_METHOD, RIG_MODEL,
 #                   CAT_DEVICE, CAT_BAUD, PTT_DEVICE, PTT_TYPE, CM108_DEVICE,
-#                   CM108_GPIO, ACHANNELS, ADEVICE, MIXER_TX_CONTROL, MIXER_RX_CONTROL,
+#                   CM108_GPIO, ACHANNELS, ADEVICE, USB_ID, MIXER_TX_CONTROL, MIXER_RX_CONTROL,
 #                   MIXER_AGC_CONTROL, TX_AUDIO_LEVEL, RX_AUDIO_LEVEL,
 #                   DISABLE_AGC, RADIO_SET_ON_UP, RADIO_FREQ, RADIO_MODE,
 #                   RADIO_PASSBAND
@@ -48,8 +48,13 @@
 #   DEPLOY_MODE = bare-metal
 
 # This machine enumerates the radio differently from the profile's defaults.
-# Prefer /dev/serial/by-id/ paths for serial ports; keep ADEVICE a numbered card.
+# Prefer /dev/serial/by-id/ paths for serial ports. ADEVICE takes a numbered card
+# or `auto`; `auto` needs USB_ID and finds the card by USB id in whatever port it
+# is in, which is what radios/vx6r.conf does. Set a number here to override that
+# — the one case auto refuses is two sound cards on the same USB id.
 #   ADEVICE = plughw:0,0
+#   ADEVICE = auto
+#   USB_ID = 0d8c:0012
 #   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
 #   PTT_DEVICE = /dev/ttyACM0
 

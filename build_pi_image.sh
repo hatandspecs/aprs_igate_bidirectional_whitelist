@@ -437,7 +437,9 @@ DEVICE_WAIT = 60
 # Device names come from the radio profile. Check them here with 'arecord -l',
 # 'ls -l /dev/ttyUSB* /dev/ttyACM*' and, for a CM108 interface such as the
 # Digirig Lite, 'ls -l /dev/hidraw*'. If this Pi numbers them differently,
-# override them below rather than editing the shared profile:
+# override them below rather than editing the shared profile. A profile with
+# ADEVICE = auto (radios/vx6r.conf) needs no ADEVICE here at all: it finds the
+# card by USB id, in whatever port the interface is in.
 #   ADEVICE = plughw:2,0
 #   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
 #   PTT_DEVICE = /dev/ttyACM0
@@ -468,6 +470,12 @@ LOCAL
   sudo install -D -m 644 "${SCRIPT_DIR}/udev/99-igate-cm108.rules" \
     "${ROOT_MNT}/etc/udev/rules.d/99-igate-cm108.rules"
   note "udev rule for CM108 PTT installed (/etc/udev/rules.d/99-igate-cm108.rules)"
+
+  # Asks igate-watchdog.service for a check the moment a USB sound card appears,
+  # so a replug does not wait for the timer's next minute.
+  sudo install -D -m 644 "${SCRIPT_DIR}/udev/99-igate-watchdog.rules" \
+    "${ROOT_MNT}/etc/udev/rules.d/99-igate-watchdog.rules"
+  note "udev rule for replug recovery installed (/etc/udev/rules.d/99-igate-watchdog.rules)"
 }
 
 # The pi-gate is unplugged rather than shut down, so the design goal is that
@@ -695,7 +703,69 @@ WantedBy=multi-user.target
 EOF
   sudo cp "$tmp" "${sysd}/igate-web.service"
   sudo chmod 644 "${sysd}/igate-web.service"
+
+  # Recovery. aprs-igate.service is a oneshot with RemainAfterExit, so once a
+  # start has succeeded systemd considers the job done: a Direwolf that dies
+  # later, or one left holding a USB device that was reset or replugged, is
+  # nothing systemd will act on. This checks for exactly those and restarts.
+  cat > "$tmp" <<EOF
+[Unit]
+Description=Recover the APRS iGate if its radio moved, was replugged or reset
+ConditionPathExists=${dir}/deploy_igate.sh
+# Not Requires: the check is also started by udev when a USB sound card appears,
+# which can happen before the gateway has ever been started. It takes no action
+# in that case.
+After=aprs-igate.service
+
+[Service]
+Type=oneshot
+User=${user}
+WorkingDirectory=${dir}
+ExecStart=${dir}/deploy_igate.sh watchdog
+# A restart waits up to DEVICE_WAIT (60s) for the radio, so allow for that plus
+# the stop it does first.
+TimeoutStartSec=180
+# The watchdog restarts the gateway through 'systemctl restart aprs-igate', so
+# the new Direwolf belongs to that unit rather than to this one. KillMode covers
+# the fallback path: if systemd is unreachable the watchdog starts Direwolf
+# itself, and the default control-group kill would take it down again the moment
+# this oneshot exits.
+KillMode=process
+EOF
+  sudo cp "$tmp" "${sysd}/igate-watchdog.service"
+  sudo chmod 644 "${sysd}/igate-watchdog.service"
+
+  cat > "$tmp" <<'EOF'
+[Unit]
+Description=Check the APRS iGate every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+# The check itself is a few file reads when nothing is wrong, so it does not
+# need to be spread out; run it late if the Pi was asleep rather than skipping.
+AccuracySec=10s
+Unit=igate-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  sudo cp "$tmp" "${sysd}/igate-watchdog.timer"
+  sudo chmod 644 "${sysd}/igate-watchdog.timer"
   rm -f "$tmp"
+
+  # The watchdog runs as the service account and has to be able to restart the
+  # gateway's unit. One command, no arguments of the caller's choosing, no
+  # password: narrower than putting the account in a group that can manage every
+  # unit on the machine.
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+# Lets igate-watchdog.service restart the gateway. Nothing else.
+${user} ALL=(root) NOPASSWD: /usr/bin/systemctl restart aprs-igate.service
+EOF
+  sudo install -D -m 440 "$tmp" "${ROOT_MNT}/etc/sudoers.d/010-igate-watchdog"
+  rm -f "$tmp"
+  note "sudoers drop-in installed: ${user} may restart aprs-igate.service only"
 
   # The first-boot script itself.
   tmp="$(mktemp)"
@@ -843,8 +913,11 @@ EOF
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-logrotate.timer"
   sudo ln -sf /etc/systemd/system/igate-firstboot.timer \
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-firstboot.timer"
+  sudo ln -sf /etc/systemd/system/igate-watchdog.timer \
+    "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-watchdog.timer"
   note "igate-logrotate.timer enabled"
   note "igate-firstboot.timer enabled (retries setup every 10 min until it succeeds)"
+  note "igate-watchdog.timer enabled (checks the radio every minute)"
 
   if [[ "${CFG[PI_AUTOSTART]:-yes}" == "yes" ]]; then
     sudo ln -sf /etc/systemd/system/aprs-igate.service "${wants}/aprs-igate.service"
@@ -871,9 +944,11 @@ configure_boot_config() {
   # an ALSA card number as the vc4 driver loads, about nine seconds into boot.
   # A USB sound card gets whichever number is free when it enumerates, so the
   # radio's codec came up as card 1 when attached at boot and card 2 when plugged
-  # in later, or when it lost the race at boot — and ADEVICE names a number.
-  # Without HDMI audio the onboard headphone output is card 0 and the radio's
-  # codec is card 1 every time.
+  # in later, or when it lost the race at boot. Without HDMI audio the onboard
+  # headphone output is card 0 and the radio's codec is card 1 every time, which
+  # is what a profile with a fixed ADEVICE needs. A profile using ADEVICE = auto
+  # does not depend on this, but a stable numbering is still one less thing
+  # moving underneath the gateway.
   if sudo grep -qE '^dtoverlay=vc4-kms-v3d$' "$cfg"; then
     sudo sed -i 's/^dtoverlay=vc4-kms-v3d$/dtoverlay=vc4-kms-v3d,noaudio/' "$cfg"
     note "HDMI audio disabled (vc4-kms-v3d,noaudio): the radio's sound card is card 1"
