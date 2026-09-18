@@ -857,21 +857,94 @@ watchdog says so and does the stop and start itself.
 
 To turn it off: `sudo systemctl disable --now igate-watchdog.timer`.
 
-**On a Pi built before the watchdog existed**, copy the current project over (see
-"Managing the service" above for the `scp` path), then:
-
-```bash
-sudo cp /opt/aprs-igate/udev/99-igate-watchdog.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-```
-
-and write the two units by hand — `build_pi_image.sh` has their exact text in
-`install_systemd_units`. Rebuilding the card is less work and is the supported
-path.
+**On a Pi built before the watchdog existed**, you do not have to rebuild the
+card: see [Updating a running pi-gate over SSH](#updating-a-running-pi-gate-over-ssh).
 
 You can also drive the script directly (`./deploy_igate.sh up` / `down` /
 `restart`), which does the same work. Prefer `systemctl` so systemd's view of
 the service stays accurate.
+
+---
+
+## Updating a running pi-gate over SSH
+
+Most changes to this project are the script, the radio profiles and the docs, all
+of which live in `/opt/aprs-igate` and can simply be copied over. Rebuilding a
+card is only needed for what the build writes *outside* that directory — the boot
+partition's `config.txt`, `/etc/fstab`, the swap drop-in, the first-boot script —
+or for a Pi you want to reproduce from scratch.
+
+The watchdog is the awkward middle case: it is mostly script, but it also needs
+two systemd units, a sudoers drop-in and a udev rule. `build_pi_image.sh` writes
+those four out for copying, from the same text it puts on a card, so an updated Pi
+and a freshly built one cannot drift apart.
+
+**1. On the laptop**, from the project folder, with the changes committed:
+
+```bash
+./build_pi_image.sh watchdog-files          # writes pi-build/watchdog/
+rsync -av \
+  --exclude '.git/' --exclude 'run/' --exclude 'pi-build/' \
+  --exclude '__pycache__/' --exclude 'pi.secrets' \
+  --exclude 'igate.local.conf' --exclude 'igate.secrets' \
+  --exclude 'scratch_notes.txt' \
+  ./ igate@aprs-igate.local:aprs-igate/
+```
+
+The excludes are the point: `igate.local.conf` is the Pi's own (`DEPLOY_MODE`,
+`RADIO`, `DEVICE_WAIT`, any device override) and `igate.secrets` is already there
+at mode 600. There is no `--delete`, so nothing on the Pi is removed; a file you
+deleted in the repository stays behind until you remove it there by hand.
+
+**2. Copy the four system files and install them**, still from the laptop:
+
+```bash
+ssh igate@aprs-igate.local 'mkdir -p /tmp/wd'
+scp pi-build/watchdog/* igate@aprs-igate.local:/tmp/wd/
+ssh -t igate@aprs-igate.local '
+  sudo install -m 644 -o root -g root /tmp/wd/igate-watchdog.service /etc/systemd/system/ &&
+  sudo install -m 644 -o root -g root /tmp/wd/igate-watchdog.timer   /etc/systemd/system/ &&
+  sudo install -m 644 -o root -g root /tmp/wd/99-igate-watchdog.rules /etc/udev/rules.d/ &&
+  sudo install -m 440 -o root -g root /tmp/wd/010-igate-watchdog /etc/sudoers.d/ &&
+  sudo visudo -c &&
+  sudo udevadm control --reload-rules &&
+  sudo systemctl daemon-reload &&
+  sudo systemctl enable --now igate-watchdog.timer &&
+  rm -rf /tmp/wd'
+```
+
+`sudo visudo -c` in the middle of that chain is not decoration. A malformed file
+in `/etc/sudoers.d/` breaks `sudo` for every user on the machine, and on a headless
+Pi that is a reflash. The chain stops there if it does not parse — which is why it
+is `&&` throughout and why the file is installed from a generated copy rather than
+typed.
+
+**3. Check, on the Pi:**
+
+```bash
+ssh igate@aprs-igate.local
+cd aprs-igate
+grep -n '^ADEVICE' igate.local.conf     # nothing? good. See below if there is
+./deploy_igate.sh config | grep -E 'ADEVICE|USB_ID|CM108_DEVICE'
+sudo systemctl restart aprs-igate
+./deploy_igate.sh status
+systemctl list-timers igate-watchdog.timer --no-pager
+journalctl -u igate-watchdog -n 20 --no-pager
+```
+
+`config` should now credit the card to the USB id:
+
+```
+ADEVICE          = plughw:1,0 (found by USB_ID 0d8c:0012 on ALSA card 1)
+USB_ID           = 0d8c:0012
+```
+
+**An `ADEVICE` line in the Pi's `igate.local.conf` overrides all of this**, because
+a local file outranks the radio profile. If an older card number is set there —
+`ADEVICE = plughw:2,0` from a Pi 3A+, say — comment it out, or the gateway keeps
+looking at a fixed card and the watchdog has nothing to re-resolve.
+
+An empty watchdog journal is the healthy state: it prints only when it acts.
 
 ---
 

@@ -570,6 +570,89 @@ EOF
   rm -f "$tmp"
 }
 
+# The watchdog's three system files, printed rather than installed. The image
+# build writes them into a mounted card; `watchdog-files` writes them out for
+# copying to a Pi that is already running. One source of text for both, so an
+# updated Pi and a freshly built card cannot drift apart.
+emit_watchdog_file() {  # service|timer|sudoers  user  install-dir
+  local which="$1" user="$2" dir="$3"
+  case "$which" in
+    service)
+      cat <<EOF
+[Unit]
+Description=Recover the APRS iGate if its radio moved, was replugged or reset
+ConditionPathExists=${dir}/deploy_igate.sh
+# Not Requires: the check is also started by udev when a USB sound card appears,
+# which can happen before the gateway has ever been started. It takes no action
+# in that case.
+After=aprs-igate.service
+
+[Service]
+Type=oneshot
+User=${user}
+WorkingDirectory=${dir}
+ExecStart=${dir}/deploy_igate.sh watchdog
+# A restart waits up to DEVICE_WAIT (60s) for the radio, so allow for that plus
+# the stop it does first.
+TimeoutStartSec=180
+# The watchdog restarts the gateway through 'systemctl restart aprs-igate', so
+# the new Direwolf belongs to that unit rather than to this one. KillMode covers
+# the fallback path: if systemd is unreachable the watchdog starts Direwolf
+# itself, and the default control-group kill would take it down again the moment
+# this oneshot exits.
+KillMode=process
+EOF
+      ;;
+    timer)
+      cat <<'EOF'
+[Unit]
+Description=Check the APRS iGate every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+# The check itself is a few file reads when nothing is wrong, so it does not
+# need to be spread out; run it late if the Pi was asleep rather than skipping.
+AccuracySec=10s
+Unit=igate-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+      ;;
+    sudoers)
+      # The watchdog runs as the service account and has to be able to restart
+      # the gateway's unit. One command, no arguments of the caller's choosing,
+      # no password: narrower than putting the account in a group that can
+      # manage every unit on the machine.
+      cat <<EOF
+# Lets igate-watchdog.service restart the gateway. Nothing else.
+${user} ALL=(root) NOPASSWD: /usr/bin/systemctl restart aprs-igate.service
+EOF
+      ;;
+    *) die "emit_watchdog_file: unknown file '${which}'" ;;
+  esac
+}
+
+# Writes those three files, plus the udev rule, into a directory for copying to a
+# running Pi — the alternative to rebuilding a card for the sake of the watchdog.
+# PI-SETUP.md, "Updating a running pi-gate over SSH", has the copy commands.
+cmd_watchdog_files() {
+  local out="${1:-pi-build/watchdog}"
+  local user="${CFG[PI_USER]:-igate}"
+  local dir="/opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
+  mkdir -p "$out"
+  emit_watchdog_file service "$user" "$dir" > "${out}/igate-watchdog.service"
+  emit_watchdog_file timer   "$user" "$dir" > "${out}/igate-watchdog.timer"
+  emit_watchdog_file sudoers "$user" "$dir" > "${out}/010-igate-watchdog"
+  chmod 644 "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer"
+  chmod 440 "${out}/010-igate-watchdog" 2>/dev/null || true
+  cp "${SCRIPT_DIR}/udev/99-igate-watchdog.rules" "${out}/"
+  note "wrote ${out}/ for user ${user}, install dir ${dir}:"
+  note "  igate-watchdog.service  igate-watchdog.timer"
+  note "  010-igate-watchdog (sudoers)  99-igate-watchdog.rules (udev)"
+}
+
 install_services() {
   step "Installing systemd units"
 
@@ -707,62 +790,18 @@ EOF
   # Recovery. aprs-igate.service is a oneshot with RemainAfterExit, so once a
   # start has succeeded systemd considers the job done: a Direwolf that dies
   # later, or one left holding a USB device that was reset or replugged, is
-  # nothing systemd will act on. This checks for exactly those and restarts.
-  cat > "$tmp" <<EOF
-[Unit]
-Description=Recover the APRS iGate if its radio moved, was replugged or reset
-ConditionPathExists=${dir}/deploy_igate.sh
-# Not Requires: the check is also started by udev when a USB sound card appears,
-# which can happen before the gateway has ever been started. It takes no action
-# in that case.
-After=aprs-igate.service
-
-[Service]
-Type=oneshot
-User=${user}
-WorkingDirectory=${dir}
-ExecStart=${dir}/deploy_igate.sh watchdog
-# A restart waits up to DEVICE_WAIT (60s) for the radio, so allow for that plus
-# the stop it does first.
-TimeoutStartSec=180
-# The watchdog restarts the gateway through 'systemctl restart aprs-igate', so
-# the new Direwolf belongs to that unit rather than to this one. KillMode covers
-# the fallback path: if systemd is unreachable the watchdog starts Direwolf
-# itself, and the default control-group kill would take it down again the moment
-# this oneshot exits.
-KillMode=process
-EOF
+  # nothing systemd will act on. These check for exactly those and restart.
+  # Their text comes from emit_watchdog_file, which `watchdog-files` also uses to
+  # update a Pi that is already running, so there is one copy of it.
+  emit_watchdog_file service "$user" "$dir" > "$tmp"
   sudo cp "$tmp" "${sysd}/igate-watchdog.service"
   sudo chmod 644 "${sysd}/igate-watchdog.service"
 
-  cat > "$tmp" <<'EOF'
-[Unit]
-Description=Check the APRS iGate every minute
-
-[Timer]
-OnBootSec=3min
-OnUnitActiveSec=1min
-# The check itself is a few file reads when nothing is wrong, so it does not
-# need to be spread out; run it late if the Pi was asleep rather than skipping.
-AccuracySec=10s
-Unit=igate-watchdog.service
-
-[Install]
-WantedBy=timers.target
-EOF
+  emit_watchdog_file timer "$user" "$dir" > "$tmp"
   sudo cp "$tmp" "${sysd}/igate-watchdog.timer"
   sudo chmod 644 "${sysd}/igate-watchdog.timer"
-  rm -f "$tmp"
 
-  # The watchdog runs as the service account and has to be able to restart the
-  # gateway's unit. One command, no arguments of the caller's choosing, no
-  # password: narrower than putting the account in a group that can manage every
-  # unit on the machine.
-  tmp="$(mktemp)"
-  cat > "$tmp" <<EOF
-# Lets igate-watchdog.service restart the gateway. Nothing else.
-${user} ALL=(root) NOPASSWD: /usr/bin/systemctl restart aprs-igate.service
-EOF
+  emit_watchdog_file sudoers "$user" "$dir" > "$tmp"
   sudo install -D -m 440 "$tmp" "${ROOT_MNT}/etc/sudoers.d/010-igate-watchdog"
   rm -f "$tmp"
   note "sudoers drop-in installed: ${user} may restart aprs-igate.service only"
@@ -1129,9 +1168,12 @@ main() {
     check) validate ;;
     build) cmd_build ;;
     flash) cmd_flash "${2:-}" ;;
+    watchdog-files) load_kv "$PI_CONF" >/dev/null 2>&1 || true; cmd_watchdog_files "${2:-}" ;;
     *)
-      echo "Usage: $0 {check|build|flash <device>}" >&2
+      echo "Usage: $0 {check|build|flash <device>|watchdog-files [dir]}" >&2
       echo "  flash device: /dev/mmcblk0 for a built-in reader, /dev/sdX for USB (check lsblk)" >&2
+      echo "  watchdog-files: write the watchdog's units, sudoers and udev rule to a" >&2
+      echo "    directory (default pi-build/watchdog) for copying to a running Pi" >&2
       exit 1
       ;;
   esac

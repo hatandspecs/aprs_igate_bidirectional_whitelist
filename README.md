@@ -456,7 +456,10 @@ timer.
 
 The Raspberry Pi image installs `igate-watchdog.timer` (every minute) and a udev
 rule that asks for the same check the moment a USB sound card appears, so a replug
-usually recovers within seconds. See [PI-SETUP.md](PI-SETUP.md). On a laptop in
+usually recovers within seconds. A Pi built before the watchdog existed does not
+need a new card: `./build_pi_image.sh watchdog-files` writes the units, sudoers
+drop-in and udev rule out for copying, and PI-SETUP.md has the procedure under
+"Updating a running pi-gate over SSH". On a laptop in
 docker mode nothing runs it automatically; run it by hand, or from `cron`:
 
 ```bash
