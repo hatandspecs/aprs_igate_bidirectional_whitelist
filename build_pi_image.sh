@@ -642,12 +642,17 @@ cmd_watchdog_files() {
   local user="${CFG[PI_USER]:-igate}"
   local dir="/opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
   mkdir -p "$out"
+  # The sudoers copy is left read-only to match what lands on the Pi, which means
+  # a redirect cannot reopen it: remove the previous run's files before writing.
+  rm -f "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
+        "${out}/010-igate-watchdog" "${out}/99-igate-watchdog.rules"
   emit_watchdog_file service "$user" "$dir" > "${out}/igate-watchdog.service"
   emit_watchdog_file timer   "$user" "$dir" > "${out}/igate-watchdog.timer"
   emit_watchdog_file sudoers "$user" "$dir" > "${out}/010-igate-watchdog"
-  chmod 644 "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer"
-  chmod 440 "${out}/010-igate-watchdog" 2>/dev/null || true
   cp "${SCRIPT_DIR}/udev/99-igate-watchdog.rules" "${out}/"
+  chmod 644 "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
+            "${out}/99-igate-watchdog.rules"
+  chmod 440 "${out}/010-igate-watchdog"
   note "wrote ${out}/ for user ${user}, install dir ${dir}:"
   note "  igate-watchdog.service  igate-watchdog.timer"
   note "  010-igate-watchdog (sudoers)  99-igate-watchdog.rules (udev)"

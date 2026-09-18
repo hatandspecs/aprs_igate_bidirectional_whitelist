@@ -848,7 +848,15 @@ watchdog: restart complete
 
 An unplugged radio is waited for rather than restarted into, and said once rather
 than once a minute. Restarts are limited to one every three minutes, since each
-one interrupts gating and can wait `DEVICE_WAIT` for the radio.
+one interrupts gating and can wait `DEVICE_WAIT` for the radio; the limit clears
+as soon as the radio is seen to be missing, so a replug is never made to wait out
+a limit set before it happened.
+
+A replug is usually caught by the udev rule rather than the timer, which shows up
+in the journal as a run a few seconds after the plug goes in, out of step with the
+timer's one-a-minute cadence. An unplug and replug inside one minute is normally
+never seen as an absence at all — the first the watchdog knows of it is the udev
+event, and it restarts from there.
 
 The restart goes through `systemctl restart aprs-igate.service`, which is what the
 sudoers drop-in is for: done that way, the new Direwolf belongs to the gateway's

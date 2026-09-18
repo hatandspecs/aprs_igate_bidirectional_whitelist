@@ -8,9 +8,13 @@
 # watchdog waits rather than acting anyway.
 #
 # The rule only starts the check; deploy_igate.sh watchdog decides whether
-# anything is actually wrong, so it is harmless on a machine with other USB
-# audio devices, and it does nothing at all until the gateway has been started
-# once (it takes no action without run/wanted).
+# anything is actually wrong, so it is harmless on a machine with other sound
+# cards, and it does nothing at all until the gateway has been started once (it
+# takes no action without run/wanted). That is why there is no filter here for
+# the radio's own device: an earlier version matched ENV{ID_BUS}=="usb", which
+# is set in the udev database but not in the property set while these rules are
+# being applied, so the rule never fired. Matching every sound card costs one
+# cheap check on a card that is not the radio, and works.
 #
 # Install it on the machine the interface plugs into:
 #
@@ -19,5 +23,5 @@
 #
 # It needs igate-watchdog.service, which the Raspberry Pi image installs. On a
 # machine without that unit the rule does nothing.
-ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", ENV{ID_BUS}=="usb", \
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", \
   TAG+="systemd", ENV{SYSTEMD_WANTS}+="igate-watchdog.service"

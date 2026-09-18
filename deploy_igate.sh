@@ -1945,6 +1945,11 @@ cmd_watchdog() {
       _wd_state_set missing "$missing"
     fi
     _wd_state_set audio_errors 0
+    # Forget the last restart. The rate limit is there to stop a loop on a radio
+    # that is broken in place; a radio that has gone away and come back is a new
+    # situation, and the restart it needs should not wait out a limit set by
+    # something that happened before it was unplugged.
+    _wd_state_set last_restart ""
     return 0
   fi
   if [[ -n "$(_wd_state_get missing)" ]]; then

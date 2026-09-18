@@ -450,7 +450,9 @@ Where the gateway is a systemd service, the restart goes through
 `systemctl restart aprs-igate.service` so the new Direwolf belongs to that unit
 rather than to the watchdog's own; otherwise the watchdog does the stop and start
 itself. A restart interrupts whatever is being gated and can wait `DEVICE_WAIT`
-for the radio, so no more than one is done every three minutes. Output is a line or two when it
+for the radio, so no more than one is done every three minutes — except that the
+limit clears whenever the radio is seen to be missing, since a radio that has gone
+away and come back is a new situation rather than a loop. Output is a line or two when it
 acts and nothing when it does not, which is what makes it safe on a one-minute
 timer.
 
