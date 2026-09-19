@@ -1060,6 +1060,17 @@ belongs only in a test.
   timer and on a udev event, restarts the gateway when the card moves, when
   Direwolf is gone, or when those `-19` lines accumulate. Both have since run on
   the pi-gate against a real reset and a real replug (§15.1).
+- **A pi-gate that misbehaves overnight cannot be diagnosed after a reboot.**
+  `run/` is a tmpfs and the journal is `Storage=volatile`, both deliberate, to
+  keep the SD card from being written during normal operation. The cost is that
+  a power cycle — the first thing anyone tries — erases the packet log, the
+  watchdog state and the whole journal. This happened: the web monitor froze
+  overnight while the gateway went on beaconing and carrying messages, and by the
+  time the question was asked the power cycle had removed every record of what
+  the gateway had been doing. The stall detector above removes the need to
+  diagnose that particular failure, but the general problem stands. Writing a
+  small anomaly breadcrumb outside `run/` would close it, at the cost of the
+  property the design was built around.
 - **A radio without CAT cannot be verified from software; the symptom is now
   reported.** For the VX-6R, frequency, volume and power are front-panel state. A
   retuned, turned-down or switched-off radio leaves the gateway running and
@@ -1109,6 +1120,7 @@ belongs only in a test.
 | Watchdog woken by udev | The first rule matched `ENV{ID_BUS}=="usb"` and never fired: `udevadm info` shows `ID_BUS=usb` in the database, but `udevadm test` shows it absent from the property set while the rules are being applied, so the card was never tagged for systemd (`TAGS=:seat:` only). With that filter dropped — the watchdog decides for itself whether anything is wrong, so it was never needed — a replug produced a watchdog run 6 s after the plug went in, off the timer's ~65 s cadence, and the gateway was restarted from that run. The unplug and replug fell between two timer checks, so the absent state was never observed at all |
 | RF silence is reported, never acted on | With decode counting, liveness and device presence stubbed, the watchdog stays silent while the decode count grows; says nothing at 10 minutes of silence; says so once at 31 minutes and does not repeat at 45; says `hearing RF again` on the next decode; never restarts the gateway for silence at any duration; and says nothing at all with `RF_QUIET_MINUTES = 0`. The key is refused above 1440 or non-numeric, is settable in `igate.local.conf`, and appears in `config`. A first silent check with no recorded decode time starts the clock rather than warning about a gap that predates the watching |
 | Stopping waits for Direwolf to exit | `down` used to signal Direwolf and delete its pidfile without waiting, so `systemctl restart` — ExecStop then ExecStart — could start a new Direwolf against an ALSA capture device the old one had not released, giving a gateway that transmits and hears nothing. `bare_stop` now waits for the process to be gone, escalating to `SIGKILL` after 10 seconds and pausing for the kernel to release its devices; verified against a process that exits slowly on `SIGTERM` and one that ignores it. `up` additionally clears a Direwolf holding the radio's capture device that no pidfile accounts for — the state left by a crash, or by a pidfile that went with the `run/` tmpfs. Found by inspection while diagnosing an unrelated fault; not observed in service |
+| Monitor feed stalls are detected and restarted | With a stubbed monitor that emits one event and then stays alive producing nothing, and a log file still growing, the web monitor publishes a stall note and restarts the pipeline within the configured threshold, repeatedly if the stall repeats. With the same stubbed monitor and a log that is *not* growing — a quiet band — it publishes nothing and restarts nothing. The poll interval scales with the threshold, so the check is testable at seconds and costs two wakeups a minute in service. `tail -f` in `monitor` and `logs` became `tail -F`, so a rotated log is reopened rather than followed into the void |
 | Watchdog rate limit | A restart that a replug needed was deferred 70 s by a rate limit set by a restart from before the radio was unplugged. The limit now resets whenever the radio is seen to be missing, so the first restart after a replug is immediate while a radio broken in place is still limited to one restart every three minutes |
 | FTX-1 unchanged by CM108 support | Against the previous commit, with every external command stubbed, each FTX-1 start path — docker and bare-metal, with a host device override, and the forced-path test config — renders a byte-identical `direwolf.conf` and prints identical output apart from one image-rebuild notice. The calls issued differ only by the image-label check and rebuild, and by `CAT=hamlib` and `PTT_METHOD=rig` added to `docker run` |
 

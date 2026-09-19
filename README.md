@@ -624,6 +624,18 @@ away from home, a VPN (WireGuard or Tailscale) makes a remote device look local
 and needs no change to the page — that is much safer than forwarding a port to a
 hand-written HTTP server.
 
+### When the page stops updating
+
+The feed can stall while the gateway is perfectly healthy: `monitor` is a
+`tail -F | gawk` pipeline, and the server's reader blocks on it with no timeout,
+so a pipeline that stays alive while producing nothing freezes the page. The
+monitor watches for exactly that — the packet log still growing while the pipeline
+says nothing for ten minutes — and restarts the feed, announcing it in the page.
+Silence on its own is never the trigger, because a quiet band looks identical from
+the browser and the log stops growing too. `IGATE_STALL_SECONDS` changes the ten
+minutes; `sudo systemctl restart igate-web` on the Pi restarts the feed by hand
+without touching the gateway.
+
 ## Testing it
 
 **1. Is it receiving?** Run `monitor` and wait for `RF RX` lines. If none appear

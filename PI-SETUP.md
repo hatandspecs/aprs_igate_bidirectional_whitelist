@@ -1300,6 +1300,44 @@ radio's transmit power, add ferrite chokes to the Digirig's cables near the Pi,
 and move the antenna away from the Pi and its cabling. Lowering the VX-6R to its
 minimum power stopped it in one case.
 
+**The web monitor stops updating while the gateway keeps gating.** The page still
+loads and still shows the last few hundred events, but nothing new arrives — while
+aprs.fi shows the beacon going out and messages still round-trip. The gateway is
+fine; the monitor's feed is not. `deploy_igate.sh monitor` runs `tail -F | gawk`,
+and the web server's reader blocks on that pipeline with no timeout, so a pipeline
+that stays alive while producing nothing leaves the page frozen.
+
+The monitor now detects this itself: if the packet log is still growing while the
+pipeline has produced nothing for ten minutes, it restarts the feed and says so in
+the page:
+
+```
+monitor feed stalled for 12 minutes while the gateway kept logging — restarting the feed
+```
+
+Silence alone is never the trigger — on a quiet band the filter legitimately emits
+nothing for hours, and the log stops growing too. To restart it by hand:
+
+```bash
+sudo systemctl restart igate-web
+```
+
+That touches only the monitor, not the gateway, so nothing stops being gated.
+
+**Before you power-cycle a pi-gate that is misbehaving, capture the evidence.**
+`run/` is a tmpfs and the journal is `Storage=volatile`, so a reboot erases the
+packet log, the watchdog state and every journal entry. Run this first and keep
+the output — it survives in your terminal's scrollback even though nothing on the
+Pi does:
+
+```bash
+cd /opt/aprs-igate
+./deploy_igate.sh status; ./deploy_igate.sh config | head -30
+journalctl -u aprs-igate -u igate-web -u igate-watchdog --no-pager | tail -100
+dmesg -T | tail -40; df -h /opt/aprs-igate/run; ls -l run/
+tail -100 run/direwolf.log
+```
+
 **VX-6R: the gateway keeps retrying and never starts.** The web
 monitor shows `state stopped` and `gateway is not running — packets will appear
 here when it starts`.

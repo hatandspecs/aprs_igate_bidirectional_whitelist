@@ -49,12 +49,43 @@ PORT = int(os.environ.get("IGATE_WEB_PORT", "8080"))
 # opened browser gets useful context instead of an empty screen.
 HISTORY = 300
 MAX_CLIENTS = 8
+# Per-viewer buffer. Deep enough to ride out a browser stalling for a few
+# seconds on a busy band, bounded so one stuck viewer cannot grow without limit.
+QUEUE_DEPTH = int(os.environ.get("IGATE_QUEUE_DEPTH", "500"))
+# When that buffer is full, how many of the viewer's oldest events to discard to
+# make room. Falling behind should cost the middle of the feed, not the feed.
+DROP_OLDEST = int(os.environ.get("IGATE_DROP_OLDEST", "50"))
+
+# The packet log the gateway writes. Used only as a liveness signal for the
+# monitor pipeline: if this file is growing while the pipeline has produced
+# nothing for a long time, the pipeline is broken rather than the band quiet.
+LOG_FILE = os.environ.get("IGATE_LOG_FILE", os.path.join(HERE, "run", "direwolf.log"))
+# How long the pipeline may produce nothing, while the log is still growing,
+# before it is treated as stalled and restarted.
+STALL_SECONDS = int(os.environ.get("IGATE_STALL_SECONDS", "600"))
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # "17:23:49  RF RX      AA3BR>SYRV6V,...:`h@dl#GYY"
 EVENT = re.compile(r"^(\d\d:\d\d:\d\d)\s\s(\S.*?)\s\s+(.*)$")
 # Direwolf's decode of the frame above, indented by monitor_filter.
 DETAIL = re.compile(r"^\s{6,}(\S.*)$")
+
+
+class Subscriber:
+    """One viewer's event queue, plus a flag saying it was cut off.
+
+    Without the flag, a viewer that falls behind is dropped from the fan-out
+    while its connection stays open: the handler blocks on an empty queue,
+    keeps sending keepalives, and the browser sees a healthy stream that never
+    delivers anything again. EventSource only reconnects on an error, so the
+    page sits there reading "live" and frozen.
+    """
+
+    __slots__ = ("queue", "dropped")
+
+    def __init__(self, maxsize):
+        self.queue = queue.Queue(maxsize=maxsize)
+        self.dropped = threading.Event()
 
 
 class MonitorStream:
@@ -71,7 +102,10 @@ class MonitorStream:
         self.subscribers = set()
         self.lock = threading.Lock()
         self.proc = None
+        # Monotonic timestamps for the stall check; see _supervise.
+        self.last_line_at = time.monotonic()
         threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._supervise, daemon=True).start()
 
     def _publish(self, event):
         with self.lock:
@@ -82,15 +116,29 @@ class MonitorStream:
                 return
             self.history.append(event)
             dead = []
-            for q in self.subscribers:
+            for sub in self.subscribers:
                 try:
-                    q.put_nowait(event)
+                    sub.queue.put_nowait(event)
+                    continue
                 except queue.Full:
-                    # A client that cannot keep up is dropped rather than
-                    # allowed to block the reader for everyone else.
-                    dead.append(q)
-            for q in dead:
-                self.subscribers.discard(q)
+                    pass
+                # Behind, but not necessarily hopeless. A monitor should show
+                # the most recent traffic, so make room by discarding this
+                # viewer's oldest events rather than its connection. On a busy
+                # band a browser can fall behind briefly and catch up.
+                try:
+                    for _ in range(DROP_OLDEST):
+                        sub.queue.get_nowait()
+                    sub.queue.put_nowait(event)
+                    continue
+                except (queue.Empty, queue.Full):
+                    pass
+                # Still cannot take it: cut it loose, and say so, so the
+                # handler closes the connection and the browser reconnects.
+                sub.dropped.set()
+                dead.append(sub)
+            for sub in dead:
+                self.subscribers.discard(sub)
 
     def _run(self):
         # Whether the gateway was running at the last check; None before the
@@ -132,6 +180,7 @@ class MonitorStream:
                 continue
 
             for raw in self.proc.stdout:
+                self.last_line_at = time.monotonic()
                 line = ANSI.sub("", raw.rstrip("\n"))
                 m = EVENT.match(line)
                 if m:
@@ -152,6 +201,62 @@ class MonitorStream:
             # once.
             time.sleep(5)
 
+    def _log_size(self):
+        try:
+            return os.stat(LOG_FILE).st_size
+        except OSError:
+            return None
+
+    def _supervise(self):
+        """Restart the monitor pipeline if it stops producing while the gateway
+        is still writing packets.
+
+        The read loop above blocks on the pipeline's stdout with no timeout, so
+        a pipeline that stays alive while producing nothing — a `tail` left
+        following a rotated-away log, say — leaves the page frozen while the
+        gateway carries on gating perfectly well. That happened in service, and
+        looked from the browser exactly like a quiet band.
+
+        Silence alone is not the signal: on a quiet band the filter legitimately
+        emits nothing for hours. The log still growing while the pipeline says
+        nothing is the signal.
+        """
+        last_size = self._log_size()
+        last_size_at = time.monotonic()
+        # Often enough to notice within a fraction of the threshold, never more
+        # than twice a minute.
+        interval = min(30, max(2, STALL_SECONDS // 4))
+        while True:
+            time.sleep(interval)
+            size = self._log_size()
+            if size is not None and last_size is not None and size != last_size:
+                last_size = size
+                last_size_at = time.monotonic()
+            elif size is not None and last_size is None:
+                last_size = size
+                last_size_at = time.monotonic()
+
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                continue  # not running; _run's own retry covers it
+            quiet_for = time.monotonic() - self.last_line_at
+            if quiet_for < STALL_SECONDS:
+                continue
+            # The gateway has written to the log more recently than the monitor
+            # has produced a line: the pipeline, not the band, is the quiet one.
+            if last_size_at <= self.last_line_at:
+                continue
+            mins = int(quiet_for // 60)
+            how_long = f"{mins} minutes" if mins else f"{int(quiet_for)} seconds"
+            self._publish({"kind": "note",
+                           "text": f"monitor feed stalled for {how_long} while the gateway "
+                                   "kept logging — restarting the feed"})
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            self.last_line_at = time.monotonic()
+
     def stop(self):
         """Signal the monitor pipeline. Without this, `tail -f` outlives the
         server and follows the log forever, because nothing ever writes to the
@@ -164,17 +269,17 @@ class MonitorStream:
                 pass
 
     def subscribe(self):
-        q = queue.Queue(maxsize=500)
+        sub = Subscriber(QUEUE_DEPTH)
         with self.lock:
             if len(self.subscribers) >= MAX_CLIENTS:
                 return None, []
-            self.subscribers.add(q)
+            self.subscribers.add(sub)
             backlog = list(self.history)
-        return q, backlog
+        return sub, backlog
 
-    def unsubscribe(self, q):
+    def unsubscribe(self, sub):
         with self.lock:
-            self.subscribers.discard(q)
+            self.subscribers.discard(sub)
 
 
 class Settings:
@@ -310,8 +415,8 @@ class Handler(BaseHTTPRequestHandler):
                    json.dumps(SETTINGS.get()).encode())
 
     def _events(self):
-        q, backlog = STREAM.subscribe()
-        if q is None:
+        sub, backlog = STREAM.subscribe()
+        if sub is None:
             self._send(503, "text/plain; charset=utf-8", b"too many viewers\n")
             return
 
@@ -321,8 +426,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_event(event)
             while True:
                 try:
-                    self._send_event(q.get(timeout=20))
+                    self._send_event(sub.queue.get(timeout=20))
                 except queue.Empty:
+                    if sub.dropped.is_set():
+                        # Cut loose for falling too far behind. Closing the
+                        # response is what makes EventSource reconnect, which
+                        # re-subscribes and replays the history.
+                        break
                     # Comment frame: keeps proxies and phone radios from
                     # dropping an idle connection on a quiet band.
                     self.wfile.write(b": keepalive\n\n")
@@ -330,7 +440,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
-            STREAM.unsubscribe(q)
+            STREAM.unsubscribe(sub)
 
     def _send_event(self, event):
         self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())

@@ -2172,7 +2172,9 @@ cmd_logs() {
     docker logs -f "$CONTAINER_NAME"
   else
     [[ -f "$BARE_LOG" ]] || { echo "No log yet — run './deploy_igate.sh up' first." >&2; exit 1; }
-    tail -f "$BARE_LOG"
+    # -F, not -f: follow the name, so a rotated log is reopened rather than
+    # followed into the void.
+    tail -F "$BARE_LOG"
   fi
 }
 
@@ -2355,7 +2357,11 @@ LEGEND
     docker logs -f --tail 30 "$CONTAINER_NAME" 2>&1 | monitor_filter "$use_color" "$show_detail"
   else
     [[ -f "$BARE_LOG" ]] || { echo "No log yet — run './deploy_igate.sh up' first." >&2; exit 1; }
-    tail -f -n 30 "$BARE_LOG" | monitor_filter "$use_color" "$show_detail"
+    # -F, not -f: the log is rotated underneath this (hourly on the Pi image).
+    # Following the descriptor survives copytruncate but nothing else; following
+    # the name survives both, and a monitor that silently stops following is
+    # indistinguishable from a quiet band.
+    tail -F -n 30 "$BARE_LOG" | monitor_filter "$use_color" "$show_detail"
   fi
 }
 
