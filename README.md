@@ -18,10 +18,15 @@ with `DEPLOY_MODE` in that machine's `igate.local.conf`; with no such file it is
 
 ## The pi-gate
 
-The bare-metal target is a **Raspberry Pi** — a "pi-gate": a box you plug in and
-forget, with no keyboard and no monitor. The station in use is a **3B+**, which
-takes the Digirig in any USB port; a **3A+** also works and was the original
-target, with one USB port, no Ethernet, and a powered hub needed for the Digirig.
+The bare-metal target is a **Raspberry Pi 3B+** — a "pi-gate": a box you plug in
+and forget, with no keyboard and no monitor. Either radio goes straight into one
+of its four USB ports.
+
+A Pi 3A+ also runs this, and was the original target, but its single USB port has
+no hub chip behind it and will not detect a Digirig Lite without a powered hub.
+That board's constraints are recorded in §15 and §16.6 of the
+[design document](aprs-igate-prototype-test.md); the rest of this file assumes a
+3B+.
 
 `build_pi_image.sh` builds the SD card image for it. Set your WiFi credentials
 and callsign on your laptop, write the card, and the Pi comes up on its own:
@@ -54,6 +59,29 @@ involved).
 | `igate.test.conf` | A ready-made forced-digipeat-path test that leaves `igate.conf` alone |
 | `pi.conf`, `pi.secrets.example` | Image build settings and the credential template |
 
+## Contents
+
+- [The pi-gate](#the-pi-gate)
+- [Documents in this repo](#documents-in-this-repo)
+- [Quickstarts](#quickstarts)
+  - [Quickstart A — laptop · docker · Yaesu FTX-1](#quickstart-a--laptop--docker--yaesu-ftx-1)
+  - [Quickstart B — Raspberry Pi (pi-gate) · bare-metal · Yaesu FTX-1](#quickstart-b--raspberry-pi-pi-gate--bare-metal--yaesu-ftx-1)
+  - [Quickstart C — laptop · docker · Yaesu VX-6R on a Digirig Lite](#quickstart-c--laptop--docker--yaesu-vx-6r-on-a-digirig-lite)
+  - [Quickstart D — Raspberry Pi (pi-gate) · bare-metal · Yaesu VX-6R on a Digirig Lite](#quickstart-d--raspberry-pi-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite)
+- [Radio setup — the one that matters](#radio-setup--the-one-that-matters)
+- [Commands](#commands)
+- [Monitoring](#monitoring)
+- [Web monitor (LAN)](#web-monitor-lan)
+- [Testing it](#testing-it)
+- [Configuration](#configuration)
+- [Safety notes](#safety-notes)
+- [Deployment modes](#deployment-modes)
+- [Running it on a Raspberry Pi (the pi-gate)](#running-it-on-a-raspberry-pi-the-pi-gate)
+- [Tearing it down](#tearing-it-down)
+- [Appendix — How a message travels](#appendix--how-a-message-travels)
+
+---
+
 ## Quickstarts
 
 Pick the one that matches your hardware. Each is complete on its own.
@@ -61,14 +89,14 @@ Pick the one that matches your hardware. Each is complete on its own.
 | Quickstart | Computer | Mode | Radio |
 |---|---|---|---|
 | [A](#quickstart-a--laptop--docker--yaesu-ftx-1) | Linux laptop or desktop | `docker` | Yaesu FTX-1 |
-| [B](#quickstart-b--raspberry-pi-pi-gate--bare-metal--yaesu-ftx-1) | Raspberry Pi 3B+ or 3A+ (the pi-gate) | `bare-metal` | Yaesu FTX-1 |
+| [B](#quickstart-b--raspberry-pi-pi-gate--bare-metal--yaesu-ftx-1) | Raspberry Pi 3B+ (the pi-gate) | `bare-metal` | Yaesu FTX-1 |
 | [C](#quickstart-c--laptop--docker--yaesu-vx-6r-on-a-digirig-lite) | Linux laptop or desktop | `docker` | Yaesu VX-6R on a Digirig Lite |
-| [D](#quickstart-d--raspberry-pi-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite) | Raspberry Pi 3B+ or 3A+ (the pi-gate) | `bare-metal` | Yaesu VX-6R on a Digirig Lite |
+| [D](#quickstart-d--raspberry-pi-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite) | Raspberry Pi 3B+ (the pi-gate) | `bare-metal` | Yaesu VX-6R on a Digirig Lite |
 
 | Radio | Profile | Frequency and mode | PTT | State |
 |---|---|---|---|---|
 | Yaesu FTX-1 | `radios/ftx1.conf` | set and checked by `up` over CAT | CAT command, through `rigctld` | has carried traffic in both modes |
-| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal); needs a powered USB hub on a Pi 3A+, but plugs straight into a Pi 3B+ |
+| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal) |
 
 **All four start with the station settings,** which are the same on every machine:
 
@@ -187,7 +215,7 @@ The gateway runs directly on the Pi under systemd, with no container, starting a
 power-on. This is the short version; **[PI-SETUP.md](PI-SETUP.md) is the full
 walkthrough**, and it explains every step for someone new to the Pi.
 
-**You need:** a Raspberry Pi 3B+ or 3A+, a name-brand microSD card (8 GB or more),
+**You need:** a Raspberry Pi 3B+, a name-brand microSD card (8 GB or more),
 a 5 V 2.5 A supply, and the FTX-1. A Linux laptop with `sudo` builds the card.
 
 **1. On the laptop, configure the image.** The station settings above come along.
@@ -335,18 +363,13 @@ Quickstart B's pi-gate, driving the VX-6R. The image selects the radio and
 installs the Digirig's udev rule, so nothing radio-related is done by hand on the
 Pi.
 
-> **On the air.** This setup has carried full SMS round trips on a pi-gate: on a
-> **Pi 3B+** with the Digirig plugged straight in, and on a **Pi 3A+** through a
-> powered USB hub, which that board needs. See
-> [Why the Digirig needs a powered hub on a Pi 3A+](#why-the-digirig-needs-a-powered-hub-on-a-pi-3a).
+> **On the air.** This setup has carried full SMS round trips on a pi-gate, with
+> the Digirig plugged straight into a **Pi 3B+**.
 
 **You need:** Quickstart B's hardware, with the VX-6R, a Digirig Lite and
 Digirig's VX-6R cable in place of the FTX-1.
 
-- **On a Pi 3B+** the Digirig goes straight into one of the Pi's USB ports; the
-  board has its own USB hub chip.
-- **On a Pi 3A+** add a powered USB hub, with its own supply, between the Pi and
-  the Digirig. That board does not detect the Digirig without one.
+- The Digirig goes straight into one of the Pi's USB ports. No hub is needed.
 
 The VX-6R prepared as above, on its battery or its own DC supply — **never**
 powered from a USB port or the hub.
@@ -366,9 +389,8 @@ laptop for the Pi.
 
 **2. Build and write the card:** exactly as Quickstart B, step 2.
 
-**3. Boot it.** Card into the Pi, then the Digirig: straight into a USB port on a
-3B+, or into the powered hub (with its supply connected) on a 3A+. Digirig's cable
-to the VX-6R, VX-6R on 144.390 MHz FM. Power the Pi last, and allow **5–10
+**3. Boot it.** Card into the Pi, then the Digirig straight into a USB port.
+Digirig's cable to the VX-6R, VX-6R on 144.390 MHz FM. Power the Pi last, and allow **5–10
 minutes** for first boot.
 
 **4. Log in and check.**
@@ -386,8 +408,8 @@ ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
 ```
 
 If `lsusb` does not list the C-Media device, the Pi is not seeing the Digirig at
-all. Turn the Digirig's USB-C plug over, since it works only one way round, and on
-a 3A+ check the hub's own supply is connected. The card number itself needs no
+all. Turn the Digirig's USB-C plug over, since it works only one way round. The
+card number itself needs no
 attention: `radios/vx6r.conf` sets `ADEVICE = auto`, which finds the Digirig by
 USB id whatever number it lands on and whichever port it is in.
 
@@ -400,10 +422,66 @@ Quickstart C, step 5, using `sudo systemctl restart aprs-igate` after any change
 that the VX-6R's frequency is front-panel state: a knocked dial takes the gateway
 off 144.390 with nothing on the Pi to notice.
 
-### Tearing down
+When finished with any of these: `./deploy_igate.sh down` stops the gateway,
+and `./deploy_igate.sh uninstall` returns the checkout to a freshly-cloned
+state. See [Tearing it down](#tearing-it-down).
 
-`./deploy_igate.sh down` stops the gateway. `./deploy_igate.sh uninstall` returns
-the checkout to a freshly-cloned state. See [Tearing it down](#tearing-it-down).
+## Radio setup — the one that matters
+
+Set the FTX-1 to **D-FM (data FM)**, not plain FM. `deploy_igate.sh up` now
+enforces this over CAT on every start, and warns if the radio reports plain FM.
+
+This is worth understanding rather than just trusting: in plain FM the radio
+modulates from the **microphone input**, not the USB codec. Direwolf keys the
+radio and transmits a clean carrier with nothing in it. PTT works, SWR is fine,
+a signal shows on the waterfall — and no receiver on earth can decode it. It
+cost most of a bring-up session to find, because every obvious diagnostic comes
+back healthy.
+
+Verified via CAT: `rigctl M FM` -> `FM`, `rigctl M PKTFM` -> `FM-D`. The
+relevant settings, in the radio profile `radios/ftx1.conf`:
+
+```
+RADIO_SET_ON_UP = yes
+RADIO_FREQ = 144390000
+RADIO_MODE = PKTFM        # hamlib's name for the radio's FM-D
+RADIO_PASSBAND = 16000
+```
+
+Also confirm the radio's **USB MOD GAIN** (under its data-mode settings) is
+sane, since that governs transmit deviation from the USB audio.
+
+### Yaesu VX-6R on a Digirig Lite
+
+The VX-6R has no CAT port. `up` can neither set nor read its frequency, so on
+every start it prints a reminder where the FTX-1 gets its `Radio: … FM-D`
+readback. Plain FM is the VX-6R's only 2 m mode, so the FTX-1's D-FM trap does
+not exist here; being on the wrong frequency does, and nothing will report it.
+
+The Digirig Lite is a C-Media CM108 USB sound card with no serial port. It keys
+the radio from the chip's GPIO3 pin, through Digirig's VX-6R cable. The VX-6R has
+no separate PTT contact: it transmits when its mic line is pulled low through a
+resistor, and the cable does that.
+
+These settings come from Yaesu's VX-6R operating manual. Enter Set mode with
+**F/W** then **0(SET)**, turn the DIAL to the item, press **0(SET)** to change it,
+and **PTT** to save.
+
+| Set Mode item | Setting | Why |
+|---|---|---|
+| 53 `RXSAVE` | **OFF** | The manual's packet advice: the receive battery saver's sleep cycle "may collide with the beginning of an incoming Packet transmission" |
+| 67 `TOT` | on (factory: 3 minutes) | Ends a stuck transmission; see [Safety notes](#safety-notes) |
+| 1 `APO` | OFF (factory default) | Auto power-off would take the gateway off the air with nothing to show for it |
+| 27 `HLF.DEV` | OFF | Normal ±5 kHz deviation. ON halves it |
+| 70 `TXSAVE` | OFF | ON lowers transmit power after a strong received signal |
+| 58 `SQL` | low | Direwolf finds packets in noise itself; a high squelch clips their start. Digirig's forum reports success with squelch fully open |
+| 37 `MCGAIN` | factory `LVL 5` to start | The radio's sensitivity to the Digirig's transmit audio: a second TX level alongside `TX_AUDIO_LEVEL` |
+| VOL knob | low | The receive level into the Digirig. Digirig's forum suggests the first click from off |
+
+**The Digirig's PTT needs a udev rule** on the machine it plugs into, because a
+`/dev/hidraw` node is root-only by default. `udev/99-igate-cm108.rules` gives the
+`audio` group access; Quickstart C step 2 installs it, and the Pi image installs it
+for you. Without it, `up` refuses to start and prints the commands.
 
 ## Commands
 
@@ -669,63 +747,6 @@ that arrived and were correctly refused. Seeing them is the whitelist working.
 **4. Full round trip.** Text `@KD3CCO-7 <message>` to the aprs.wiki SMS gateway
 at `866-352-4096`. It should appear as `IS GATED`. From RF, address a message to
 `SMS` with body `@<your-number> <message>`.
-
-## Radio setup — the one that matters
-
-Set the FTX-1 to **D-FM (data FM)**, not plain FM. `deploy_igate.sh up` now
-enforces this over CAT on every start, and warns if the radio reports plain FM.
-
-This is worth understanding rather than just trusting: in plain FM the radio
-modulates from the **microphone input**, not the USB codec. Direwolf keys the
-radio and transmits a clean carrier with nothing in it. PTT works, SWR is fine,
-a signal shows on the waterfall — and no receiver on earth can decode it. It
-cost most of a bring-up session to find, because every obvious diagnostic comes
-back healthy.
-
-Verified via CAT: `rigctl M FM` -> `FM`, `rigctl M PKTFM` -> `FM-D`. The
-relevant settings, in the radio profile `radios/ftx1.conf`:
-
-```
-RADIO_SET_ON_UP = yes
-RADIO_FREQ = 144390000
-RADIO_MODE = PKTFM        # hamlib's name for the radio's FM-D
-RADIO_PASSBAND = 16000
-```
-
-Also confirm the radio's **USB MOD GAIN** (under its data-mode settings) is
-sane, since that governs transmit deviation from the USB audio.
-
-### Yaesu VX-6R on a Digirig Lite
-
-The VX-6R has no CAT port. `up` can neither set nor read its frequency, so on
-every start it prints a reminder where the FTX-1 gets its `Radio: … FM-D`
-readback. Plain FM is the VX-6R's only 2 m mode, so the FTX-1's D-FM trap does
-not exist here; being on the wrong frequency does, and nothing will report it.
-
-The Digirig Lite is a C-Media CM108 USB sound card with no serial port. It keys
-the radio from the chip's GPIO3 pin, through Digirig's VX-6R cable. The VX-6R has
-no separate PTT contact: it transmits when its mic line is pulled low through a
-resistor, and the cable does that.
-
-These settings come from Yaesu's VX-6R operating manual. Enter Set mode with
-**F/W** then **0(SET)**, turn the DIAL to the item, press **0(SET)** to change it,
-and **PTT** to save.
-
-| Set Mode item | Setting | Why |
-|---|---|---|
-| 53 `RXSAVE` | **OFF** | The manual's packet advice: the receive battery saver's sleep cycle "may collide with the beginning of an incoming Packet transmission" |
-| 67 `TOT` | on (factory: 3 minutes) | Ends a stuck transmission; see [Safety notes](#safety-notes) |
-| 1 `APO` | OFF (factory default) | Auto power-off would take the gateway off the air with nothing to show for it |
-| 27 `HLF.DEV` | OFF | Normal ±5 kHz deviation. ON halves it |
-| 70 `TXSAVE` | OFF | ON lowers transmit power after a strong received signal |
-| 58 `SQL` | low | Direwolf finds packets in noise itself; a high squelch clips their start. Digirig's forum reports success with squelch fully open |
-| 37 `MCGAIN` | factory `LVL 5` to start | The radio's sensitivity to the Digirig's transmit audio: a second TX level alongside `TX_AUDIO_LEVEL` |
-| VOL knob | low | The receive level into the Digirig. Digirig's forum suggests the first click from off |
-
-**The Digirig's PTT needs a udev rule** on the machine it plugs into, because a
-`/dev/hidraw` node is root-only by default. `udev/99-igate-cm108.rules` gives the
-`audio` group access; Quickstart C step 2 installs it, and the Pi image installs it
-for you. Without it, `up` refuses to start and prints the commands.
 
 ## Configuration
 
@@ -1179,56 +1200,38 @@ knob at a time.
 
 ## Safety notes
 
-- **Enable your radio's TOT (time-out timer).** On the FTX-1, PTT is a CAT
-  command: if USB drops mid-transmission the unkey can't get through and the
-  radio sticks in transmit. No software can fix that — the control path is what
-  died. This happened twice at 5 W. On a Digirig, PTT is a GPIO pin the interface
-  holds, so a host that hangs mid-transmission holds the radio keyed. Either way
-  the radio's own timer is the only backstop. **Set to 3 minutes here** — note it
-  is global on the FTX-1, applying to voice as well as data, so a long SSB over
-  could be cut. Invisible to APRS, where bursts are milliseconds. On the VX-6R it
-  is Set Mode 67 `TOT`.
-- **Watch for RFI on the USB cable.** At 5 W, RF crashed the USB link and stuck
-  the radio in transmit. Root cause was a quarter-wave whip with no ground
-  plane — poorly matched, radiating into the shack. A half-wave on a tripod
-  (SWR under 1.2:1 to 5 W) plus a ferrite choke fixed it properly.
-- **`up` refuses to start if the audio device is missing**, since PTT would
-  still key the radio and transmit an unmodulated carrier. For a CM108 radio it
-  also refuses without a usable PTT device, which would otherwise leave a gateway
-  that looks healthy and can never transmit.
-- **A radio without CAT is only as right as its front panel.** Nothing in software
-  can confirm the VX-6R is on 144.390 MHz, or switched on.
+This station transmits unattended. Four things are not optional.
 
-## Tearing it down
+- **Enable the radio's time-out timer.** PTT has no software backstop. On the
+  FTX-1 it is a CAT command, so a dropped USB link takes the unkey with it; on a
+  CM108 interface it is a GPIO pin the interface holds, so a hung host holds the
+  radio keyed. The radio's own timer is the only thing that ends a stuck
+  transmission. **Set it to three minutes.** On the FTX-1 it is global, applying
+  to voice as well as data, so a long SSB over could be cut — invisible to APRS,
+  where bursts are milliseconds. On the VX-6R it is Set Mode 67 `TOT`.
+- **Keep RF out of the USB cable.** Use a well-matched antenna, sited away from
+  the computer and its cabling, with a ferrite choke on the interface's leads. RF
+  in the USB link resets the sound card at best and sticks the radio in transmit
+  at worst.
+- **`up` refuses to start without a usable audio device**, and on a CM108 radio
+  without a usable PTT device. Either one missing would otherwise leave a gateway
+  that looks healthy while transmitting an unmodulated carrier, or one that can
+  never transmit at all.
+- **A radio without CAT is only as right as its front panel.** Nothing in
+  software can confirm the VX-6R is on 144.390 MHz, tuned, turned up or switched
+  on. The watchdog reports RF silence; it cannot say why.
 
-```bash
-./deploy_igate.sh down       # stop and remove the container
-./deploy_igate.sh uninstall  # also remove the image and run/ — back to a fresh clone
-```
-
-On a Raspberry Pi built by `build_pi_image.sh`, `uninstall` does **not** remove
-the systemd units — it did not create them — so the gateway would still start
-itself at the next boot. It says so, and prints the command:
-
-```bash
-sudo systemctl disable --now aprs-igate igate-firstboot igate-logrotate.timer
-```
-
-It also leaves `run/` mounted there, since that tmpfs belongs to `/etc/fstab`
-rather than to this script; the contents are cleared.
-
-In bare-metal mode `uninstall` also removes the `direwolf` package, but
-deliberately leaves `hamlib` and `alsa-utils` alone — other ham radio software
-(WSJT-X among them) depends on hamlib. It prints the command if you want them
-gone.
+Why RF in the USB link ends in a stuck transmitter, what caused it here and what
+measurements resolved it, is §14.3 of the
+[design document](aprs-igate-prototype-test.md).
 
 ## Deployment modes
 
 `DEPLOY_MODE = docker` (the default) or `bare-metal`, set in each machine's
 `igate.local.conf` — not in `igate.conf`, since it describes the machine rather
 than the station. Override a single run with `IGATE_MODE=bare-metal`. Both modes have carried live
-traffic in both directions — bare-metal on a Raspberry Pi 3B+ and on a 3A+, each
-built by `build_pi_image.sh`.
+traffic in both directions — bare-metal on a Raspberry Pi 3B+ built by
+`build_pi_image.sh`.
 
 Docker mode is locked down to the minimum that still works — all capabilities
 dropped (verified: `CapEff` and `CapBnd` both zero), `no-new-privileges`,
@@ -1366,66 +1369,35 @@ The Pi's `igate.local.conf` carries a comment saying so. Check on the Pi with
 for the FTX-1 or `ls -l /dev/hidraw*` for a Digirig. If anything differs, override
 it in that `igate.local.conf`, then `sudo systemctl restart aprs-igate`.
 
-Two other things worth knowing about the 3A+ specifically: it has one USB-A
-port, so a radio and anything else need a hub, and 512 MB of RAM. The 3B+ has
-four ports and the same 512 MB, which is why `pi.conf` defaults to the 32-bit
-(`armhf`) Lite image on either board, and why the Pi runs bare-metal rather than
-under Docker.
+The 3B+ has four USB ports and 512 MB of RAM. That memory is why `pi.conf`
+defaults to the 32-bit (`armhf`) Lite image, and why the Pi runs bare-metal
+rather than under Docker: a container runtime is a poor use of half a gigabyte on
+an appliance with nothing to isolate itself from.
 
-### Why the Digirig needs a powered hub on a Pi 3A+
+### Digirig cautions
 
-Plugged directly into a Raspberry Pi 3A+, a Digirig Lite was not detected: no
-attach event, no error, nothing in `dmesg`, and `lsusb` showed only the root hub.
-The same Digirig, USB-A-to-C adapter and cable enumerate on a laptop, and the
-FTX-1 enumerates in the same Pi port. The boot logs show what differed:
+Two hardware behaviours cost real time to find. Both still apply on a 3B+.
 
-| Connection to the Pi 3A+ | Result |
-|---|---|
-| FTX-1, direct | Enumerates as a USB hub (`05e3:0610`) with the radio's CAT bridge, PTT interface and codec behind it |
-| Digirig, direct | Nothing, with its USB-C plug either way round: the port never saw a device attach |
-| Digirig through an unpowered hub | The hub enumerates; the Pi logs `Undervoltage detected!` as it connects; the Digirig does not appear |
-| Digirig through the same hub on its own supply | The Digirig enumerates, after the hub retries the port once, and carried a full round trip |
+**The Digirig's USB-C plug works only one way round.** Inserted the other way it
+is electrically invisible — no `lsusb` entry, nothing in `dmesg`, no attach event
+at all — on a Pi and on a laptop alike. Every reinsertion is therefore a coin
+toss, which makes a wrongly seated plug look like an intermittent fault rather
+than a seating problem. **Mark the orientation that works.**
 
-The pattern points at power. The Digirig Lite takes its power from the USB port,
-and the undervoltage warning shows the Pi's 5 V rail sagging as even a hub
-connects. The 3A+ has no USB hub chip of its own: its single port is driven
-directly by the processor's USB controller (`dmesg` reports a root hub with one
-port). Which link was marginal was not isolated — the Pi's supply, the port, or
-the drop across the adapter chain — and a powered hub removes all three.
+**Never power the radio from anything shared with the interface.** A transmitting
+radio draws its peak current at exactly the moment the interface must stay up, and
+a USB boost converter draws more than twice its output current from the 5 V side.
+Sharing a supply pulls the interface off the bus on the first transmission, and
+the Pi regulates its own rail so it reports nothing wrong. Give the radio its own
+battery or DC supply, kept entirely off the USB side.
 
-To check the Pi's power, run `vcgencmd get_throttled` on it. `throttled=0x0`
-means no under-voltage since boot; `0x10000` or `0x50000` means it has occurred.
-A powered hub keeps the Digirig working even then, but a Pi reporting
-under-voltage deserves a better supply regardless.
+To check the Pi's own supply, run `vcgencmd get_throttled`. `throttled=0x0` means
+no under-voltage since boot; `0x10000` or `0x50000` means it has occurred, and the
+Pi deserves a better supply regardless of anything else.
 
-**A Pi 3B+ takes the Digirig directly.** The 3B+ carries a USB hub chip on the
-board — its `lsusb` lists two Microchip hubs and the Ethernet controller — and the
-same Digirig, cable and adapter enumerated in one of its four ports with no
-external hub: `0d8c:0012` on the bus, ALSA card 1, and `/dev/hidraw0` found on
-that card's USB device. From there it gated a message from APRS-IS onto RF, which
-a second handheld received. The powered hub above is a Pi 3A+ requirement, not a
-Digirig one.
-
-**The Digirig's USB-C plug works only one way round.** Inserted the other way, the
-Digirig is invisible: no `lsusb` entry, nothing in `dmesg`, and the hub reports no
-device on any port. That was observed on the Pi and on a laptop, through the same
-hub and cable, and turning the plug over fixed it at once. The fault lies in the
-Digirig's USB-C socket or the USB-A-to-C adapter; which of the two was not
-isolated. Every reinsertion is therefore an even chance, which makes a wrongly
-seated plug look like an intermittent fault. Mark the orientation that works.
-
-**Do not power the radio from the hub.** On one pi-gate the VX-6R was powered
-through a USB-to-barrel cable with a 12 V boost converter, plugged into the same
-hub as the Digirig. The Digirig dropped off USB on the gateway's first
-transmission. dmesg showed `usb 1-1.3: USB disconnect` with no under-voltage
-reported (`throttled=0x0`). Direwolf logged `Audio input device 0 error code -19`
-from then on, and the Digirig did not come back until its cable was replugged.
-A transmitting radio draws its highest current, and a boost converter draws more
-than twice its output current from the 5 V side. On the shared supply that pulls
-down the Digirig's port. The Pi regulates its own rail, which is why it saw
-nothing. Power the radio from its battery or its own DC supply, kept entirely off
-the USB side. With the VX-6R moved onto its own wall adapter, the same pi-gate
-transmitted a beacon and gated messages with the Digirig staying connected.
+Both findings, the measurements behind them, and the Pi 3A+'s powered-hub
+requirement are in §15 and §16.6 of the
+[design document](aprs-igate-prototype-test.md).
 
 ### Settings
 
@@ -1437,6 +1409,29 @@ builder reads until a number is missing. `PI_IMAGE_PATH` points at an image
 already on disk to skip the download.
 
 ---
+
+## Tearing it down
+
+```bash
+./deploy_igate.sh down       # stop and remove the container
+./deploy_igate.sh uninstall  # also remove the image and run/ — back to a fresh clone
+```
+
+On a Raspberry Pi built by `build_pi_image.sh`, `uninstall` does **not** remove
+the systemd units — it did not create them — so the gateway would still start
+itself at the next boot. It says so, and prints the command:
+
+```bash
+sudo systemctl disable --now aprs-igate igate-firstboot igate-logrotate.timer
+```
+
+It also leaves `run/` mounted there, since that tmpfs belongs to `/etc/fstab`
+rather than to this script; the contents are cleared.
+
+In bare-metal mode `uninstall` also removes the `direwolf` package, but
+deliberately leaves `hamlib` and `alsa-utils` alone — other ham radio software
+(WSJT-X among them) depends on hamlib. It prints the command if you want them
+gone.
 
 ## Appendix — How a message travels
 

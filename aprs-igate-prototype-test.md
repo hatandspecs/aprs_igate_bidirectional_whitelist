@@ -1374,6 +1374,22 @@ radio on this board (§15). A Pi 3B+ does not share it: that board carries a USB
 hub chip, and the same Digirig enumerated directly in one of its ports and gated
 traffic from there (§15.1).
 
+Connection by connection, on the 3A+:
+
+| Connection to the Pi 3A+ | Result |
+|---|---|
+| FTX-1, direct | Enumerates as a USB hub (`05e3:0610`) with the radio's CAT bridge, PTT interface and codec behind it |
+| Digirig, direct | Nothing, with its USB-C plug either way round: the port never saw a device attach |
+| Digirig through an unpowered hub | The hub enumerates; the Pi logs `Undervoltage detected!` as it connects; the Digirig does not appear |
+| Digirig through the same hub on its own supply | The Digirig enumerates, after the hub retries the port once, and carried a full round trip |
+
+The pattern points at power: the Digirig Lite takes its power from the port, and
+the under-voltage warning shows the 5 V rail sagging as even a hub connects.
+Which link was marginal was not isolated — the Pi's supply, the port, or the drop
+across the adapter chain — and a powered hub removes all three. `vcgencmd
+get_throttled` reports whether under-voltage has occurred since boot
+(`throttled=0x0` means it has not).
+
 The hub must not also power the radio. In one configuration the VX-6R drew its
 power through a USB-to-barrel cable with a 12 V boost converter, plugged into the
 Digirig's hub, and the Pi drew its power from the hub as well. The gateway started

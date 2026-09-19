@@ -77,7 +77,7 @@ found by USB id rather than by port, in *whichever* port, changed at any time.
 connects straight to the processor with no hub chip, and it does not detect the
 Digirig at all, with the USB-C plug either way round. Put a powered USB hub
 between them. The evidence is in
-[README.md](README.md#why-the-digirig-needs-a-powered-hub-on-a-pi-3a), and the symptom is
+§16.6 of the [design document](aprs-igate-prototype-test.md), and the symptom is
 under Troubleshooting. The FTX-1 plugs straight into a 3A+ without a hub.
 
 Both radios have carried traffic on a pi-gate: the VX-6R directly on a 3B+, and
