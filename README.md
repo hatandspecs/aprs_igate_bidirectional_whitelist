@@ -1435,3 +1435,145 @@ directory, autostart, and `PI_RADIO`, the radio profile the Pi drives (blank use
 `WIFI_<n>_SSID` / `WIFI_<n>_PSK` / `WIFI_<n>_HIDDEN`, numbered from 1 — the
 builder reads until a number is missing. `PI_IMAGE_PATH` points at an image
 already on disk to skip the download.
+
+---
+
+## Appendix — How a message travels
+
+The two directions are not symmetric, and the asymmetry decides how far the
+station works. Understanding it is the difference between "it works at the house"
+and "it works across town".
+
+### Radio → APRS-IS → phone (the uplink)
+
+```mermaid
+flowchart LR
+  HT["FT5DR<br/>KD3CCO-7"] -- "WIDE1-1,WIDE2-1" --> D["W3YA-1 digipeater<br/>49 W, 640 ft"]
+  HT -. "direct, when close" .-> G1
+  D --> G1["this station<br/>KD3CCO-10"]
+  D --> G2["W3TM-10"]
+  D --> G3["N3TJJ-13"]
+  G1 --> IS["APRS-IS"]
+  G2 --> IS
+  G3 --> IS
+  IS --> SMS["SMS gateway"]
+  SMS --> P["phone"]
+```
+
+The handheld transmits with a digipeat path. A digipeater repeats it from a
+mountaintop, and **any** iGate within earshot of that repeat can gate it up —
+whichever one gets there first, with the rest dropped as duplicates. This station
+is one of many and is not required.
+
+Observed, with three different gateways carrying the same handheld on one
+morning:
+
+```
+qAR,KD3CCO-10      this station, when the handheld was close
+qAR,W3TM-10        3.5 miles away, when it was not
+qAR,N3TJJ-13       73 miles away, via the digipeater
+```
+
+That redundancy is why this direction is reliable.
+
+### Phone → APRS-IS → radio (the downlink)
+
+```mermaid
+flowchart LR
+  P["phone"] --> SMS["SMS gateway"]
+  SMS --> IS["APRS-IS"]
+  IS --> GW["this station<br/>KD3CCO-10<br/>the only way down"]
+  GW -- "direct" --> HT["FT5DR<br/>KD3CCO-7"]
+  GW -- "WIDE1-1" --> D["W3YA-1 digipeater"]
+  D --> HT
+  G2["W3TM-10"] -. "receive only:<br/>cannot help here" .-> IS
+```
+
+There is no redundancy here. Only a **transmitting** iGate can put an APRS-IS
+message onto RF, and only this one has these callsigns whitelisted. Everything
+depends on one station's transmitter.
+
+Three things must all be true:
+
+1. **The gateway must have heard the addressed station on RF recently.** Dire
+   Wolf follows the standard iGate rule of only gating a message down to a
+   station it knows is local — otherwise every gateway on the continent would
+   transmit every message. Out of receive range means out of transmit
+   consideration, path or no path.
+2. **The transmission must reach the digipeater**, if the handheld is beyond
+   direct range.
+3. **The digipeater must repeat it**, which it only does for a packet that
+   carries a path it answers to.
+
+### What `TX_VIA` changes
+
+`TX_VIA` sets the digipeat path on everything this station transmits — gated
+messages and the beacon alike. It renders as Dire Wolf's `IGTXVIA` and as the
+beacon's `via=`.
+
+**Blank is direct-only.** A packet with no path is a packet no digipeater will
+repeat, because it was not asked to. Downlink coverage is then exactly this
+station's own footprint, however good the digipeater on the hill is. A handheld
+gateway covers its own neighbourhood, while its *receive* coverage spans several
+states because it hears everyone else's repeats.
+
+**`TX_VIA = WIDE1-1`** gives the downlink the same relay the uplink already uses.
+One hop. `WIDE2-2` from a gateway is antisocial and unnecessary.
+
+```mermaid
+flowchart TB
+  subgraph blank["TX_VIA blank — direct only"]
+    A1["gateway"] --> B1["stations within<br/>its own footprint"]
+    A1 -. "no path, so<br/>never repeated" .-x C1["W3YA-1"]
+  end
+  subgraph wide["TX_VIA = WIDE1-1"]
+    A2["gateway"] --> B2["stations within<br/>its own footprint"]
+    A2 -- "WIDE1-1" --> C2["W3YA-1"]
+    C2 --> D2["everything the<br/>digipeater reaches"]
+  end
+```
+
+The relay is not a fallback. The gateway transmits one packet; the digipeater
+repeats it whether or not the handheld already heard the original. A nearby
+station hears both copies and its TNC discards the duplicate.
+
+### Digipeater or iGate — they are not interchangeable
+
+| | Digipeater (W3YA-1) | iGate (this station) |
+|---|---|---|
+| Does | Repeats RF packets that carry a path it answers to | Bridges RF and APRS-IS |
+| Connected to the internet | No | Yes |
+| Can put an APRS-IS message on the air | **No** | Yes, if it transmits |
+| Helps the uplink | Yes — relays to distant gateways | Yes |
+| Helps the downlink | Only by repeating a gateway's transmission | It *is* the downlink |
+
+Being within a digipeater's range does nothing for the downlink on its own. The
+digipeater has no way to learn that a message is waiting on the internet.
+
+### Reading a path off aprs.fi
+
+Which aliases a digipeater answers to is worth confirming rather than assuming.
+The cleanest evidence is one packet gated twice — once unrepeated and once after
+digipeating — because the original path is then known:
+
+```
+KD3CCO-7>APY05D,WIDE1-1,WIDE2-1,qAR,KD3CCO-10             heard direct
+KD3CCO-7>APY05D,W3YA-1,WIDE1,N3SNN-3,WIDE2*,qAR,N3TJJ-13  after two hops
+```
+
+Path entries are consumed left to right, so `WIDE1-1` became `W3YA-1,WIDE1` and
+`WIDE2-1` became `N3SNN-3,WIDE2`. W3YA-1 answered the `WIDE1-1`. The `*` marks
+the last entry used.
+
+The `qAR,<call>` construct names the gateway that injected the packet, which is
+how to tell whether this station carried a packet or a neighbour did.
+
+### Symptoms of a direct-only downlink
+
+* Messages sent **from** the handheld arrive reliably from anywhere in the area.
+* Messages sent **to** the handheld arrive only close to the gateway.
+* The sending service retries repeatedly, because no acknowledgement comes back.
+* `IS GATED` appears in the monitor and `[0L]` in the log — the gateway really is
+  transmitting. Nothing is receiving it.
+
+The gateway looks healthy throughout, because it is.
