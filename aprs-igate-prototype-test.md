@@ -1169,6 +1169,187 @@ rather than a file, a two-minute window is counted instead of a running total.
 
 ---
 
+### 15.3 2026-09-19: why the gateway cannot reach W3YA-1
+
+A day spent on one question, recorded because most of the conclusions are
+negative and the negatives are what stop the next person repeating the work.
+
+**The symptom.** Messages from a phone to a handheld failed everywhere in town
+and succeeded only within a mile or two of the gateway, while messages from the
+handheld to the phone succeeded from anywhere.
+
+**The first cause, and the fix.** The two directions are not symmetric. The
+uplink borrows the whole digipeater network — the handheld transmits with
+`WIDE1-1,WIDE2-1`, W3YA-1 repeats it from 640 ft, and any of a dozen iGates gates
+it. Observed the same morning with three different gateways carrying the same
+handheld: `qAR,KD3CCO-10` when close, `qAR,W3TM-10` when not, `qAR,N3TJJ-13` via
+the digipeater. The downlink has no such redundancy: only a transmitting iGate
+can put an APRS-IS message on RF, and only this one has these callsigns
+whitelisted. `TX_VIA` was blank, rendering as `IGTXVIA 0` with no path, so every
+gated message went out direct and no digipeater had been asked to repeat it.
+Downlink coverage was therefore the gateway's own footprint, and had been since
+the station was built. `TX_VIA = WIDE1-1` was set (§ appendix of README.md).
+
+That change did not produce the expected result, and the rest of the day went
+into finding out why.
+
+#### What was tried
+
+| Time | Action | Result |
+|---|---|---|
+| 12:03:01 | Gateway beacon with `WIDE1-1`, indoors | No echo; no `W3YA-1` in the path on aprs.fi |
+| — | Antenna swapped, second antenna | — |
+| 12:09:41 | Gateway beacon, second antenna, indoors | No echo |
+| 12:09:42, 12:13:12 | Same beacons | Heard direct by `qAO,W3SWL-2` |
+| 12:18–12:22 | **Control:** FT5DR, 5 W, Signal Stick half-wave, upper floor indoors, 1276 ft | Five beacons, none repeated by W3YA-1; one heard direct by W3SWL-2 |
+| 12:23:37 | **Control:** FT5DR, same radio and antenna, just outside the front door, 1250 ft | **W3YA-1 repeated it.** aprs.fi count 21 → 22 |
+| — | Entire gateway *and* antenna moved outdoors to that spot | — |
+| 12:39:56 | Gateway beacon outdoors | `TX LOCAL`, then an immediate flood of `error code -19`. Heard by nobody |
+| 12:47:19 | Gateway beacon outdoors | `TX LOCAL`, **no** `-19`. Heard by `qAO,W3SWL-2` at 12:47:20. Not repeated by W3YA-1 |
+| 12:51:51 | Gateway beacon outdoors | `TX LOCAL`, then `-19` again. Dire Wolf restarted by the udev-triggered watchdog within 8 s |
+
+#### Evidence, by source
+
+**Instrument.** SWR through the installed feedline reads 1.8:1, with the load at
+27.6 Ω essentially resistive — self-consistent, since 50/27.6 = 1.81. Mismatch
+loss is 0.37 dB, about 4% of range.
+
+**On-air, local.** A witness radio with the squelch open hears the gateway's
+transmission as a normal APRS burst, and an FT5DR thirty feet away decodes
+`KD3CCO-10` from it, comment and all.
+
+**On-air, at distance.** W3SWL-2, 2.8 miles away, gated the gateway's beacons at
+11:13:33, 12:09:42, 12:13:12 and 12:47:20. The same station gated the FT5DR's
+beacon at 12:22:57 from the same building. Both radios reach it.
+
+**aprs.fi station statistics.** `KD3CCO-10` does not appear in "stations heard
+directly by W3YA-1" at any point in September. `KD3CCO-7` appears 22 times, out to
+6.5 miles on a 227° bearing, most recently 12:23:37 today.
+
+**Link budget.** W3YA-1 advertises `PHG7680`: 49 W into 8 dBi at 640 ft HAAT, some
+309 W EIRP. A 5 W handheld into a half-wave is about 8 W EIRP. The 16 dB
+asymmetry means that hearing the digipeater full-quieting — which both radios do
+— carries no information about whether it can hear back.
+
+**Receive path.** Throughout, the gateway decoded and gated stations at 26 miles
+and beyond via the digipeater network, continuously, including 14 seconds after
+one of its own unanswered transmissions.
+
+#### Ruled out by the evidence
+
+- **A configuration or whitelist fault.** The filter compiles to
+  `g/KD3CCO*/KD3CCP*/W3EDP*` and is visible in the rendered `direwolf.conf`. The
+  whitelist governs only APRS-IS → RF; the uplink it cannot affect was working
+  throughout.
+- **Antenna mismatch.** 0.37 dB.
+- **Gross feedline loss.** A lossy line transforms any load toward its own 50 Ω
+  and flatters the measured SWR. 27.6 Ω is still visible at the radio end, which
+  bounds the loss well below what would matter.
+- **A dead or non-transmitting radio.** Heard by ear and decoded by another radio.
+- **Bad modulation or deviation.** The FT5DR decodes it cleanly, which an
+  under-deviated signal would not permit.
+- **A receive-side fault.** Continuous, and excellent.
+- **The antenna model.** Two different antennas, same result — though both were
+  tested indoors, which weakens this one (below).
+- **Height as the dominant variable.** The successful control beacon was taken
+  26 ft *lower* than the failed indoor ones. The building, not the elevation, was
+  the difference for the handheld.
+
+#### Still plausible
+
+1. **Insufficient EIRP for this particular path.** 5 W into a handheld antenna,
+   6.4 miles to a 640 ft site, is marginal by inspection and by the 16 dB
+   asymmetry. Consistent with the gateway never being repeated and with the
+   handheld being repeated only intermittently — five consecutive indoor failures,
+   then one success outdoors.
+2. **RF ingress truncating the test transmissions.** The strongest confound of the
+   day, and it was found last. The Digirig's USB device carries transmit audio as
+   well as receive; a reset mid-packet cuts the outgoing audio and leaves an
+   undecodable fragment, while Dire Wolf reports only the input-side error. The
+   correlation is exact so far as it goes: of three outdoor beacons, the one with
+   no `-19` is the one that was heard, and the two with `-19` were heard by
+   nobody. Most of the day's negative results may therefore be measurements of a
+   broken transmission rather than of a marginal path.
+3. **The gateway's antenna being worse than the control's half-wave.** The
+   one-variable swap — the Signal Stick onto the gateway's own radio, outdoors —
+   was never run.
+4. **Ordinary path marginality.** The handheld reached W3YA-1 on 9/18 evening and
+   again at 12:23:37 today, from positions a few yards apart, while failing five
+   times in between. A link that intermittent is at the edge regardless of
+   equipment.
+
+#### What the evidence does not establish
+
+It does not establish that transmit power alone is the fault. Suspects 2 and 3
+are untested and either could produce the same observations. The clean
+comparison — gateway radio, control antenna, outdoors, several beacons, with no
+`-19` in the log — has not yet been made, and until it is, the case for power
+rests on a link budget rather than on a measurement.
+
+One conclusion is firm, and it is the useful one: **the gateway hardware is not
+broken.** It transmits, it modulates correctly, it is matched, it is heard at
+2.8 miles, and it receives superbly. Every failure today is about reaching one
+particular digipeater over one particular path.
+
+#### The next measurements, in order
+
+1. Move the Pi out of the antenna's near field — antenna outdoors, coax back to
+   the Pi, ferrites on the Digirig's USB and audio leads. A `TX LOCAL` with no
+   `-19` beneath it is the precondition for any further test being valid.
+2. With clean transmissions, beacon four or five times and count how many W3YA-1
+   repeats. `grep 'KD3CCO-10>APDW17' run/direwolf.log | grep -i W3YA-1` answers it
+   without leaving the terminal.
+3. Only then swap antennas, one variable at a time.
+
+### 15.4 Planned: a mobile radio for the gateway
+
+The station's transmit side is a 5 W handheld. Every failure in §15.3 is a
+transmit-side reach problem against a site that answers a 5 W handheld only
+intermittently. A used Yaesu **FT-2900R** with a Yaesu **FP-1023** supply has been
+obtained to address it.
+
+**Why it should settle the question.** The FT-2900R's high setting is 75 W,
+11.8 dB above 5 W. The path is marginal by a few dB at most — the same location
+reaches W3YA-1 occasionally on 5 W — so 12 dB converts "sometimes" into
+"reliably" with margin to spare. Its lower settings, nominally 30 W and 10 W,
+give intermediate steps worth using rather than skipping.
+
+**Why the lowest step comes first.** Section 14.3 and §15.3 are both about RF
+getting into the USB link at 5 W. Ten watts is three times that field, seventy-five
+is fifteen times. Commissioning starts at the lowest power, confirms `TX LOCAL`
+with no `-19` beneath it, confirms W3YA-1 repeats the beacon, and only then steps
+up. `dmesg | grep -c 'reset full-speed'` is the ingress instrument; `W3YA-1` in
+the beacon's path on aprs.fi is the reach instrument. Both are free and both run
+continuously.
+
+**Supply.** The radio draws on the order of 11–12 A at full power. The supply's
+continuous rating wants confirming against that before first transmission. Two
+failures already recorded in this project — a USB boost converter feeding the
+radio from a shared hub (§16.6), and a charging cradle that was not seating —
+were both supplies that could not source transmit current, and both presented as
+something other than a power problem.
+
+**Time-out timer.** Mandatory, and more so than before. A handheld stuck in
+transmit at 5 W is an embarrassment; a mobile stuck at 75 W into an outdoor
+antenna is a problem for everyone on 144.390. PTT is a GPIO pin the interface
+holds, so a hung host holds the radio keyed, and the radio's own timer remains the
+only backstop (§14.3).
+
+**What the project needs.** A new profile, `radios/ft2900r.conf`, close to
+`radios/vx6r.conf`: `CAT = none`, since this radio has no computer control and its
+frequency and power stay front-panel truth; `PTT_METHOD = cm108` with
+`CM108_GPIO = 3` on the same Digirig Lite; `ADEVICE = auto` with
+`USB_ID = 0d8c:0012` unchanged. The one setting that genuinely differs is
+`TX_AUDIO_LEVEL`, since a mobile's microphone input sensitivity is not a
+handheld's and the Digirig's 50% starting point will need checking against actual
+deviation. The exact PTT wiring depends on which jacks the Digirig cable uses,
+which decides whether PTT rides the microphone line as it does on the VX-6R.
+
+`RF_QUIET_MINUTES` remains the only monitor of a radio that cannot be
+interrogated, and a mobile on a proper supply removes a whole class of failures
+this project has already recorded: no battery, no charging cradle, and nothing
+drawing transmit current through USB.
+
 ## 16. Headless Raspberry Pi deployment
 
 The prototype runs on a laptop with a keyboard attached. A permanent station
