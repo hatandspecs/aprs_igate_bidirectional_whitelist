@@ -1,8 +1,10 @@
 # Pi-Gate Setup — Blank Card to Gateway on the Air
 
-Step-by-step build of the **pi-gate**: a headless Raspberry Pi 3A+ running the
-whitelisted bidirectional iGate. Written assuming this is your first Raspberry Pi; the
-Linux, radio and networking side assumes you know what you're doing.
+Step-by-step build of the **pi-gate**: a headless Raspberry Pi running the
+whitelisted bidirectional iGate. The station this was written from runs a **Pi
+3B+**; a **3A+** also works, and the few places the two differ are called out.
+Written assuming this is your first Raspberry Pi; the Linux, radio and networking
+side assumes you know what you're doing.
 
 Everything is done from your laptop. You never attach a keyboard or monitor to
 the Pi.
@@ -60,24 +62,26 @@ can override what.
 
 | Item | Notes |
 |---|---|
-| Raspberry Pi 3A+ | 512 MB RAM, one USB-A port, **no Ethernet** — WiFi is the only way in, which is why the credentials get baked into the card |
+| Raspberry Pi 3B+ (or 3A+) | The station in use is a **3B+**: four USB-A ports behind an on-board hub chip, Ethernet as well as WiFi. A **3A+** also works — 512 MB RAM, one USB-A port, **no Ethernet**, so WiFi is the only way in, which is why the credentials get baked into the card either way |
 | microSD card, 8 GB or larger | Class 10 / A1 or better. Card quality is the single most common cause of a Pi that boots unreliably — buy a name brand |
 | microSD reader for your laptop | Built-in slot is fine |
 | 5 V 2.5 A micro-USB supply | **Not** a phone charger you had lying around. An underpowered Pi browns out under load, and on this project that means the USB link to the radio dropping mid-transmission — the exact failure that sticks the radio in TX |
 | The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, and Digirig's VX-6R audio/PTT cable. On a **Pi 3A+** also a powered USB hub (with its own supply) between the Pi and the Digirig; a **Pi 3B+** takes the Digirig directly |
 | The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README. A VX-6R left running needs DC power (Yaesu E-DC-5B or E-DC-6); the battery does not last. **Not** from the hub or a USB boost cable — see Troubleshooting |
 
-The 3A+ has **one** USB port. The FTX-1 plugs straight into it. **The Digirig
-Lite does not work plugged straight in on a 3A+:** the Pi does not detect it at
-all, with its USB-C plug either way round. Put a powered USB hub between them. The
-evidence is in [README.md](README.md#why-the-digirig-needs-a-powered-hub), and the
-symptom is under Troubleshooting.
+**On a 3B+ nothing extra is needed.** It has a USB hub chip on the board, and the
+Digirig enumerates in any of its four ports — and, since the radio's sound card is
+found by USB id rather than by port, in *whichever* port, changed at any time.
 
-**A Pi 3B+ needs no hub.** It has a USB hub chip on the board, and the same
-Digirig enumerates in any of its four ports.
+**On a 3A+ the Digirig needs a powered hub.** That board's single USB port
+connects straight to the processor with no hub chip, and it does not detect the
+Digirig at all, with the USB-C plug either way round. Put a powered USB hub
+between them. The evidence is in
+[README.md](README.md#why-the-digirig-needs-a-powered-hub-on-a-pi-3a), and the symptom is
+under Troubleshooting. The FTX-1 plugs straight into a 3A+ without a hub.
 
-Both radios have carried traffic on a pi-gate: the VX-6R through a powered hub on
-a 3A+, and directly on a 3B+. See the Quickstarts in
+Both radios have carried traffic on a pi-gate: the VX-6R directly on a 3B+, and
+through a powered hub on a 3A+. See the Quickstarts in
 [README.md](README.md#quickstarts).
 
 **On your laptop**
@@ -276,9 +280,9 @@ Watch the two LEDs next to the power connector:
 fill the card. That's normal. Don't pull the power.
 
 Then it joins WiFi and installs Direwolf, hamlib and the mDNS daemon over the
-network. On a 3A+ over WiFi this takes **several minutes** — realistically five
-to ten on first boot. There is no progress indicator. Be patient before
-concluding something is wrong.
+network. Over WiFi this takes **several minutes** — realistically five to ten on
+a 3A+'s first boot, less on a 3B+, and less again on a 3B+ over Ethernet. There is
+no progress indicator. Be patient before concluding something is wrong.
 
 ---
 
@@ -324,7 +328,7 @@ systemctl status aprs-igate
 ```
 
 With the FTX-1 plugged in, this normally shows `Active: active (exited)` on the
-first boot: the radio profile's device names match what a Pi 3A+ assigns. If it
+first boot: the radio profile's device names match what both boards assign. If it
 failed instead, the Pi numbered the radio's devices differently, and Part 6 fixes
 that. Do Part 6's check either way. For the VX-6R, start Part 6 with `lsusb`,
 which shows whether the Pi can see the Digirig at all.
@@ -831,6 +835,14 @@ has succeeded and leave the unit `active (exited)`:
   `lsusb` still lists it, the card number has not moved, and Direwolf keeps
   running while logging `Audio input device 0 error code -19` and decoding
   nothing. This is the failure that used to need a human.
+
+It also reports, without restarting anything, the one failure it cannot fix: the
+**radio itself** being switched off, flat, retuned, turned down, or unplugged from
+its antenna. The VX-6R has no CAT link, so none of that can be read back — the
+gateway keeps beaconing into a dead radio and reports itself as running. What
+stops is decoding, so after `RF_QUIET_MINUTES` (default 30) of hearing nothing it
+says so once, and says `hearing RF again` when a packet arrives. `status` carries
+the same information as a `Last RF decode:` line.
 
 The check is silent when nothing is wrong, so anything in its journal is
 something it did:

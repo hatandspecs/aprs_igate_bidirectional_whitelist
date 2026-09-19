@@ -190,7 +190,7 @@ unset _k
 # The local file describes a machine, so it may also say how that machine runs
 # the gateway, which radio is attached to it, whether and where it serves the
 # web monitor, and how long `up` waits for the radio's devices to appear.
-for _k in DEPLOY_MODE RADIO WEB_MONITOR WEB_PORT WEB_BIND DEVICE_WAIT; do
+for _k in DEPLOY_MODE RADIO WEB_MONITOR WEB_PORT WEB_BIND DEVICE_WAIT RF_QUIET_MINUTES; do
   LOCAL_KEY_OK[$_k]=1
 done
 unset _k
@@ -266,7 +266,7 @@ load_and_resolve() {
   # Layer 3: this machine.
   if [[ -f "$LOCAL_CONFIG" ]]; then
     load_layer "$LOCAL_CONFIG" igate.local.conf LOCAL_KEY_OK \
-      "igate.local.conf may set only DEPLOY_MODE, RADIO, WEB_MONITOR, WEB_PORT, WEB_BIND, DEVICE_WAIT and hardware keys."
+      "igate.local.conf may set only DEPLOY_MODE, RADIO, WEB_MONITOR, WEB_PORT, WEB_BIND, DEVICE_WAIT, RF_QUIET_MINUTES and hardware keys."
     LOCAL_CONFIG_IN_USE="$LOCAL_CONFIG"
   fi
 
@@ -372,6 +372,15 @@ validate_usb_id() {
   fi
 }
 
+validate_rf_quiet() {
+  local m="${CFG[RF_QUIET_MINUTES]:-}"
+  [[ -z "$m" ]] && return 0
+  if [[ ! "$m" =~ ^[0-9]+$ ]] || (( m > 1440 )); then
+    echo "Config: RF_QUIET_MINUTES = '${m}' is not valid. Use a number of minutes from 0 to 1440 (0 = never warn)." >&2
+    exit 1
+  fi
+}
+
 validate_device_wait() {
   local w="${CFG[DEVICE_WAIT]:-0}"
   if [[ ! "$w" =~ ^[0-9]+$ ]] || (( w > 600 )); then
@@ -390,6 +399,7 @@ validate_config() {
   validate_capabilities
   validate_web
   validate_usb_id
+  validate_rf_quiet
   validate_device_wait
   if [[ "${CFG[CAT]}" == hamlib ]]; then
     require RIG_MODEL
@@ -710,6 +720,12 @@ print_config() {
   local filter cm108_lines="" device_wait_line=""
   filter="$(build_filter)"
   # Listed only when set, for the same reason as the CM108 lines.
+  local rf_quiet_line=""
+  if [[ "$(rf_quiet_minutes)" == 0 ]]; then
+    rf_quiet_line=$'\n'"RF_QUIET_MINUTES = 0 (the watchdog never warns about RF silence)"
+  else
+    rf_quiet_line=$'\n'"RF_QUIET_MINUTES = $(rf_quiet_minutes) (watchdog says so after this long with nothing decoded)"
+  fi
   if [[ -n "${CFG[DEVICE_WAIT]:-}" ]]; then
     device_wait_line=$'\n'"DEVICE_WAIT      = ${CFG[DEVICE_WAIT]}s (up waits this long for the radio's devices)"
   fi
@@ -745,7 +761,7 @@ BEACON           = $(beacon_desc)
 AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
 KISS_PORT        = $(port_desc "${CFG[KISS_PORT]:-0}")
 WEB_MONITOR      = $(web_desc)
-IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}${device_wait_line}
+IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}${rf_quiet_line}${device_wait_line}
 
 Resolved Direwolf FILTER: IG 0 ${filter}
 
@@ -1358,16 +1374,60 @@ bare_is_running() {
   [[ -f "$BARE_DIREWOLF_PID" ]] && kill -0 "$(cat "$BARE_DIREWOLF_PID")" 2>/dev/null
 }
 
+# Signal a process and wait for it to actually be gone. Returns once it is, or
+# after SIGKILL if it outstays the limit.
+_kill_and_wait() {  # pid [seconds]
+  local pid="$1" limit="${2:-10}" waited=0
+  kill "$pid" 2>/dev/null || return 0
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( waited >= limit )); then
+      echo "Note: pid ${pid} did not exit after ${limit}s; sending SIGKILL." >&2
+      kill -9 "$pid" 2>/dev/null || true
+      # Give the kernel a moment to tear the process down and release its devices.
+      sleep 1
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+# A Direwolf this script did not start, still holding the radio's capture
+# device: left by a crash, or by a pidfile that went with the run/ tmpfs. A
+# second one against the same card gives a gateway that transmits and hears
+# silence, so clear it first. Only one gateway runs per machine here, so a
+# Direwolf on our card is ours to stop.
+_clear_stray_direwolf() {
+  local card pid ours=""
+  command -v pgrep >/dev/null || return 0
+  card="$(audio_card_number)"
+  [[ -n "$card" ]] || return 0
+  [[ -f "$BARE_DIREWOLF_PID" ]] && ours="$(cat "$BARE_DIREWOLF_PID" 2>/dev/null || true)"
+  for pid in $(pgrep -x direwolf 2>/dev/null || true); do
+    [[ -n "$ours" && "$pid" == "$ours" ]] && continue
+    if ls -l "/proc/${pid}/fd" 2>/dev/null | grep -q "pcmC${card}D0c"; then
+      echo "Note: Direwolf pid ${pid} still holds ALSA card ${card}; stopping it before starting." >&2
+      _kill_and_wait "$pid"
+    fi
+  done
+  return 0
+}
+
 bare_stop() {
   local pid
+  # Waiting matters: `systemctl restart` runs ExecStop then ExecStart, so a stop
+  # that returns while Direwolf is still shutting down lets the new Direwolf
+  # start against an ALSA capture device the old one has not released yet. The
+  # result is a gateway that looks healthy and transmits, and hears nothing.
   if [[ -f "$BARE_DIREWOLF_PID" ]]; then
     pid="$(cat "$BARE_DIREWOLF_PID")"
-    kill "$pid" 2>/dev/null || true
+    _kill_and_wait "$pid"
     rm -f "$BARE_DIREWOLF_PID"
   fi
   if [[ -f "$BARE_RIGCTLD_PID" ]]; then
     pid="$(cat "$BARE_RIGCTLD_PID")"
-    kill "$pid" 2>/dev/null || true
+    _kill_and_wait "$pid"
     rm -f "$BARE_RIGCTLD_PID"
   fi
 }
@@ -1651,6 +1711,7 @@ _bare_up() {
   fi
 
   require_audio_device
+  _clear_stray_direwolf
   [[ "${CFG[PTT_METHOD]}" == cm108 ]] && require_cm108_device
   apply_audio_levels
 
@@ -1858,6 +1919,26 @@ audio_error_count() {
   return 0
 }
 
+# How many frames Direwolf has decoded off the air. Every decode logs an
+# "audio level" line; keepalives and APRS-IS traffic do not. A radio that is
+# switched off, retuned or turned down leaves this flat while everything else
+# about the gateway still looks healthy — which is the one failure a radio with
+# no CAT cannot report any other way.
+rf_decode_count() {
+  local window="${1:-120}"
+  if [[ "$MODE" == docker ]]; then
+    command -v docker >/dev/null || { echo 0; return 0; }
+    docker logs --since "${window}s" "$CONTAINER_NAME" 2>&1 | grep -c 'audio level' || true
+  else
+    [[ -f "$BARE_LOG" ]] || { echo 0; return 0; }
+    grep -c 'audio level' "$BARE_LOG" || true
+  fi
+  return 0
+}
+
+# Minutes of RF silence before the watchdog says so. 0 turns it off.
+rf_quiet_minutes() { printf '%s' "${CFG[RF_QUIET_MINUTES]:-30}"; }
+
 _wd_state_get() {  # key
   local line
   [[ -f "$WATCHDOG_STATE" ]] || return 0
@@ -1989,7 +2070,76 @@ cmd_watchdog() {
     fi
     _wd_state_set audio_errors "$errors"
   fi
+
+  # Everything above says the gateway is healthy. This is the one thing left
+  # that it cannot see: the radio is off, retuned, turned down, or its antenna
+  # is disconnected. Direwolf keeps beaconing into a dead radio and reports
+  # itself as running. There is nothing to restart — a restart does not switch a
+  # radio on — so this only says so, once.
+  _wd_check_rf_quiet
   return 0
+}
+
+_wd_check_rf_quiet() {
+  local limit_min decodes last_decodes since now quiet_for
+  limit_min="$(rf_quiet_minutes)"
+  (( limit_min > 0 )) || return 0
+
+  now="$(date +%s)"
+  decodes="$(rf_decode_count $(( limit_min * 60 )))"
+  last_decodes="$(_wd_state_get decodes)"
+
+  # Docker counts a window, so any decode at all means it is hearing. Bare-metal
+  # counts a running total, so a change means it is hearing; a total that falls
+  # is a rotated log, which also counts as activity rather than as silence.
+  local heard=no
+  if [[ "$MODE" == docker ]]; then
+    (( decodes > 0 )) && heard=yes
+  else
+    [[ -z "$last_decodes" || "$decodes" != "$last_decodes" ]] && heard=yes
+  fi
+
+  if [[ "$heard" == yes ]]; then
+    _wd_state_set decodes "$decodes"
+    _wd_state_set decodes_at "$now"
+    if [[ "$(_wd_state_get rf_quiet)" == yes ]]; then
+      echo "watchdog: hearing RF again"
+      _wd_state_set rf_quiet ""
+    fi
+    return 0
+  fi
+
+  since="$(_wd_state_get decodes_at)"
+  if [[ -z "$since" ]]; then
+    # First silent check: start the clock rather than warning about a gap that
+    # may have happened before anything was watching.
+    _wd_state_set decodes_at "$now"
+    return 0
+  fi
+  quiet_for=$(( (now - since) / 60 ))
+  if (( quiet_for >= limit_min )) && [[ "$(_wd_state_get rf_quiet)" != yes ]]; then
+    echo "watchdog: nothing decoded from RF in ${quiet_for} minutes. The gateway is fine —"
+    echo "watchdog:   check the radio is switched on and charged, still on the right"
+    echo "watchdog:   frequency, volume up, and its antenna connected."
+    _wd_state_set rf_quiet yes
+  fi
+  return 0
+}
+
+# Reported from the watchdog's state file, which is where the last-decode time
+# is recorded. Nothing has written it if the watchdog has never run here.
+rf_last_heard_desc() {
+  local since now mins
+  since="$(_wd_state_get decodes_at)"
+  [[ -n "$since" ]] || { echo "not tracked yet (the watchdog records this; it may not have run here)"; return 0; }
+  now="$(date +%s)"; mins=$(( (now - since) / 60 ))
+  if (( mins < 1 )); then
+    echo "less than a minute ago"
+  elif [[ "$(_wd_state_get rf_quiet)" == yes ]]; then
+    echo "${mins} minutes ago — check the radio is on, tuned and turned up"
+  else
+    echo "${mins} minutes ago"
+  fi
 }
 
 cmd_status() {
@@ -2000,6 +2150,7 @@ cmd_status() {
 
   if [[ "$running" == "true" ]]; then
     echo "iGate running (${MODE}): ${detail}"
+    echo "Last RF decode: $(rf_last_heard_desc)"
   else
     echo "iGate not running (${MODE})."
   fi

@@ -11,6 +11,7 @@
 #   2. igate.conf            the station                 any key
 #   3. igate.local.conf      THIS FILE: one machine      DEPLOY_MODE, RADIO,
 #                                                        WEB_*, DEVICE_WAIT,
+#                                                        RF_QUIET_MINUTES,
 #                                                        hardware keys only
 #   4. igate.secrets         APRS-IS passcode            IGLOGIN_PASSCODE only
 #   5. environment           IGATE_MODE, IGATE_PASSCODE  one key each
@@ -23,6 +24,8 @@
 #   WEB_BIND        its listening address (default 0.0.0.0, every interface)
 #   DEVICE_WAIT     seconds `up` waits for the radio's devices to appear before
 #                   refusing (default 0: no wait). The Pi image sets 60
+#   RF_QUIET_MINUTES  minutes of hearing nothing on the air before the watchdog
+#                   says so (default 30; 0 = never). Raise it on a quiet band
 #   hardware keys   anything a radio profile may set: CAT, PTT_METHOD, RIG_MODEL,
 #                   CAT_DEVICE, CAT_BAUD, PTT_DEVICE, PTT_TYPE, CM108_DEVICE,
 #                   CM108_GPIO, ACHANNELS, ADEVICE, USB_ID, MIXER_TX_CONTROL, MIXER_RX_CONTROL,

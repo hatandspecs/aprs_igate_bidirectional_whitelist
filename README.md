@@ -18,8 +18,10 @@ with `DEPLOY_MODE` in that machine's `igate.local.conf`; with no such file it is
 
 ## The pi-gate
 
-The bare-metal target this was built for is a **Raspberry Pi 3A+** — a "pi-gate":
-a box you plug in and forget, with no keyboard, no monitor, and no Ethernet port.
+The bare-metal target is a **Raspberry Pi** — a "pi-gate": a box you plug in and
+forget, with no keyboard and no monitor. The station in use is a **3B+**, which
+takes the Digirig in any USB port; a **3A+** also works and was the original
+target, with one USB port, no Ethernet, and a powered hub needed for the Digirig.
 
 `build_pi_image.sh` builds the SD card image for it. Set your WiFi credentials
 and callsign on your laptop, write the card, and the Pi comes up on its own:
@@ -59,7 +61,7 @@ Pick the one that matches your hardware. Each is complete on its own.
 | Quickstart | Computer | Mode | Radio |
 |---|---|---|---|
 | [A](#quickstart-a--laptop--docker--yaesu-ftx-1) | Linux laptop or desktop | `docker` | Yaesu FTX-1 |
-| [B](#quickstart-b--raspberry-pi-3a-pi-gate--bare-metal--yaesu-ftx-1) | Raspberry Pi 3A+ (the pi-gate) | `bare-metal` | Yaesu FTX-1 |
+| [B](#quickstart-b--raspberry-pi-pi-gate--bare-metal--yaesu-ftx-1) | Raspberry Pi 3B+ or 3A+ (the pi-gate) | `bare-metal` | Yaesu FTX-1 |
 | [C](#quickstart-c--laptop--docker--yaesu-vx-6r-on-a-digirig-lite) | Linux laptop or desktop | `docker` | Yaesu VX-6R on a Digirig Lite |
 | [D](#quickstart-d--raspberry-pi-pi-gate--bare-metal--yaesu-vx-6r-on-a-digirig-lite) | Raspberry Pi 3B+ or 3A+ (the pi-gate) | `bare-metal` | Yaesu VX-6R on a Digirig Lite |
 
@@ -179,14 +181,14 @@ gateway is back on the air without you doing anything**. The web monitor is not;
 it is a plain process on the laptop. Run `./deploy_igate.sh up`: with the gateway
 already running, it starts only the monitor.
 
-### Quickstart B — Raspberry Pi 3A+ (pi-gate) · bare-metal · Yaesu FTX-1
+### Quickstart B — Raspberry Pi (pi-gate) · bare-metal · Yaesu FTX-1
 
 The gateway runs directly on the Pi under systemd, with no container, starting at
 power-on. This is the short version; **[PI-SETUP.md](PI-SETUP.md) is the full
 walkthrough**, and it explains every step for someone new to the Pi.
 
-**You need:** a Raspberry Pi 3A+, a name-brand microSD card (8 GB or more), a 5 V
-2.5 A supply, and the FTX-1. A Linux laptop with `sudo` builds the card.
+**You need:** a Raspberry Pi 3B+ or 3A+, a name-brand microSD card (8 GB or more),
+a 5 V 2.5 A supply, and the FTX-1. A Linux laptop with `sudo` builds the card.
 
 **1. On the laptop, configure the image.** The station settings above come along.
 
@@ -336,7 +338,7 @@ Pi.
 > **On the air.** This setup has carried full SMS round trips on a pi-gate: on a
 > **Pi 3B+** with the Digirig plugged straight in, and on a **Pi 3A+** through a
 > powered USB hub, which that board needs. See
-> [Why the Digirig needs a powered hub](#why-the-digirig-needs-a-powered-hub).
+> [Why the Digirig needs a powered hub on a Pi 3A+](#why-the-digirig-needs-a-powered-hub-on-a-pi-3a).
 
 **You need:** Quickstart B's hardware, with the VX-6R, a Digirig Lite and
 Digirig's VX-6R cable in place of the FTX-1.
@@ -444,7 +446,26 @@ until `up` has succeeded once, and then each time it runs it:
    absent — an unplugged radio is waited for, not restarted into;
 2. restarts if the gateway should be running and is not;
 3. restarts if the radio is now on a different ALSA card than Direwolf is using;
-4. restarts if Direwolf has logged new audio-device errors since the last check.
+4. restarts if Direwolf has logged new audio-device errors since the last check;
+5. and, when all of that is healthy, says so once if nothing has been decoded off
+   the air for `RF_QUIET_MINUTES` (default 30; 0 turns it off).
+
+That last one restarts nothing, because there is nothing to restart. A radio with
+no CAT link cannot be asked whether it is switched on, tuned to the right
+frequency, turned up, or still connected to an antenna — and with it dead, the
+gateway goes on beaconing into it and reporting itself healthy. The only visible
+symptom is that decodes stop, so that is what is watched:
+
+```
+watchdog: nothing decoded from RF in 31 minutes. The gateway is fine —
+watchdog:   check the radio is switched on and charged, still on the right
+watchdog:   frequency, volume up, and its antenna connected.
+```
+
+Said once, not once a minute, with a matching `watchdog: hearing RF again` when a
+packet decodes. `./deploy_igate.sh status` shows the same thing as a
+`Last RF decode:` line. Set `RF_QUIET_MINUTES` higher on a quiet band, where half
+an hour without a packet is normal.
 
 Where the gateway is a systemd service, the restart goes through
 `systemctl restart aprs-igate.service` so the new Direwolf belongs to that unit
@@ -1193,8 +1214,9 @@ gone.
 
 `DEPLOY_MODE = docker` (the default) or `bare-metal`, set in each machine's
 `igate.local.conf` — not in `igate.conf`, since it describes the machine rather
-than the station. Override a single run with `IGATE_MODE=bare-metal`. Both modes have carried live traffic in both
-directions — bare-metal on a Raspberry Pi 3A+ built by `build_pi_image.sh`.
+than the station. Override a single run with `IGATE_MODE=bare-metal`. Both modes have carried live
+traffic in both directions — bare-metal on a Raspberry Pi 3B+ and on a 3A+, each
+built by `build_pi_image.sh`.
 
 Docker mode is locked down to the minimum that still works — all capabilities
 dropped (verified: `CapEff` and `CapBnd` both zero), `no-new-privileges`,
@@ -1268,7 +1290,7 @@ ssh igate@aprs-igate.local
 cd aprs-igate && ./deploy_igate.sh monitor
 ```
 
-Why a Pi 3A+ runs bare-metal rather than in the container, how the image is
+Why a Pi runs bare-metal rather than in the container, how the image is
 customised offline, and what the first-boot units do is in §16 of the
 [design document](aprs-igate-prototype-test.md).
 
@@ -1333,11 +1355,12 @@ for the FTX-1 or `ls -l /dev/hidraw*` for a Digirig. If anything differs, overri
 it in that `igate.local.conf`, then `sudo systemctl restart aprs-igate`.
 
 Two other things worth knowing about the 3A+ specifically: it has one USB-A
-port, so a radio and anything else need a hub, and 512 MB of RAM, which is why
-`pi.conf` defaults to the 32-bit (`armhf`) Lite image and why the Pi runs
-bare-metal rather than under Docker.
+port, so a radio and anything else need a hub, and 512 MB of RAM. The 3B+ has
+four ports and the same 512 MB, which is why `pi.conf` defaults to the 32-bit
+(`armhf`) Lite image on either board, and why the Pi runs bare-metal rather than
+under Docker.
 
-### Why the Digirig needs a powered hub
+### Why the Digirig needs a powered hub on a Pi 3A+
 
 Plugged directly into a Raspberry Pi 3A+, a Digirig Lite was not detected: no
 attach event, no error, nothing in `dmesg`, and `lsusb` showed only the root hub.

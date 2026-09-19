@@ -1060,10 +1060,22 @@ belongs only in a test.
   timer and on a udev event, restarts the gateway when the card moves, when
   Direwolf is gone, or when those `-19` lines accumulate. Both have since run on
   the pi-gate against a real reset and a real replug (§15.1).
-- **A radio without CAT cannot be verified from software.** For the VX-6R,
-  frequency and power are front-panel state. A retuned or switched-off radio leaves
-  the gateway running and hearing nothing, and `up` can only print a reminder. A
-  watchdog on the time since the last decode would be the software-side mitigation.
+- **A radio without CAT cannot be verified from software; the symptom is now
+  reported.** For the VX-6R, frequency, volume and power are front-panel state. A
+  retuned, turned-down or switched-off radio leaves the gateway running and
+  hearing nothing, and `up` can only print a reminder. This happened in service:
+  the handheld was not seated in its charging cradle, its battery went flat, and
+  the gateway went on beaconing into a dead radio with every other check —
+  process, USB device, ALSA card, APRS-IS login, compiled filter — reporting
+  healthy. Diagnosis took a full sweep of the station to reach "no frames decoded
+  since the last restart".
+
+  The mitigation proposed here is now implemented: the watchdog tracks Direwolf's
+  decode count and, when everything else is healthy, says once that nothing has
+  been decoded for `RF_QUIET_MINUTES` (default 30), and says so again when
+  decoding resumes. It restarts nothing, because a restart does not switch a radio
+  on. `status` reports the same as `Last RF decode:`. The underlying limit stands:
+  this detects silence, and cannot distinguish a dead radio from a quiet band.
 - **`rts` and `dtr` PTT are unimplemented.** They are recognised values that
   `config` refuses. The start path is small, since Direwolf keys a serial control
   line directly, but no radio here uses it to test against.
@@ -1075,7 +1087,7 @@ belongs only in a test.
 | APRS-IS → RF | Gated messages transmit (`[0L]`) and are repeated by a digipeater |
 | Message delivery | SMS-gateway messages display on the receiving radio and are acknowledged to the original sender; the acknowledgement is gated back to APRS-IS |
 | Strict whitelist | Non-matching traffic produces `[ig>tx]` with no `[0L]` |
-| Bare-metal mode | Carries live traffic in both directions on a Raspberry Pi 3A+, from an image built by `build_pi_image.sh` |
+| Bare-metal mode | Carries live traffic in both directions on a Raspberry Pi 3B+ and on a 3A+, each from an image built by `build_pi_image.sh` |
 | Headless deployment | Pi joins WiFi, installs its dependencies, and starts the gateway on first boot with no console attached |
 | Unattended restart | After a reboot, first-boot setup is condition-skipped on its relocated marker, the `run/` tmpfs remounts from `fstab` before the service starts, and the gateway is gating 14 seconds later with no intervention |
 | Forced digipeat path | `TX_VIA` places the named digipeater in the transmitted path; a round trip completes through it in both directions |
@@ -1095,6 +1107,8 @@ belongs only in a test.
 | Watchdog decisions (stubbed) | With `up`, `down`, liveness and device presence stubbed, `watchdog` does nothing at all before `up` has succeeded once; reports an absent radio once rather than once per run and never restarts into it, then reports its return; restarts when the gateway should be running and is not; restarts when the radio's card number has moved away from the one in the rendered `direwolf.conf`; restarts when Direwolf's `-19` count grows, and not when it is merely non-zero; treats a count that drops as a rotated log rather than as errors undone; and defers a second restart inside three minutes, saying how long ago the last one was. The restart is taken through `systemctl restart aprs-igate.service` when that unit exists, through `sudo -n` when the unprivileged call is refused, and in-process with a warning when both fail or no such unit exists. The generated `igate-watchdog.service` and `.timer` pass `systemd-analyze verify`, the sudoers drop-in passes `visudo -c`, the udev rule passes `udevadm verify`, and all four are installed by `build_pi_image.sh`. `build_pi_image.sh watchdog-files` writes the same four out for copying to a running Pi, emitting text byte-identical to the units verified above, so an updated Pi and a freshly built card cannot drift apart |
 | Recovery on the pi-gate | On the Pi 3B+, updated over SSH rather than reflashed, `config` resolved `ADEVICE = plughw:1,0 (found by USB_ID 0d8c:0012 on ALSA card 1)` and `CM108_DEVICE = /dev/hidraw0` on that card's USB device, with no `ADEVICE` in the Pi's `igate.local.conf`. A USB reset of the sound card in place (`reset full-speed USB device number 4`, `dmesg` 20:19:34) was recovered without intervention: the watchdog's next run restarted the gateway 18 s later through `sudo -n systemctl restart aprs-igate.service`, the sudoers drop-in working as intended. The Digirig was then unplugged and replugged into a different physical port — `1-1.1.3` to `1-1.3`, off the internal hub branch — and the gateway was restarted on the re-resolved card automatically. Four resets were logged across the session (19:14, 19:20, 19:57, 20:19), each now recovered rather than needing a human |
 | Watchdog woken by udev | The first rule matched `ENV{ID_BUS}=="usb"` and never fired: `udevadm info` shows `ID_BUS=usb` in the database, but `udevadm test` shows it absent from the property set while the rules are being applied, so the card was never tagged for systemd (`TAGS=:seat:` only). With that filter dropped — the watchdog decides for itself whether anything is wrong, so it was never needed — a replug produced a watchdog run 6 s after the plug went in, off the timer's ~65 s cadence, and the gateway was restarted from that run. The unplug and replug fell between two timer checks, so the absent state was never observed at all |
+| RF silence is reported, never acted on | With decode counting, liveness and device presence stubbed, the watchdog stays silent while the decode count grows; says nothing at 10 minutes of silence; says so once at 31 minutes and does not repeat at 45; says `hearing RF again` on the next decode; never restarts the gateway for silence at any duration; and says nothing at all with `RF_QUIET_MINUTES = 0`. The key is refused above 1440 or non-numeric, is settable in `igate.local.conf`, and appears in `config`. A first silent check with no recorded decode time starts the clock rather than warning about a gap that predates the watching |
+| Stopping waits for Direwolf to exit | `down` used to signal Direwolf and delete its pidfile without waiting, so `systemctl restart` — ExecStop then ExecStart — could start a new Direwolf against an ALSA capture device the old one had not released, giving a gateway that transmits and hears nothing. `bare_stop` now waits for the process to be gone, escalating to `SIGKILL` after 10 seconds and pausing for the kernel to release its devices; verified against a process that exits slowly on `SIGTERM` and one that ignores it. `up` additionally clears a Direwolf holding the radio's capture device that no pidfile accounts for — the state left by a crash, or by a pidfile that went with the `run/` tmpfs. Found by inspection while diagnosing an unrelated fault; not observed in service |
 | Watchdog rate limit | A restart that a replug needed was deferred 70 s by a rate limit set by a restart from before the radio was unplugged. The limit now resets whenever the radio is seen to be missing, so the first restart after a replug is immediate while a radio broken in place is still limited to one restart every three minutes |
 | FTX-1 unchanged by CM108 support | Against the previous commit, with every external command stubbed, each FTX-1 start path — docker and bare-metal, with a host device override, and the forced-path test config — renders a byte-identical `direwolf.conf` and prints identical output apart from one image-rebuild notice. The calls issued differ only by the image-label check and rebuild, and by `CAT=hamlib` and `PTT_METHOD=rig` added to `docker run` |
 
