@@ -1301,7 +1301,41 @@ particular digipeater over one particular path.
    without leaving the terminal.
 3. Only then swap antennas, one variable at a time.
 
-### 15.4 Planned: a mobile radio for the gateway
+### 15.4 The radio in service: a Radtel 880G
+
+§15.3 ends with a VX-6R on the gateway and three measurements outstanding. The
+handheld has since been swapped for a **Radtel 880G**, driven through a
+hand-made adapter to the same Digirig Lite, with ferrite chokes added to the
+USB and audio leads.
+
+**Why the swap.** Not a conclusion from §15.3 — a practical one. §15.3's own
+list put the ferrites and getting the Pi out of the antenna's near field first,
+because a transmission with `-19` under it invalidates every measurement that
+follows. Changing radio at the same time addressed the other half: the VX-6R
+was running on a battery in a cradle that had already failed once by not
+seating (§16.6), and a handheld's power and audio path is the least
+controllable part of the station.
+
+**What is the same.** Electrically this is the VX-6R arrangement: no CAT, the
+Digirig Lite as the sound card, PTT by pulling the microphone line through the
+CM108's GPIO3. `TX_AUDIO_LEVEL` and `RX_AUDIO_LEVEL` are unchanged at 50%,
+confirmed working on this radio through the new cable.
+
+**What is different, and matters.** The receive level is set by the radio's own
+**volume knob**, by hand. The mixer control decides how much of what arrives is
+used; the knob decides how much arrives. Nothing in the software can read it or
+check it, exactly as nothing can check the frequency on a radio with no CAT —
+so a gateway that stops decoding after the radio has been handled should have
+the knob suspected before the configuration.
+
+**Profile.** `radios/radtel880g.conf`, selected with `RADIO = radtel880g`.
+
+**What this does not change.** It is still a 5 W handheld-class transmitter, so
+§15.3's open question — whether the gateway can reach W3YA-1 reliably — stands
+unanswered. The swap removes a class of power and connector faults; it does not
+add reach. That is what §15.5 is for.
+
+### 15.5 Planned: a mobile radio for the gateway
 
 The station's transmit side is a 5 W handheld. Every failure in §15.3 is a
 transmit-side reach problem against a site that answers a 5 W handheld only
@@ -1336,7 +1370,7 @@ holds, so a hung host holds the radio keyed, and the radio's own timer remains t
 only backstop (§14.3).
 
 **What the project needs.** A new profile, `radios/ft2900r.conf`, close to
-`radios/vx6r.conf`: `CAT = none`, since this radio has no computer control and its
+`radios/radtel880g.conf`: `CAT = none`, since this radio has no computer control and its
 frequency and power stay front-panel truth; `PTT_METHOD = cm108` with
 `CM108_GPIO = 3` on the same Digirig Lite; `ADEVICE = auto` with
 `USB_ID = 0d8c:0012` unchanged. The one setting that genuinely differs is

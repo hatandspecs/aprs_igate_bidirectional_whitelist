@@ -53,7 +53,7 @@ involved).
 | [PI-SETUP.md](PI-SETUP.md) | Step-by-step pi-gate build, from SD card to on-air, plus day-to-day operation over SSH |
 | [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md) | Design document. §13 what was built, §14 constraints of Direwolf and the radio that the design has to work around, §15 limitations and future work, §16 the headless Pi deployment |
 | `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, which radio. Identical on every machine |
-| `radios/<name>.conf` | Radio profiles: how to drive one radio — audio device, mixer levels, CAT, PTT. `ftx1` and `vx6r` |
+| `radios/<name>.conf` | Radio profiles: how to drive one radio — audio device, mixer levels, CAT, PTT. `ftx1`, `vx6r` and `radtel880g` |
 | `udev/99-igate-cm108.rules` | Lets the `audio` group key a CM108 interface such as the Digirig Lite. Installed on the host by hand, or by the Pi image |
 | `igate.local.conf.example` | Template for `igate.local.conf`: settings for one machine only (gitignored) |
 | `igate.test.conf` | A ready-made forced-digipeat-path test that leaves `igate.conf` alone |
@@ -97,6 +97,14 @@ Pick the one that matches your hardware. Each is complete on its own.
 |---|---|---|---|---|
 | Yaesu FTX-1 | `radios/ftx1.conf` | set and checked by `up` over CAT | CAT command, through `rigctld` | has carried traffic in both modes |
 | Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal) |
+| Radtel 880G on a Digirig Lite | `radios/radtel880g.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | **the radio in service.** Same settings as the VX-6R, through a hand-made adapter cable |
+| Yaesu FT-2900R on a Digirig Lite | `radios/ft2900r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | **planned, no profile yet.** A 75 W mobile to replace the 5 W handheld — see §15.5 |
+
+**The Radtel 880G follows Quickstarts C and D unchanged**, with
+`RADIO = radtel880g` in place of `RADIO = vx6r`. It is the same Digirig Lite on
+the same CM108 GPIO3 with the same audio levels, so every step reads the same —
+only the radio's own front-panel setup differs, and neither radio can be
+checked over CAT. `pi.conf` already selects it for a rebuilt pi-gate.
 
 **All four start with the station settings,** which are the same on every machine:
 
@@ -1572,3 +1580,7 @@ how to tell whether this station carried a packet or a neighbour did.
   transmitting. Nothing is receiving it.
 
 The gateway looks healthy throughout, because it is.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, change it, no warranty.
