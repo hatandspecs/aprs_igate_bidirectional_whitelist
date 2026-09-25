@@ -430,7 +430,14 @@ validate_config() {
 # Naming a digipeater explicitly is the deterministic choice, because a
 # digipeater repeats any packet carrying its own callsign in the path whatever
 # WIDEn-N aliases it answers to. The generic form depends on that digi's alias
-# configuration — W3YA-1 answers WIDE2, not WIDE1.
+# configuration, which has to be read off live paths rather than assumed.
+#
+# This comment previously asserted that W3YA-1 answers WIDE2 and not WIDE1.
+# That is wrong, and igate.conf records the packet that disproves it. The
+# mistake came from reading paths where W3YA-1 happened to consume a WIDE2
+# hop — which only means some other digipeater reached the WIDE1 first, not
+# that W3YA-1 declines one. See the TX_VIA notes in igate.conf for the
+# evidence and for how to read a path.
 build_tx_via() {
   local via="${CFG[TX_VIA]:-}"
   if [[ -z "$via" ]]; then

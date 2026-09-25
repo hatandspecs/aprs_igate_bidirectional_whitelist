@@ -142,7 +142,7 @@ The settings that matter:
 | `PI_SSH_PUBKEY` | blank | Path to a public key for key-based login. `check` lists what you have |
 | `PI_IMAGE_VARIANT` | `armhf` | 32-bit. Leave it — 512 MB is tight for 64-bit |
 | `PI_AUTOSTART` | `yes` | Start the gateway at boot |
-| `PI_RADIO` | blank | The radio this Pi drives: `ftx1` or `vx6r` (`ls radios/`). Blank uses `RADIO` from `igate.conf`. Written into the Pi's own `igate.local.conf`; `check` rejects a name with no profile |
+| `PI_RADIO` | blank | The radio this Pi drives: `ftx1` or `digirig` (`ls radios/`). Blank uses `RADIO` from `igate.conf`. Written into the Pi's own `igate.local.conf`; `check` rejects a name with no profile |
 
 **About `PI_WIFI_COUNTRY`:** Raspberry Pi OS keeps the WiFi radio
 rfkill-blocked until a regulatory domain is set. Get this wrong on a Pi with no
@@ -339,7 +339,7 @@ which shows whether the Pi can see the Digirig at all.
 
 The Pi enumerates its own USB hardware, so the radio's device names need checking.
 Their defaults come from the radio profile — `radios/ftx1.conf` or
-`radios/vx6r.conf` — and the Pi's `igate.local.conf` carries a comment at the top
+`radios/digirig.conf` — and the Pi's `igate.local.conf` carries a comment at the top
 saying so. Start with what the gateway resolved:
 
 ```bash
@@ -362,7 +362,7 @@ card 0: Device [Yaesu FTX-1], device 0: USB Audio [USB Audio]
 
 What this tells you depends on the profile.
 
-`radios/vx6r.conf` sets `ADEVICE = auto`, so the card number is not a setting at
+`radios/digirig.conf` sets `ADEVICE = auto`, so the card number is not a setting at
 all: the Digirig is found by its USB id (`USB_ID = 0d8c:0012`) at every start, in
 whatever port it is in. `arecord -l` is then only a confirmation that the kernel
 sees the card. `./deploy_igate.sh config` shows which number it resolved to:
@@ -768,7 +768,7 @@ the one that counts: confirm every call you expect is in it. The `&&` chain stop
 before the restart if that `config` fails.
 
 Copying `igate.conf` over the Pi's replaces nothing specific to the Pi. Its
-deployment mode, radio (`RADIO = vx6r`), device overrides and `DEVICE_WAIT` live in
+deployment mode, radio (`RADIO = digirig`), device overrides and `DEVICE_WAIT` live in
 the Pi's own `igate.local.conf`, which `scp` does not touch — which is exactly why
 those settings are kept out of `igate.conf`.
 

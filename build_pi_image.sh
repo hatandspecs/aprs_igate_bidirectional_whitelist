@@ -438,7 +438,7 @@ DEVICE_WAIT = 60
 # 'ls -l /dev/ttyUSB* /dev/ttyACM*' and, for a CM108 interface such as the
 # Digirig Lite, 'ls -l /dev/hidraw*'. If this Pi numbers them differently,
 # override them below rather than editing the shared profile. A profile with
-# ADEVICE = auto (radios/vx6r.conf) needs no ADEVICE here at all: it finds the
+# ADEVICE = auto (radios/digirig.conf) needs no ADEVICE here at all: it finds the
 # card by USB id, in whatever port the interface is in.
 #   ADEVICE = plughw:2,0
 #   CAT_DEVICE = /dev/serial/by-id/usb-Silicon_Labs_CP2105_..._if00-port0
@@ -446,7 +446,7 @@ DEVICE_WAIT = 60
 
 # To run this Pi with a different radio than igate.conf names (or set PI_RADIO
 # in pi.conf before building):
-#   RADIO = vx6r
+#   RADIO = digirig
 LOCAL
   if [[ -n "${CFG[PI_RADIO]:-}" ]]; then
     printf '\n# From PI_RADIO in pi.conf at build time: this Pi drives this radio,\n# whatever RADIO igate.conf names.\nRADIO = %s\n' \

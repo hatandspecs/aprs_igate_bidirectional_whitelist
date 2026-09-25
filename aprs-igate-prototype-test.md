@@ -341,7 +341,7 @@ deployment rather than a hand-edited `direwolf.conf`.
 | File | Purpose |
 |------|---------|
 | `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, transmit path, radio. Identical on every machine. |
-| `radios/<name>.conf` | Radio profiles: how to drive one radio. Hardware keys only. `ftx1` (Yaesu FTX-1) and `vx6r` (Yaesu VX-6R on a Digirig Lite). |
+| `radios/<name>.conf` | Radio profiles. Hardware keys only. `ftx1` (that radio over USB) and `digirig` (anything on a Digirig Lite). The records below name `vx6r` and `radtel880g`, which were separate profiles at the time and have since been consolidated — the settings were identical. |
 | `udev/99-igate-cm108.rules` | Group access to a CM108 interface's hidraw node, for PTT by GPIO. Installed on a host by hand, or by the Pi image. |
 | `igate.local.conf` | One machine: deployment mode, radio, device overrides. Gitignored; template in `igate.local.conf.example`. |
 | `igate.secrets` | APRS-IS passcode. Gitignored. |

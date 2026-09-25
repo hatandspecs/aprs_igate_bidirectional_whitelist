@@ -53,7 +53,7 @@ involved).
 | [PI-SETUP.md](PI-SETUP.md) | Step-by-step pi-gate build, from SD card to on-air, plus day-to-day operation over SSH |
 | [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md) | Design document. §13 what was built, §14 constraints of Direwolf and the radio that the design has to work around, §15 limitations and future work, §16 the headless Pi deployment |
 | `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, which radio. Identical on every machine |
-| `radios/<name>.conf` | Radio profiles: how to drive one radio — audio device, mixer levels, CAT, PTT. `ftx1`, `vx6r` and `radtel880g` |
+| `radios/<name>.conf` | Radio profiles: audio device, mixer levels, CAT, PTT. `ftx1` for that radio over USB; `digirig` for anything on a Digirig Lite |
 | `udev/99-igate-cm108.rules` | Lets the `audio` group key a CM108 interface such as the Digirig Lite. Installed on the host by hand, or by the Pi image |
 | `igate.local.conf.example` | Template for `igate.local.conf`: settings for one machine only (gitignored) |
 | `igate.test.conf` | A ready-made forced-digipeat-path test that leaves `igate.conf` alone |
@@ -96,15 +96,26 @@ Pick the one that matches your hardware. Each is complete on its own.
 | Radio | Profile | Frequency and mode | PTT | State |
 |---|---|---|---|---|
 | Yaesu FTX-1 | `radios/ftx1.conf` | set and checked by `up` over CAT | CAT command, through `rigctld` | has carried traffic in both modes |
-| Yaesu VX-6R on a Digirig Lite | `radios/vx6r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | has carried traffic on a laptop (docker) and on a pi-gate (bare-metal) |
-| Radtel 880G on a Digirig Lite | `radios/radtel880g.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | **the radio in service.** Same settings as the VX-6R, through a hand-made adapter cable |
-| Yaesu FT-2900R on a Digirig Lite | `radios/ft2900r.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | **planned, no profile yet.** A 75 W mobile to replace the 5 W handheld — see §15.5 |
+| Anything on a Digirig Lite | `radios/digirig.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | **the profile in service.** VX-6R and Radtel 880G have both carried traffic on it; the FT-2900R is the current radio |
 
-**The Radtel 880G follows Quickstarts C and D unchanged**, with
-`RADIO = radtel880g` in place of `RADIO = vx6r`. It is the same Digirig Lite on
-the same CM108 GPIO3 with the same audio levels, so every step reads the same —
-only the radio's own front-panel setup differs, and neither radio can be
-checked over CAT. `pi.conf` already selects it for a rebuilt pi-gate.
+**There is one profile for every radio on the Digirig, and it is named for the
+interface rather than the radio.** That is not a simplification — it is what
+the file turned out to contain. Separate `vx6r.conf` and `radtel880g.conf`
+profiles were written, and once both existed they differed in exactly one line:
+the description. Every setting was identical, because no setting describes the
+radio. They describe the Digirig — its C-Media codec is the sound card, its
+CM108 GPIO3 is the PTT line, its mixer controls have fixed names.
+
+What the radio contributes is a speaker jack, a microphone jack and a volume
+knob. Swapping radios means changing the cable and the front-panel setup, not
+the configuration. So `RADIO = digirig` covers the VX-6R, the Radtel 880G and
+the FT-2900R alike, and Quickstarts C and D read the same whichever is
+connected.
+
+The catch is that none of them can be checked over CAT. Frequency, volume,
+battery saver and transmit time-out are set by hand on the radio and nothing in
+software can confirm them — see the list in `radios/digirig.conf` of what that
+profile deliberately cannot set.
 
 **All four start with the station settings,** which are the same on every machine:
 
@@ -296,7 +307,7 @@ VX-6R audio/PTT cable, and `sudo` once for step 2. The VX-6R prepared as above.
 
 ```bash
 cp igate.local.conf.example igate.local.conf    # skip if you already have one
-$EDITOR igate.local.conf                        # uncomment: RADIO = vx6r
+$EDITOR igate.local.conf                        # uncomment: RADIO = digirig
 ```
 
 To make the VX-6R the station's radio on every machine instead, change `RADIO` in
@@ -317,7 +328,7 @@ arecord -l                 # the Digirig is a C-Media USB audio device — note 
 ls -l /dev/hidraw*         # one node now shows group audio: crw-rw----
 ```
 
-`radios/vx6r.conf` sets `ADEVICE = auto`, so the card number here does not matter:
+`radios/digirig.conf` sets `ADEVICE = auto`, so the card number here does not matter:
 the Digirig is found by its USB id (`USB_ID = 0d8c:0012`) at every start, in
 whatever port it is in. The hidraw node needs no setting either — it is found on
 the same USB device as that card. Two C-Media interfaces on one machine are the
@@ -330,7 +341,7 @@ card with `ADEVICE = plughw:N,0` in `igate.local.conf` then.
 ./deploy_igate.sh config
 ```
 
-Look for `RADIO = vx6r (… selected in igate.local.conf)`, `CAT = none`,
+Look for `RADIO = digirig (… selected in igate.local.conf)`, `CAT = none`,
 `ADEVICE = plughw:N,0 (found by USB_ID 0d8c:0012 on ALSA card N)` and
 `CM108_DEVICE = /dev/hidrawN (found on the USB device of ALSA card N)`. An
 `ADEVICE` still showing `auto` means no C-Media device is present: the Digirig is
@@ -387,11 +398,11 @@ powered from a USB port or the hub.
 ```bash
 cp pi.secrets.example pi.secrets
 $EDITOR pi.secrets                 # PI_USER_PASSWORD, WIFI_1_SSID, WIFI_1_PSK
-$EDITOR pi.conf                    # PI_RADIO = vx6r, PI_WIFI_COUNTRY (required)
-./build_pi_image.sh check          # should list: radio  vx6r (PI_RADIO in pi.conf)
+$EDITOR pi.conf                    # PI_RADIO = digirig, PI_WIFI_COUNTRY (required)
+./build_pi_image.sh check          # should list: radio  digirig (PI_RADIO in pi.conf)
 ```
 
-`PI_RADIO` writes `RADIO = vx6r` into the Pi's own `igate.local.conf`, so
+`PI_RADIO` writes `RADIO = digirig` into the Pi's own `igate.local.conf`, so
 `igate.conf` is unchanged. As in B, do not create an `igate.local.conf` on the
 laptop for the Pi.
 
@@ -408,7 +419,7 @@ ssh-keygen -R aprs-igate.local
 ssh igate@aprs-igate.local
 cd aprs-igate
 lsusb                              # must list: C-Media Electronics, Inc. USB Audio Device
-./deploy_igate.sh config           # RADIO = vx6r, credited to igate.local.conf
+./deploy_igate.sh config           # RADIO = digirig, credited to igate.local.conf
 arecord -l                         # the Digirig's card number: 1
 ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
 ./deploy_igate.sh status           # iGate running (bare-metal): direwolf pid N, no rigctld (CAT = none)
@@ -418,7 +429,7 @@ ls -l /dev/hidraw*                 # its node: group audio, crw-rw----
 If `lsusb` does not list the C-Media device, the Pi is not seeing the Digirig at
 all. Turn the Digirig's USB-C plug over, since it works only one way round. The
 card number itself needs no
-attention: `radios/vx6r.conf` sets `ADEVICE = auto`, which finds the Digirig by
+attention: `radios/digirig.conf` sets `ADEVICE = auto`, which finds the Digirig by
 USB id whatever number it lands on and whichever port it is in.
 
 **5. Confirm receive and transmit.** If the radio plainly hears packets but the
@@ -939,7 +950,7 @@ PTT_DEVICE = /dev/ttyACM0          # PTT port (same as CAT on single-port radios
 PTT_TYPE = RIG                     # RIG = PTT via CAT command; also RTS, DTR
 ```
 
-`radios/vx6r.conf` describes the Yaesu VX-6R on a Digirig Lite:
+`radios/digirig.conf` describes any radio on a Digirig Lite:
 
 ```
 CAT = none                         # no CAT: no rigctld, frequency set by hand
