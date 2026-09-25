@@ -798,7 +798,7 @@ The gateway runs under systemd as `aprs-igate.service`.
 
 | Task | Command |
 |---|---|
-| Is it running? | `systemctl status aprs-igate` |
+| Is it running? | `cd ~/aprs-igate && ./deploy_igate.sh status` — see the note below before trusting `systemctl` for this |
 | Web monitor state | `systemctl status igate-web` |
 | Watchdog state | `systemctl status igate-watchdog.timer` and `journalctl -u igate-watchdog -n 30` |
 | Calibrate audio levels | `cd ~/aprs-igate && ./deploy_igate.sh audio` |
@@ -806,6 +806,18 @@ The gateway runs under systemd as `aprs-igate.service`.
 | Apply a config change | `sudo systemctl restart aprs-igate` |
 | Why did it fail? | `journalctl -u aprs-igate -n 50` |
 | Don't start at boot any more | `sudo systemctl disable aprs-igate` |
+
+The unit is `Type=oneshot` with `RemainAfterExit`: it runs `deploy_igate.sh up`,
+which leaves direwolf running as a detached child, and then exits successfully.
+Two consequences follow, and both have bitten:
+
+* **`systemctl is-active` reports the unit, not the gateway.** It says `active
+  (exited)` whether or not direwolf is alive — `Tasks: 0` and an empty CGroup are
+  the tell. `./deploy_igate.sh status` is the authority.
+* **Use `restart`, not `start`, to bring it back.** Stopping the gateway with
+  `./deploy_igate.sh down` leaves systemd believing the unit is still active, and
+  `systemctl start` on an already-active unit does nothing whatsoever. It reports
+  success and the station stays off the air.
 | Gateway's own view | `cd ~/aprs-igate && ./deploy_igate.sh status` |
 
 `Active: active (exited)` is the healthy state. The unit is `Type=oneshot`: it

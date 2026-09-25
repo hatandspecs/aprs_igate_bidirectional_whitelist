@@ -1088,8 +1088,17 @@ sudo systemctl stop aprs-igate
 ./deploy_igate.sh up     igate.test.conf
 # ... test ...
 ./deploy_igate.sh down   igate.test.conf
-sudo systemctl start aprs-igate
+sudo systemctl restart aprs-igate
+./deploy_igate.sh status
 ```
+
+`restart`, not `start`, and the status check is not decoration. The unit is
+`Type=oneshot` with `RemainAfterExit`: it runs `up`, which leaves direwolf
+running as a detached child, and exits. Stopping the gateway with this script
+instead of with `systemctl` leaves systemd believing the unit is still active,
+and `systemctl start` on an active unit does nothing. `systemctl is-active` then
+reports `active` with no direwolf behind it; `./deploy_igate.sh status` reports
+what is actually running.
 
 The `down` is not optional: without it, `systemctl start` finds the test
 instance's pidfiles, reports "already running", and leaves systemd showing
