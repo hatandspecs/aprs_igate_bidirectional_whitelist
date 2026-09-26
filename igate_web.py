@@ -88,6 +88,17 @@ EVENT = re.compile(r"^(\d\d:\d\d:\d\d)\s\s(\S.*?)\s\s+(.*)$")
 DETAIL = re.compile(r"^\s{6,}(\S.*)$")
 
 
+def _log(message):
+    """Say it where it survives.
+
+    The journal is persistent on the Pi now, so anything written here outlives
+    the reboot that might otherwise have been the only record. stderr, because
+    systemd captures it and nothing here should depend on a page being open to
+    be diagnosable.
+    """
+    print(f"igate-web: {message}", file=sys.stderr, flush=True)
+
+
 class Subscriber:
     """One viewer's event queue, plus a flag saying it was cut off.
 
@@ -119,6 +130,11 @@ class MonitorStream:
         # A list, not a set: admission evicts the OLDEST viewer when full, and
         # a set has no oldest.
         self.subscribers = []
+        # Which pipeline the current stall escalation is about, and how many
+        # attempts have been made on it.
+        self._stall_proc = None
+        self._stall_attempts = 0
+        self._stall_restarts = 0
         self.lock = threading.Lock()
         self.proc = None
         # Monotonic timestamps for the stall check; see _supervise.
@@ -199,8 +215,12 @@ class MonitorStream:
                 time.sleep(10)
                 continue
 
+            _log(f"monitor pipeline started, pid {self.proc.pid}")
             for raw in self.proc.stdout:
                 self.last_line_at = time.monotonic()
+                # A line arriving is the only evidence a restart achieved
+                # anything, so it is the only thing that clears the count.
+                self._stall_restarts = 0
                 line = ANSI.sub("", raw.rstrip("\n"))
                 m = EVENT.match(line)
                 if m:
@@ -219,6 +239,7 @@ class MonitorStream:
             # The monitor ends when the gateway stops or restarts. The next pass
             # finds out which: a restart resumes silently, a stop is announced
             # once.
+            _log(f"monitor pipeline ended, rc={self.proc.poll()}")
             time.sleep(5)
 
     def _log_size(self):
@@ -268,13 +289,53 @@ class MonitorStream:
                 continue
             mins = int(quiet_for // 60)
             how_long = f"{mins} minutes" if mins else f"{int(quiet_for)} seconds"
+
+            # Escalate. The first version sent SIGTERM, announced a restart and
+            # assumed one followed — and in service it announced a restart that
+            # never happened, leaving the page frozen for three and a half
+            # hours while the gateway ran perfectly. Announcing a fix that does
+            # not occur is worse than announcing nothing: it reads as handled.
+            #
+            # So: term, then kill, then stop trying to be clever and exit.
+            # igate-web.service is Restart=on-failure, so leaving is a ten
+            # second outage rather than an afternoon, and it works whatever the
+            # underlying cause turns out to be — which is the point, because
+            # after two attempts the cause is still unknown.
+            # Two counters, because they answer different questions. Per
+            # pipeline: has SIGTERM been tried on THIS one yet. Across
+            # pipelines: has restarting actually helped at all. Without the
+            # second, a pipeline that dies obediently and comes back just as
+            # silent is killed and restarted forever, announcing a fix every
+            # interval — which is the same lie as before, only busier.
+            if proc is not self._stall_proc:
+                self._stall_proc, self._stall_attempts = proc, 0
+            self._stall_attempts += 1
+            attempt = self._stall_attempts
+            self._stall_restarts += 1
+
+            if self._stall_restarts > 4 or attempt > 2:
+                _log(f"pipeline pid {proc.pid}: {self._stall_restarts} restarts "
+                     f"have not fixed {int(quiet_for)}s of silence "
+                     f"(attempt {attempt} on this one); exiting so systemd "
+                     f"restarts the service")
+                self._publish({"kind": "note",
+                               "text": f"monitor feed stalled for {how_long} and could not "
+                                       "be restarted — restarting the web monitor itself"})
+                time.sleep(1)          # let the note reach anyone watching
+                os._exit(1)
+
+            sig, what = ((signal.SIGTERM, "restarting the feed") if attempt == 1
+                         else (signal.SIGKILL, "restarting the feed (forcing it)"))
+
             self._publish({"kind": "note",
                            "text": f"monitor feed stalled for {how_long} while the gateway "
-                                   "kept logging — restarting the feed"})
+                                   f"kept logging — {what}"})
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+                os.killpg(proc.pid, sig)
+                _log(f"sent {sig.name} to pipeline group {proc.pid} "
+                     f"(attempt {attempt}, silent {int(quiet_for)}s)")
+            except OSError as exc:
+                _log(f"could not signal pipeline group {proc.pid}: {exc!r}")
             self.last_line_at = time.monotonic()
 
     def stop(self):
@@ -521,8 +582,30 @@ def main():
 
     # Bound before the monitor starts, so a busy port fails without having
     # started a pipeline that would then need cleaning up.
-    httpd = ThreadingHTTPServer((BIND, PORT), Handler)
-    httpd.daemon_threads = True
+    class Server(ThreadingHTTPServer):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            """One line, not a traceback, when a viewer disconnects.
+
+            socketserver prints a full traceback for any exception out of a
+            handler, and a browser closing a tab or a phone sleeping raises
+            ConnectionResetError every time. On a page left open all day that
+            is hundreds of tracebacks — noise in itself, and actively harmful
+            now the journal is persistent and capped at 32M, because it
+            rotates away the entries worth keeping.
+
+            A disconnection is not an error here and is not reported. Anything
+            else is, in one line, which is enough to know something happened
+            and to go looking.
+            """
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError,
+                                ConnectionAbortedError, TimeoutError)):
+                return
+            _log(f"request from {client_address[0]} failed: {exc!r}")
+
+    httpd = Server((BIND, PORT), Handler)
 
     SETTINGS = Settings(script_dir)
 
