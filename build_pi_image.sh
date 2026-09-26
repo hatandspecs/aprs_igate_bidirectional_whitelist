@@ -634,6 +634,53 @@ EOF
   esac
 }
 
+emit_selftest_file() {  # service|timer  user  install-dir
+  local which="$1" user="$2" dir="$3"
+  case "$which" in
+    service)
+      cat <<EOF
+[Unit]
+Description=End-to-end delivery self-test for the APRS iGate
+# Only meaningful with the gateway up; the test refuses to run otherwise and
+# says so, which is the right behaviour for a human and noise for a timer.
+After=aprs-igate.service
+Wants=aprs-igate.service
+ConditionPathExists=${dir}/deploy_igate.sh
+
+[Service]
+Type=oneshot
+User=${user}
+WorkingDirectory=${dir}
+# Needs SELFTEST_TO in igate.conf. Without it the test exits non-zero and the
+# journal records a failing timer every interval — which is itself the correct
+# signal that the station's most important capability is untested.
+ExecStart=${dir}/deploy_igate.sh selftest
+EOF
+      ;;
+    timer)
+      cat <<EOF
+[Unit]
+Description=Run the APRS iGate delivery self-test periodically
+
+[Timer]
+# Not at boot: the gateway needs its radio, and a test that fires before the
+# interface has enumerated fails for a reason that is not a fault.
+OnBootSec=20min
+# Every four hours. Each run is one transmission from this station and one
+# acknowledgement from the addressee, on a shared national channel — the
+# station's 30-minute beacon already costs 48 packets a day, and this adds
+# twelve. Four hours detects a dead transmitter the same morning.
+OnUnitActiveSec=4h
+Unit=igate-selftest.service
+
+[Install]
+WantedBy=timers.target
+EOF
+      ;;
+    *) die "emit_selftest_file: unknown file '${which}'" ;;
+  esac
+}
+
 # Writes those three files, plus the udev rule, into a directory for copying to a
 # running Pi — the alternative to rebuilding a card for the sake of the watchdog.
 # PI-SETUP.md, "Updating a running pi-gate over SSH", has the copy commands.
@@ -645,16 +692,21 @@ cmd_watchdog_files() {
   # The sudoers copy is left read-only to match what lands on the Pi, which means
   # a redirect cannot reopen it: remove the previous run's files before writing.
   rm -f "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
-        "${out}/010-igate-watchdog" "${out}/99-igate-watchdog.rules"
+        "${out}/010-igate-watchdog" "${out}/99-igate-watchdog.rules" \
+        "${out}/igate-selftest.service" "${out}/igate-selftest.timer"
   emit_watchdog_file service "$user" "$dir" > "${out}/igate-watchdog.service"
   emit_watchdog_file timer   "$user" "$dir" > "${out}/igate-watchdog.timer"
   emit_watchdog_file sudoers "$user" "$dir" > "${out}/010-igate-watchdog"
+  emit_selftest_file service "$user" "$dir" > "${out}/igate-selftest.service"
+  emit_selftest_file timer   "$user" "$dir" > "${out}/igate-selftest.timer"
   cp "${SCRIPT_DIR}/udev/99-igate-watchdog.rules" "${out}/"
   chmod 644 "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
+            "${out}/igate-selftest.service" "${out}/igate-selftest.timer" \
             "${out}/99-igate-watchdog.rules"
   chmod 440 "${out}/010-igate-watchdog"
   note "wrote ${out}/ for user ${user}, install dir ${dir}:"
   note "  igate-watchdog.service  igate-watchdog.timer"
+  note "  igate-selftest.service  igate-selftest.timer"
   note "  010-igate-watchdog (sudoers)  99-igate-watchdog.rules (udev)"
 }
 
@@ -805,6 +857,13 @@ EOF
   emit_watchdog_file timer "$user" "$dir" > "$tmp"
   sudo cp "$tmp" "${sysd}/igate-watchdog.timer"
   sudo chmod 644 "${sysd}/igate-watchdog.timer"
+
+  emit_selftest_file service "$user" "$dir" > "$tmp"
+  sudo cp "$tmp" "${sysd}/igate-selftest.service"
+  sudo chmod 644 "${sysd}/igate-selftest.service"
+  emit_selftest_file timer "$user" "$dir" > "$tmp"
+  sudo cp "$tmp" "${sysd}/igate-selftest.timer"
+  sudo chmod 644 "${sysd}/igate-selftest.timer"
 
   emit_watchdog_file sudoers "$user" "$dir" > "$tmp"
   sudo install -D -m 440 "$tmp" "${ROOT_MNT}/etc/sudoers.d/010-igate-watchdog"
@@ -959,9 +1018,12 @@ EOF
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-firstboot.timer"
   sudo ln -sf /etc/systemd/system/igate-watchdog.timer \
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-watchdog.timer"
+  sudo ln -sf /etc/systemd/system/igate-selftest.timer \
+    "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-selftest.timer"
   note "igate-logrotate.timer enabled"
   note "igate-firstboot.timer enabled (retries setup every 10 min until it succeeds)"
   note "igate-watchdog.timer enabled (checks the radio every minute)"
+  note "igate-selftest.timer enabled (end-to-end delivery test every 4 hours)"
 
   if [[ "${CFG[PI_AUTOSTART]:-yes}" == "yes" ]]; then
     sudo ln -sf /etc/systemd/system/aprs-igate.service "${wants}/aprs-igate.service"

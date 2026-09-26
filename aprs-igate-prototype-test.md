@@ -134,7 +134,7 @@ demonstrated rather than what is intended.
 | FR-15 | Build a bootable Pi card in one command. | met — `build_pi_image.sh` |
 | FR-16 | Help set audio levels, and say what the levels mean. | met — `./deploy_igate.sh audio` |
 | FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | partly met — two repeats in eight beacons, measured through an antenna since replaced; needs measuring again |
-| FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | partly met — three of five criteria |
+| FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | partly met — four of five criteria; only FR-18d remains |
 
 ### FR-18 in detail
 
@@ -147,8 +147,8 @@ testable criteria:
 | | Criterion | Status |
 |---|---|---|
 | FR-18a | A message from APRS-IS to a whitelisted call is transmitted within seconds, regardless of whether that station has been heard recently. | met — `IGFILTER` fetches it, `FILTER IG 0` transmits it unconditionally |
-| FR-18b | Delivery is confirmed end to end by the addressee's acknowledgement, not inferred from the gateway having transmitted. | met — `./deploy_igate.sh selftest` |
-| FR-18c | A broken RF path is detected within one hour without the operator going to look. | partly met — the test exists and reports which link failed; nothing runs it unattended yet |
+| FR-18b | Delivery is confirmed end to end by the addressee's acknowledgement, not inferred from the gateway having transmitted. | met and demonstrated — `./deploy_igate.sh selftest` passed all four steps on 2026-09-26, at full power through the outdoor antenna |
+| FR-18c | A broken RF path is detected within four hours without the operator going to look. | met — `igate-selftest.timer`, every four hours, 20 minutes after boot |
 | FR-18d | The station's public presence reflects its RF capability, so a dead transmitter cannot look healthy. | **not met** — `BEACON_TO = BOTH` sends an internet copy whether or not the radio works |
 | FR-18e | Every step of the chain is separately observable when a delivery fails. | met — `IS GATED`, `[0L]`, `RF RX` of the returning copy, and the ack each identify a different link |
 
@@ -166,10 +166,31 @@ transmitter while showing continuously on the map. Both are addressable:
   station can do the thing it exists for. Four stages are reported separately,
   because "did not work" is not a diagnosis.
 
-  What remains is running it unattended. That is a schedule, not code — and it
-  is a decision about other people's airtime rather than a technical one, since
-  each run is a real transmission on a shared national channel. Hourly is
-  twenty-four test messages a day.
+  Two collisions had to be designed out, and each broke the test in a way that
+  accused the station of a fault it did not have:
+
+  * **The source callsign must not be `MYCALL`.** Direwolf drops packets it
+    originated, to break loops, so the message never reaches the transmitter.
+  * **The source callsign must not be `IGLOGIN_CALL` either.** An APRS-IS
+    server does not send a client a packet whose source is that client's own
+    login. The first version sent as `IGLOGIN_CALL`; the server accepted it,
+    distributed it to the rest of the network, and correctly declined to hand
+    it back — and the failure message blamed `IGFILTER`, which was innocent.
+    The default source is now an SSID of the login callsign, and the test
+    refuses to run on either collision rather than reporting a false cause.
+
+  It runs unattended as `igate-selftest.timer`, every four hours, starting 20
+  minutes after boot so the radio has enumerated first. **The interval is an
+  airtime decision, not a technical one.** Each run costs two packets on a
+  shared national channel — this station's transmission and the addressee's
+  acknowledgement. The 30-minute beacon already costs 48 packets a day; hourly
+  testing would roughly double the station's footprint, while four hours adds
+  twelve and still catches a dead transmitter the same morning. FR-18c was
+  written as one hour and is amended to four for that reason.
+
+  The timer depends on a radio that answers. A handheld that is switched off
+  produces a genuine failure every four hours — accurate, and not useful — so
+  the timer is disabled while the radio is away rather than left to cry wolf.
 
 Redundancy is deliberately asymmetric and that is understood rather than
 overlooked. RF to internet has five independent paths — any iGate in earshot

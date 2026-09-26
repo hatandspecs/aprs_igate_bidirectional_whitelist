@@ -2503,7 +2503,12 @@ cmd_selftest() {
   fi
   load_and_resolve "$cfgfile"
   target="${target:-${CFG[SELFTEST_TO]:-}}"
-  local from="${CFG[SELFTEST_FROM]:-${CFG[IGLOGIN_CALL]:-}}"
+  # Default to an SSID of the login callsign, NOT the login callsign itself.
+  # An APRS-IS server does not send a client a packet whose source callsign
+  # matches that client's own login, so a test sent as IGLOGIN_CALL is
+  # accepted, distributed to the whole network, and never routed back to this
+  # gateway — which looks exactly like a broken IGFILTER and is not.
+  local from="${CFG[SELFTEST_FROM]:-${CFG[IGLOGIN_CALL]:-}-1}"
   local timeout="${CFG[SELFTEST_TIMEOUT]:-120}"
 
   # --- what this proves, and what it refuses to guess -------------------
@@ -2546,9 +2551,17 @@ cmd_selftest() {
   # and would look exactly like a broken radio.
   if [[ "${from^^}" == "${CFG[MYCALL]^^}" ]]; then
     echo "SELFTEST_FROM (${from}) must differ from MYCALL (${CFG[MYCALL]})." >&2
-    echo "  Direwolf drops packets it originated, so the test would fail for a" >&2
-    echo "  reason that has nothing to do with the radio. Use another of your" >&2
-    echo "  own SSIDs — the login callsign itself is the usual choice." >&2
+    echo "  Direwolf drops packets it originated, to break loops, so the test" >&2
+    echo "  would never reach the transmitter. Use another of your own SSIDs." >&2
+    exit 1
+  fi
+  if [[ "${from^^}" == "${CFG[IGLOGIN_CALL]^^}" ]]; then
+    echo "SELFTEST_FROM (${from}) must differ from IGLOGIN_CALL (${CFG[IGLOGIN_CALL]})." >&2
+    echo "  An APRS-IS server does not send a client a packet whose source" >&2
+    echo "  callsign is that client's own login. The message would be accepted," >&2
+    echo "  distributed to the rest of the network, and never routed back here —" >&2
+    echo "  which presents as a broken IGFILTER and is not. Use an SSID of your" >&2
+    echo "  call, such as ${CFG[IGLOGIN_CALL]}-1; the passcode is the same." >&2
     exit 1
   fi
   _gather_state
@@ -2560,12 +2573,12 @@ cmd_selftest() {
   local msgid; msgid="$(printf '%02d' $(( (RANDOM % 89) + 10 )) )"
   local text="selftest ${msgid}"
   echo "Self-test: ${from} -> ${target}, message {${msgid}}"
-  echo "  via ${CFG[IGSERVER]}:${CFG[IGSERVER_PORT]:-14580} as ${CFG[IGLOGIN_CALL]}"
+  echo "  via ${CFG[IGSERVER]}:${CFG[IGSERVER_PORT]:-14580}, logging in as ${from}"
   echo
 
   if ! SELFTEST_SERVER="${CFG[IGSERVER]}" \
        SELFTEST_PORT="${CFG[IGSERVER_PORT]:-14580}" \
-       SELFTEST_LOGIN="${CFG[IGLOGIN_CALL]}" \
+       SELFTEST_LOGIN="$from" \
        SELFTEST_PASS="${CFG[IGLOGIN_PASSCODE]}" \
        SELFTEST_FROM="$from" SELFTEST_TO="$target" \
        SELFTEST_TEXT="$text" SELFTEST_ID="$msgid" \
@@ -2616,8 +2629,11 @@ cmd_selftest() {
     echo "  and IGTXLIMIT (${CFG[IGTXLIMIT]:-unset}) has not been reached."
   else
     echo "FAIL at step 2: APRS-IS took the message and never sent it back here."
-    echo "  Check IGFILTER covers ${target} — without it the server forwards"
-    echo "  only traffic for stations heard recently on RF."
+    echo "  First check SELFTEST_FROM (${from}): a server will not route a"
+    echo "  packet to a client whose own login matches the packet's source, so"
+    echo "  it must differ from IGLOGIN_CALL (${CFG[IGLOGIN_CALL]})."
+    echo "  Then check IGFILTER covers ${target} — without it the server"
+    echo "  forwards only traffic for stations heard recently on RF."
   fi
   echo
   echo "  Nothing above is inferred: each step is a separate line in the log."

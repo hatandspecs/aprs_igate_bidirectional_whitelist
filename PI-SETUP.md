@@ -928,7 +928,7 @@ The excludes are the point: `igate.local.conf` is the Pi's own (`DEPLOY_MODE`,
 at mode 600. There is no `--delete`, so nothing on the Pi is removed; a file you
 deleted in the repository stays behind until you remove it there by hand.
 
-**2. Copy the four system files and install them**, still from the laptop:
+**2. Copy the six system files and install them**, still from the laptop:
 
 ```bash
 ssh igate@aprs-igate.local 'mkdir -p /tmp/wd'
@@ -936,14 +936,22 @@ scp pi-build/watchdog/* igate@aprs-igate.local:/tmp/wd/
 ssh -t igate@aprs-igate.local '
   sudo install -m 644 -o root -g root /tmp/wd/igate-watchdog.service /etc/systemd/system/ &&
   sudo install -m 644 -o root -g root /tmp/wd/igate-watchdog.timer   /etc/systemd/system/ &&
+  sudo install -m 644 -o root -g root /tmp/wd/igate-selftest.service /etc/systemd/system/ &&
+  sudo install -m 644 -o root -g root /tmp/wd/igate-selftest.timer   /etc/systemd/system/ &&
   sudo install -m 644 -o root -g root /tmp/wd/99-igate-watchdog.rules /etc/udev/rules.d/ &&
   sudo install -m 440 -o root -g root /tmp/wd/010-igate-watchdog /etc/sudoers.d/ &&
   sudo visudo -c &&
   sudo udevadm control --reload-rules &&
   sudo systemctl daemon-reload &&
   sudo systemctl enable --now igate-watchdog.timer &&
+  sudo systemctl enable --now igate-selftest.timer &&
   rm -rf /tmp/wd'
 ```
+
+`igate-selftest.timer` needs `SELFTEST_TO` set in `igate.conf` and a radio that
+will answer. Without those it fails every four hours and says so in the
+journal, which is the correct signal rather than a nuisance: it means the one
+capability this station exists for is untested.
 
 `sudo visudo -c` in the middle of that chain is not decoration. A malformed file
 in `/etc/sudoers.d/` breaks `sudo` for every user on the machine, and on a headless
@@ -1107,6 +1115,39 @@ shutdown on unplug (a supercapacitor or battery HAT) are both recorded as future
 work in §15 of the [design document](aprs-igate-prototype-test.md).
 
 ---
+
+## The delivery self-test
+
+`igate-selftest.timer` runs `./deploy_igate.sh selftest` every four hours,
+firing 20 minutes after boot so the radio has enumerated first. Each run sends
+one real message from APRS-IS to `SELFTEST_TO` and waits for that station to
+acknowledge it over the air.
+
+```bash
+systemctl list-timers igate-selftest.timer
+journalctl -u igate-selftest -n 40 --no-pager
+./deploy_igate.sh selftest            # on demand, same test
+```
+
+The journal entry names which of four links failed. Only the fourth —
+an acknowledgement heard on RF — is delivery; the other three are Dire Wolf
+reporting its own intentions, and a station whose radio reaches nothing
+produces all three exactly as a working one does.
+
+**Why four hours rather than hourly.** Each run costs two packets on a shared
+national channel: this station's transmission and the addressee's
+acknowledgement. The 30-minute beacon already costs 48 packets a day; four-hour
+testing adds twelve, and still catches a dead transmitter the same morning.
+
+**The addressee must be a radio that is switched on.** A handheld that is off,
+or out of range, produces a genuine failure every four hours — accurate, and
+not useful. Either keep it on, point `SELFTEST_TO` at a station that stays up,
+or disable the timer while the radio is away:
+`sudo systemctl disable --now igate-selftest.timer`.
+
+**Results do not survive a reboot.** The journal is `Storage=volatile` to spare
+the SD card (§ the journal note above), so a history of passes and failures is
+only available since the last boot.
 
 ## Troubleshooting
 
