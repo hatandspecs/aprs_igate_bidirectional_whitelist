@@ -135,6 +135,8 @@ class MonitorStream:
         self._stall_proc = None
         self._stall_attempts = 0
         self._stall_restarts = 0
+        # Last time round the loop, per thread. See _heartbeat.
+        self._beats = {}
         self.lock = threading.Lock()
         self.proc = None
         # Monotonic timestamps for the stall check; see _supervise.
@@ -216,25 +218,32 @@ class MonitorStream:
                 continue
 
             _log(f"monitor pipeline started, pid {self.proc.pid}")
-            for raw in self.proc.stdout:
-                self.last_line_at = time.monotonic()
-                # A line arriving is the only evidence a restart achieved
-                # anything, so it is the only thing that clears the count.
-                self._stall_restarts = 0
-                line = ANSI.sub("", raw.rstrip("\n"))
-                m = EVENT.match(line)
-                if m:
-                    self._publish({
-                        "kind": "event",
-                        "time": m.group(1),
-                        "label": m.group(2).strip(),
-                        "text": m.group(3),
-                    })
-                    continue
-                d = DETAIL.match(line)
-                if d:
-                    self._publish({"kind": "detail", "text": d.group(1)})
-                # Anything else is the monitor's legend or blank lines; skipped.
+            # The supervisor closes this stdout to break the deadlock described
+            # in _supervise. That raises here, which is the intended escape and
+            # not a fault: it is the only way to leave a blocking read on a
+            # pipe whose writers have been orphaned.
+            try:
+                for raw in self.proc.stdout:
+                    self.last_line_at = time.monotonic()
+                    # A line arriving is the only evidence a restart achieved
+                    # anything, so it is the only thing that clears the count.
+                    self._stall_restarts = 0
+                    line = ANSI.sub("", raw.rstrip("\n"))
+                    m = EVENT.match(line)
+                    if m:
+                        self._publish({
+                            "kind": "event",
+                            "time": m.group(1),
+                            "label": m.group(2).strip(),
+                            "text": m.group(3),
+                        })
+                        continue
+                    d = DETAIL.match(line)
+                    if d:
+                        self._publish({"kind": "detail", "text": d.group(1)})
+                    # Anything else is the legend or blank lines; skipped.
+            except (ValueError, OSError) as exc:
+                _log(f"read loop released: {exc!r}")
 
             # The monitor ends when the gateway stops or restarts. The next pass
             # finds out which: a restart resumes silently, a stop is announced
@@ -278,8 +287,24 @@ class MonitorStream:
                 last_size_at = time.monotonic()
 
             proc = self.proc
-            if proc is None or proc.poll() is not None:
-                continue  # not running; _run's own retry covers it
+            if proc is None:
+                continue
+            # Deliberately NOT "if proc.poll() is not None: continue".
+            #
+            # That guard deadlocked the monitor for hours at a time. SIGTERM to
+            # the process group kills bash — `deploy_igate.sh monitor` — while
+            # `tail` and `gawk` can outlive it, still holding the write end of
+            # the pipe. So poll() reports the leader dead while _run is still
+            # blocked on a stdout that will never reach EOF, because the
+            # orphans keep it open. The supervisor then skipped every
+            # subsequent check on the grounds that "_run's own retry covers
+            # it", and _run *was the thing that was stuck*. Each half waited
+            # for the other, silently, until someone restarted the service.
+            #
+            # A dead leader with a stalled feed is therefore not a reason to
+            # stand down. It is the signal to escalate: SIGKILL the group to
+            # take the orphans with it, and close stdout to unblock the
+            # reader.
             quiet_for = time.monotonic() - self.last_line_at
             if quiet_for < STALL_SECONDS:
                 continue
@@ -324,7 +349,11 @@ class MonitorStream:
                 time.sleep(1)          # let the note reach anyone watching
                 os._exit(1)
 
-            sig, what = ((signal.SIGTERM, "restarting the feed") if attempt == 1
+            # A leader that is already dead needs no SIGTERM; the problem is
+            # whatever is still holding the pipe.
+            leader_alive = proc.poll() is None
+            sig, what = ((signal.SIGTERM, "restarting the feed")
+                         if attempt == 1 and leader_alive
                          else (signal.SIGKILL, "restarting the feed (forcing it)"))
 
             self._publish({"kind": "note",
@@ -336,6 +365,19 @@ class MonitorStream:
                      f"(attempt {attempt}, silent {int(quiet_for)}s)")
             except OSError as exc:
                 _log(f"could not signal pipeline group {proc.pid}: {exc!r}")
+
+            # Killing the group is not enough on its own: the reader is blocked
+            # on a file object, and nothing wakes it but EOF or an exception.
+            # Closing stdout raises in the read loop, which is exactly the
+            # escape it needs.
+            if not leader_alive or sig is signal.SIGKILL:
+                try:
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                        _log(f"closed stdout of pipeline {proc.pid} to unblock the reader")
+                except OSError as exc:
+                    _log(f"could not close stdout of {proc.pid}: {exc!r}")
+
             self.last_line_at = time.monotonic()
 
     def stop(self):
