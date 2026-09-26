@@ -1,13 +1,53 @@
-# Bidirectional APRS iGate: Bench Prototype
+# Bidirectional APRS iGate: Design and Bench Prototype
 
 **Strict Internet-to-RF whitelist, KD3CCO**
-Prototype platform: Fedora laptop + Yaesu FTX-1 Optima (USB-C)
+Originally written against a Fedora laptop and a Yaesu FTX-1 Optima over USB-C;
+now the design document for the station in service.
+
+---
+
+## How to read this
+
+This is the **design document**, despite a filename that says prototype: it
+began as a bench-test plan and the later sections are where the system is
+actually specified. Two kinds of material, deliberately separated, because a
+reader looking for what the gateway *does* should not have to read how it came
+to do it.
+
+* **Specification.** What the gateway does and the constraints it holds to:
+  §1–§1.1 (objective, requirements), §4 (the whitelist), §7 (Dire Wolf
+  configuration), §13 (implementation), §16 (the headless Pi). Current
+  behaviour is stated directly; where a decision needs justifying, the
+  justification follows it and can be skipped.
+* **Findings.** What was measured, what broke, and what it cost to learn:
+  §9–§10 (bench procedure and criteria), §11 (operating cautions), §14
+  (constraints of Dire Wolf and the radio, and what was verified against what
+  was assumed), §15 (limitations and future work). These are records of work,
+  kept because a fault that cost hours to find should cost minutes the second
+  time.
+
+Two conventions hold throughout, and a contribution that breaks either is
+worth rejecting on that basis alone:
+
+1. **Behaviour before history.** What something does now is stated before any
+   account of what it used to do. A reader must never have to absorb a bug
+   report to learn a feature.
+2. **No assumption stated as fact.** Where something is unverified, it says so.
+   §14 exists to keep the line between *verified* and *assumed* visible, and
+   two claims in this document have already had to be corrected after being
+   stated too confidently — both corrections are recorded in place rather than
+   quietly edited away.
+
+If the question is "how do I run this", none of this document is required:
+see [README.md](README.md). If it is "how do I build the Pi", see
+[PI-SETUP.md](PI-SETUP.md).
 
 ---
 
 ## Contents
 
 - [1. Objective](#1-objective)
+- [1.1 Requirements](#11-requirements)
 - [2. Equipment](#2-equipment)
 - [3. System Architecture](#3-system-architecture)
 - [4. How the Strict Whitelist Works](#4-how-the-strict-whitelist-works)
@@ -60,6 +100,102 @@ Stand up a working two-way APRS iGate on prototype hardware and prove three thin
 3. **Strict whitelist:** the only thing ever keyed onto the air is an APRS *message* addressed to this station's own callsign, or another call on the whitelist. Everything else (positions, telemetry, messages to anyone else) is silently dropped.
 
 This is a bench rig, so the document errs toward low power, a nearby witness receiver, and validating each leg in isolation before going for the full loop.
+
+---
+
+## 1.1 Requirements
+
+Written down after the fact. These were the standing intentions behind the
+build rather than a specification agreed in advance, and recording them serves
+two purposes: a change that breaks one is a change worth arguing about, and a
+requirement nothing tests is a requirement that will quietly stop being true.
+
+Status is one of **met**, **partly met** or **not met**, and reflects what is
+demonstrated rather than what is intended.
+
+### Functional
+
+| | Requirement | Status |
+|---|---|---|
+| FR-1 | Receive APRS on 144.390 and gate what is heard up to APRS-IS. | met — proven continuously; `RF->IS UP` |
+| FR-2 | Transmit, from APRS-IS to RF, **only** APRS *messages* addressed to a whitelisted callsign. Positions, telemetry, bulletins and messages to anyone else are dropped. | met — §4, `FILTER IG 0 g/…` |
+| FR-3 | Carry a message from a phone to a handheld and the reply back, end to end. | met — full SMS round trip in both directions |
+| FR-4 | Match whitelist entries by callsign with an optional wildcard, so every SSID of one call is covered by one entry. | met — `WHITELIST_CALLS` |
+| FR-5 | Beacon the station's position, with the choice of internet only, RF only, both, or not at all. | met — `BEACON_TO` |
+| FR-6 | Express the beacon position as a grid square, so it is rounded by construction. | met — `BEACON_GRID` |
+| FR-7 | Force a digipeater path on everything transmitted, and be able to name a specific digipeater. | met — `TX_VIA` |
+| FR-8 | Restrict what is gated upward to packets a named digipeater actually repeated, as a measurement tool. | met — `RX_VIA`, using the has-been-repeated bit |
+| FR-9 | Drive more than one radio, with everything radio-specific in a profile and nothing about the station in it. | met — `radios/*.conf`; a profile setting a station key is refused |
+| FR-10 | Resolve settings from layers — profile, station, machine, secrets, environment — and report which layer supplied each one. | met — `./deploy_igate.sh config` |
+| FR-11 | Show live packet flow, classified by what happened to each packet. | met — `./deploy_igate.sh monitor` |
+| FR-12 | Offer the same view on the LAN, read-only, with no way to change anything. | met — `igate_web.py`; GET only, no form, no write handler |
+| FR-13 | Recover without help from the interface disappearing off USB. | met — watchdog; observed recovering eight times in one night |
+| FR-14 | Run in a container on a workstation and bare-metal on a Pi, from the same configuration. | met — `DEPLOY_MODE` |
+| FR-15 | Build a bootable Pi card in one command. | met — `build_pi_image.sh` |
+| FR-16 | Help set audio levels, and say what the levels mean. | met — `./deploy_igate.sh audio` |
+| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | partly met — two repeats in eight beacons, measured through an antenna since replaced; needs measuring again |
+| FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | partly met — three of five criteria |
+
+### FR-18 in detail
+
+"Ironclad" is not available on a shared channel with no link-layer
+acknowledgement, where a collision at a digipeater and being out of range are
+indistinguishable from this end. What is available is high probability with
+fast, visible failure, and that is the requirement. It resolves to five
+testable criteria:
+
+| | Criterion | Status |
+|---|---|---|
+| FR-18a | A message from APRS-IS to a whitelisted call is transmitted within seconds, regardless of whether that station has been heard recently. | met — `IGFILTER` fetches it, `FILTER IG 0` transmits it unconditionally |
+| FR-18b | Delivery is confirmed end to end by the addressee's acknowledgement, not inferred from the gateway having transmitted. | met — `./deploy_igate.sh selftest` |
+| FR-18c | A broken RF path is detected within one hour without the operator going to look. | partly met — the test exists and reports which link failed; nothing runs it unattended yet |
+| FR-18d | The station's public presence reflects its RF capability, so a dead transmitter cannot look healthy. | **not met** — `BEACON_TO = BOTH` sends an internet copy whether or not the radio works |
+| FR-18e | Every step of the chain is separately observable when a delivery fails. | met — `IS GATED`, `[0L]`, `RF RX` of the returning copy, and the ack each identify a different link |
+
+The two unmet criteria are the ones that matter, and last night demonstrated
+why: the gateway restarted seven times and spent hours with an unverified
+transmitter while showing continuously on the map. Both are addressable:
+
+* **FR-18d** is a one-line change, `BEACON_TO = RF`. The cost is that an RF
+  failure removes the station from the map — which is the point. Presence
+  becomes evidence rather than decoration.
+* **FR-18c** is `./deploy_igate.sh selftest`: it injects a message to a
+  whitelisted SSID into APRS-IS under this station's own login, confirms the
+  gateway transmits it, and waits for the acknowledgement to return over RF. A
+  beacon proves the transmitter keys; only an acknowledged message proves the
+  station can do the thing it exists for. Four stages are reported separately,
+  because "did not work" is not a diagnosis.
+
+  What remains is running it unattended. That is a schedule, not code — and it
+  is a decision about other people's airtime rather than a technical one, since
+  each run is a real transmission on a shared national channel. Hourly is
+  twenty-four test messages a day.
+
+Redundancy is deliberately asymmetric and that is understood rather than
+overlooked. RF to internet has five independent paths — any iGate in earshot
+completes it, and several have. Internet to RF has exactly one: this station's
+own transmitter. Everything above is about that leg, because it is the only one
+with no alternative.
+
+### Non-functional
+
+| | Requirement | Status |
+|---|---|---|
+| NFR-1 | The whitelist has no exceptions. Any feature that transmits something not on it is a defect, however well-intentioned. | met — `IGMSP 0` disables Dire Wolf's courtesy position report, which was observed transmitting the SMS gateway's own beacon |
+| NFR-2 | Never transmit under another operator's callsign, in testing or otherwise. | met — all test traffic uses this station's own SSIDs |
+| NFR-3 | No unauthenticated control port. Anything that can reach a KISS port can transmit arbitrary packets under this callsign. | met — `AGW_PORT = 0`, `KISS_PORT = 0`; Dire Wolf offers no bind address, so off is the only safe value |
+| NFR-4 | The container reaches DNS and APRS-IS and nothing else. | met — `RESTRICT_EGRESS`, DOCKER-USER chain |
+| NFR-5 | The APRS-IS passcode is never in the repository and never on screen. | met — `igate.secrets`, gitignored; the monitor redacts the login line |
+| NFR-6 | The station's advertised symbol describes what it actually does for other operators. | met — `R` overlay: receive-only from anyone else's point of view, because the transmit path is whitelist-only |
+| NFR-7 | Courteous on a shared national channel: a 30-minute beacon, and a hard cap on internet-to-RF traffic. | met — `BEACON_EVERY`, `IGTXLIMIT 6 10` |
+| NFR-8 | Refuse to start rather than start half-working. A station that looks healthy and transmits nothing is worse than one that fails loudly. | met — `up` refuses with no audio device and no PTT node |
+| NFR-9 | A failure says so, within a bounded time, without being looked for. | partly met — see FR-18c and FR-18d, which are the two specific gaps |
+| NFR-10 | Spare the SD card: `run/` on tmpfs, journal in RAM. | met — with a known cost: post-mortem evidence does not survive a reboot (§15) |
+| NFR-11 | Find the interface by what it is, not where it is plugged in. | met — `ADEVICE = auto` by USB id; the CM108 node is found on the same USB device as the audio card |
+| NFR-12 | Reproducible: a card is built from `pi.conf`, `igate.conf` and the secrets files. | met — `build_pi_image.sh` |
+| NFR-13 | Record what was verified against what was assumed, and correct the record when an assumption turns out wrong. | met — §14; the W3YA-1 alias claim and the `netdev` claim were both wrong and are both corrected in place |
+| NFR-14 | Survive its own transmissions. | met after rework — RF on the feedline was resetting the interface once every other transmission; fixed at full power by choking the coax and moving the antenna outside |
+| NFR-15 | Survive loss of power without corrupting the card. | not met — a pulled plug is an unclean shutdown; a supercapacitor HAT and a read-only root are outstanding (§15) |
 
 ---
 

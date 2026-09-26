@@ -2480,6 +2480,151 @@ then leave the monitor running for a few minutes and re-run this command.
 GUIDE
 }
 
+# Recent gateway log lines, in either mode. The self-test reads the log rather
+# than the monitor pipeline so that a broken monitor cannot make a working
+# gateway look failed — which is a failure mode this project has already had.
+_selftest_log() {  # seconds-back
+  local since="${1:-300}"
+  if [[ "$MODE" == docker ]]; then
+    docker logs --since "${since}s" "$CONTAINER_NAME" 2>&1 || true
+  else
+    [[ -f "$BARE_LOG" ]] && tail -n 2000 "$BARE_LOG" || true
+  fi
+}
+
+cmd_selftest() {
+  # Every other subcommand takes an optional config file as its first argument,
+  # so `selftest KD3CCO-7` would otherwise try to load a callsign as a config
+  # file and fail with a baffling message. A first argument that is not an
+  # existing file, and looks like a callsign, is the target.
+  local cfgfile="${1:-}" target="${2:-}"
+  if [[ -n "$cfgfile" && ! -f "$cfgfile" && "$cfgfile" =~ ^[A-Za-z0-9]{3,6}(-[0-9]{1,2})?$ ]]; then
+    target="$cfgfile"; cfgfile=""
+  fi
+  load_and_resolve "$cfgfile"
+  target="${target:-${CFG[SELFTEST_TO]:-}}"
+  local from="${CFG[SELFTEST_FROM]:-${CFG[IGLOGIN_CALL]:-}}"
+  local timeout="${CFG[SELFTEST_TIMEOUT]:-120}"
+
+  # --- what this proves, and what it refuses to guess -------------------
+  #
+  # A beacon proves the transmitter keys. It does not prove that a message
+  # from the internet reaches a radio and is acknowledged, which is the thing
+  # this station exists to do. The difference is not academic: this gateway
+  # has spent hours beaconing to the map with a transmitter that could not
+  # deliver anything, and nothing noticed.
+  #
+  # So this exercises the whole chain and reports which link failed:
+  #
+  #   1. APRS-IS accepts a message addressed to a whitelisted call
+  #   2. the server routes it back to this gateway    ([ig>tx])
+  #   3. the gateway transmits it                     ([0L])
+  #   4. the addressee receives it and acknowledges   (ack heard on RF)
+  #
+  # Step 4 is the only one that means delivery. Steps 2 and 3 are Direwolf
+  # reporting its own intentions.
+
+  if [[ -z "$target" ]]; then
+    echo "Usage: $0 selftest [config-file] <CALL-SSID>" >&2
+    echo "  or set SELFTEST_TO in igate.conf." >&2
+    echo >&2
+    echo "The target must be a station that will acknowledge an APRS message —" >&2
+    echo "a handheld of your own that is switched on and in range. It must also" >&2
+    echo "match the whitelist, or the gateway will correctly refuse to transmit" >&2
+    echo "to it and the test will fail at step 3 for the right reason." >&2
+    exit 1
+  fi
+  require IGSERVER
+  require IGLOGIN_CALL
+  require IGLOGIN_PASSCODE
+  if [[ -z "$from" ]]; then
+    echo "SELFTEST_FROM is empty and IGLOGIN_CALL is unset; nothing to send as." >&2
+    exit 1
+  fi
+  # Direwolf suppresses packets it originated itself, to break loops. A test
+  # sent as MYCALL would be dropped before it ever reached the transmitter,
+  # and would look exactly like a broken radio.
+  if [[ "${from^^}" == "${CFG[MYCALL]^^}" ]]; then
+    echo "SELFTEST_FROM (${from}) must differ from MYCALL (${CFG[MYCALL]})." >&2
+    echo "  Direwolf drops packets it originated, so the test would fail for a" >&2
+    echo "  reason that has nothing to do with the radio. Use another of your" >&2
+    echo "  own SSIDs — the login callsign itself is the usual choice." >&2
+    exit 1
+  fi
+  _gather_state
+  if [[ "$STATE_RUNNING" != "true" ]]; then
+    echo "iGate is not running — start it first (${MODE})." >&2
+    exit 1
+  fi
+
+  local msgid; msgid="$(printf '%02d' $(( (RANDOM % 89) + 10 )) )"
+  local text="selftest ${msgid}"
+  echo "Self-test: ${from} -> ${target}, message {${msgid}}"
+  echo "  via ${CFG[IGSERVER]}:${CFG[IGSERVER_PORT]:-14580} as ${CFG[IGLOGIN_CALL]}"
+  echo
+
+  if ! SELFTEST_SERVER="${CFG[IGSERVER]}" \
+       SELFTEST_PORT="${CFG[IGSERVER_PORT]:-14580}" \
+       SELFTEST_LOGIN="${CFG[IGLOGIN_CALL]}" \
+       SELFTEST_PASS="${CFG[IGLOGIN_PASSCODE]}" \
+       SELFTEST_FROM="$from" SELFTEST_TO="$target" \
+       SELFTEST_TEXT="$text" SELFTEST_ID="$msgid" \
+       python3 "${SCRIPT_DIR}/selftest_inject.py"; then
+    echo
+    echo "FAIL at step 1: the message was not accepted by APRS-IS."
+    echo "  Nothing was transmitted. This is a network or passcode problem,"
+    echo "  not a radio one."
+    exit 1
+  fi
+  echo "  step 1 OK: APRS-IS accepted it"
+
+  # --- watch the gateway's own log for the rest -------------------------
+  local deadline=$(( SECONDS + timeout ))
+  local saw_igtx=0 saw_tx=0 saw_ack=0 log
+  while (( SECONDS < deadline )); do
+    log="$(_selftest_log 600)"
+    if (( ! saw_igtx )) && grep -qF "[ig>tx]" <<<"$log" && grep -qF "$text" <<<"$log"; then
+      saw_igtx=1; echo "  step 2 OK: the server routed it back to this gateway"
+    fi
+    if (( ! saw_tx )) && grep -E "^\[0L\]" <<<"$log" | grep -qF "$text"; then
+      saw_tx=1; echo "  step 3 OK: the gateway transmitted it"
+    fi
+    # The addressee acknowledges to the sender, over RF, and this station
+    # hears it: that is the only evidence of delivery.
+    if (( ! saw_ack )) && grep -qiE "${target}>.*ack${msgid}" <<<"$log"; then
+      saw_ack=1; echo "  step 4 OK: ${target} acknowledged it over RF"
+      break
+    fi
+    sleep 3
+  done
+
+  echo
+  if (( saw_ack )); then
+    echo "PASS — a message from the internet reached ${target} and was acknowledged."
+    return 0
+  fi
+  if (( saw_tx )); then
+    echo "FAIL at step 4: transmitted, never acknowledged."
+    echo "  The gateway did its part. Either ${target} did not hear the"
+    echo "  transmission, or its acknowledgement did not get back. Check that the"
+    echo "  radio is on, on 144.390, and in range; then check TX_VIA, since a"
+    echo "  single WIDE1-1 hop can be consumed by a nearby fill-in digipeater"
+    echo "  before it travels."
+  elif (( saw_igtx )); then
+    echo "FAIL at step 3: the gateway had the message and did not transmit it."
+    echo "  Check the whitelist (${CFG[WHITELIST_CALLS]:-unset}) covers ${target},"
+    echo "  and IGTXLIMIT (${CFG[IGTXLIMIT]:-unset}) has not been reached."
+  else
+    echo "FAIL at step 2: APRS-IS took the message and never sent it back here."
+    echo "  Check IGFILTER covers ${target} — without it the server forwards"
+    echo "  only traffic for stations heard recently on RF."
+  fi
+  echo
+  echo "  Nothing above is inferred: each step is a separate line in the log."
+  echo "  ./deploy_igate.sh monitor shows the same events as they happen."
+  return 1
+}
+
 cmd_uninstall() {
   load_and_resolve "${1:-}"
   # The Raspberry Pi image installs systemd units that this script did not
@@ -2538,11 +2683,12 @@ main() {
     logs) cmd_logs "${2:-}" ;;
     monitor) cmd_monitor "${2:-}" ;;
     audio) cmd_audio "${2:-}" ;;
+    selftest) cmd_selftest "${2:-}" "${3:-}" ;;
     is-running) cmd_is_running "${2:-}" ;;
     watchdog) cmd_watchdog "${2:-}" ;;
     uninstall) cmd_uninstall "${2:-}" ;;
     *)
-      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|is-running|watchdog|uninstall} [config-file]" >&2
+      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|selftest|is-running|watchdog|uninstall} [config-file]" >&2
       exit 1
       ;;
   esac

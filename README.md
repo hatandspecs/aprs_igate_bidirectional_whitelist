@@ -5,7 +5,19 @@ APRS-IS, and **only** APRS *messages* addressed to whitelisted callsigns are
 ever transmitted back onto RF. Everything else — positions, telemetry, other
 people's traffic — is silently dropped.
 
-One editable config file drives everything, in either of two deployment modes.
+## Start here
+
+| Goal | What to do | What to read |
+|---|---|---|
+| **Run it on a computer I already have** | Pick the quickstart matching your radio | [Quickstarts](#quickstarts) A or C. Nothing about the Raspberry Pi applies. |
+| **Build the dedicated pi-gate** | Flash a card, then leave it alone | [PI-SETUP.md](PI-SETUP.md) |
+| **Operate it day to day** | — | [Commands](#commands), [Monitoring](#monitoring) |
+| **Know exactly what it will and will not transmit** | — | [§4 of the design document](aprs-igate-prototype-test.md#4-how-the-strict-whitelist-works), then [Editing the whitelist](#editing-the-whitelist) |
+| **Something is wrong** | — | [PI-SETUP.md, Troubleshooting](PI-SETUP.md#troubleshooting) |
+| **Understand why it is built this way** | — | [The design document](aprs-igate-prototype-test.md) |
+
+The gateway is Dire Wolf plus configuration. One editable file drives
+everything, in either of two deployment modes.
 
 | Mode | Runs as | Intended host |
 |---|---|---|
@@ -99,12 +111,15 @@ Pick the one that matches your hardware. Each is complete on its own.
 | Anything on a Digirig Lite | `radios/digirig.conf` | set by hand; nothing can check it | the Digirig's CM108 GPIO3 | **the profile in service.** VX-6R and Radtel 880G have both carried traffic on it; the FT-2900R is the current radio |
 
 **There is one profile for every radio on the Digirig, and it is named for the
-interface rather than the radio.** That is not a simplification — it is what
-the file turned out to contain. Separate `vx6r.conf` and `radtel880g.conf`
-profiles were written, and once both existed they differed in exactly one line:
-the description. Every setting was identical, because no setting describes the
-radio. They describe the Digirig — its C-Media codec is the sound card, its
-CM108 GPIO3 is the PTT line, its mixer controls have fixed names.
+interface rather than the radio.** Nothing in it describes a radio: the
+C-Media codec is the sound card, CM108 GPIO3 is the PTT line, and the mixer
+controls have fixed names. What a radio contributes is a speaker jack, a
+microphone jack and a volume knob.
+
+*Why one profile rather than several.* Separate `vx6r.conf` and
+`radtel880g.conf` were written first. Once both existed they differed in
+exactly one line — the description — because no setting in either of them was
+about the radio.
 
 What the radio contributes is a speaker jack, a microphone jack and a volume
 knob. Swapping radios means changing the cable and the front-panel setup, not
@@ -585,6 +600,36 @@ docker mode nothing runs it automatically; run it by hand, or from `cron`:
 ```bash
 * * * * * cd ~/aprs_igate_bidirectional_whitelist && ./deploy_igate.sh watchdog
 ```
+
+### `selftest` — prove the station can still do its job
+
+```bash
+./deploy_igate.sh selftest KD3CCO-7
+```
+
+Puts a real APRS message onto APRS-IS addressed to a whitelisted station, then
+watches this gateway's log for four things and says which one failed:
+
+| Step | Evidence | Means |
+|---|---|---|
+| 1 | the server accepted it | APRS-IS and the passcode are fine |
+| 2 | `[ig>tx]` | the server routed it back to this gateway |
+| 3 | `[0L]` | the gateway transmitted it |
+| 4 | an `ack` heard on RF | **the addressee received it** |
+
+Only step 4 is delivery. Steps 2 and 3 are Dire Wolf reporting its own
+intentions, and a station whose radio cannot reach anything produces both of
+them exactly as a working one does.
+
+A beacon is not a substitute. A beacon proves the transmitter keys; it says
+nothing about whether a message reaches a radio, and this gateway has spent
+hours beaconing to the map while unable to deliver anything.
+
+Defaults come from `SELFTEST_TO`, `SELFTEST_FROM` and `SELFTEST_TIMEOUT` in
+`igate.conf`. The target must be a station that will acknowledge — one of your
+own radios, switched on and in range — and must match the whitelist, or the
+gateway will correctly refuse and the test will fail at step 3 for the right
+reason.
 
 ## Monitoring
 

@@ -1172,6 +1172,35 @@ Power was never the variable. Backing it off would have hidden the problem
 without fixing it, and the cure was the antenna not needing the feedline as a
 counterpoise.
 
+**The web monitor freezes while the gateway carries on working.**
+The page keeps saying `live` and stops showing packets, while
+`./deploy_igate.sh status` reports the gateway running and aprs.fi shows the
+station beaconing. They are different things: those beacons are the `qAS`
+internet copy sent over TCP, which proves Dire Wolf is alive and says nothing
+about the page. **A frozen page is not evidence about the gateway.**
+
+`./deploy_igate.sh monitor` over SSH shows the same stream with no browser in
+the path, and is the quickest way to tell which of the two is wrong.
+
+Three separate faults have produced this, and all three are now fixed:
+
+* **The pipeline stalled** — `tail` left following a log that was replaced
+  under it. `igate_web.py` supervises this and says so on the page when it
+  happens: `monitor feed stalled for N minutes while the gateway kept logging
+  — restarting the feed`.
+* **The response was never closed.** The streaming header says `Connection:
+  keep-alive` with no `Content-Length`, so ending the handler returned the
+  socket to the keep-alive loop instead of closing it. A viewer cut loose for
+  falling behind had its slot freed while its connection stayed open and
+  silent — the page then sat there reading `live` forever, because EventSource
+  only reconnects when the response ends.
+* **Viewer slots leaked.** With no write deadline, a browser that went away
+  without closing — a sleeping laptop, a backgrounded phone tab — held its
+  slot indefinitely. Eight of those and every new viewer was refused.
+
+If a page is frozen on a version predating those fixes,
+`sudo systemctl restart igate-web` clears it.
+
 **Nothing on the network after 10+ minutes.**
 Most likely the WiFi credentials or the country code. With no Ethernet port
 there's no way in to check, so pull the card and inspect it on your laptop:

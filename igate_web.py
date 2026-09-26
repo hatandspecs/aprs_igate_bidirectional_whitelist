@@ -55,6 +55,23 @@ QUEUE_DEPTH = int(os.environ.get("IGATE_QUEUE_DEPTH", "500"))
 # When that buffer is full, how many of the viewer's oldest events to discard to
 # make room. Falling behind should cost the middle of the feed, not the feed.
 DROP_OLDEST = int(os.environ.get("IGATE_DROP_OLDEST", "50"))
+# How long a write to a viewer may block before the connection is abandoned.
+#
+# Without this a viewer that goes away WITHOUT closing — a laptop that sleeps,
+# a phone that backgrounds the tab, WiFi dropping — leaves a connection the
+# server has no reason to think is dead. Keepalives go on being written into a
+# socket that may not error for many minutes, or the write blocks forever
+# because the peer's receive window never opens again. The slot stays taken,
+# and after MAX_CLIENTS of those the page returns "too many viewers" to
+# everyone until the service is restarted. That happened in service.
+#
+# Longer than the keepalive interval, so a healthy but briefly slow viewer is
+# not cut off; short enough that a dead one is reclaimed the same day.
+WRITE_TIMEOUT = float(os.environ.get("IGATE_WRITE_TIMEOUT", "30"))
+# How often to write a comment frame on an idle connection, and how often the
+# streaming loop wakes to look at anything other than the queue.
+KEEPALIVE_SECONDS = 20.0
+DROPPED_POLL_SECONDS = 5.0
 
 # The packet log the gateway writes. Used only as a liveness signal for the
 # monitor pipeline: if this file is growing while the pipeline has produced
@@ -99,7 +116,9 @@ class MonitorStream:
         self.cmd = cmd
         self.is_running = is_running
         self.history = deque(maxlen=HISTORY)
-        self.subscribers = set()
+        # A list, not a set: admission evicts the OLDEST viewer when full, and
+        # a set has no oldest.
+        self.subscribers = []
         self.lock = threading.Lock()
         self.proc = None
         # Monotonic timestamps for the stall check; see _supervise.
@@ -138,7 +157,8 @@ class MonitorStream:
                 sub.dropped.set()
                 dead.append(sub)
             for sub in dead:
-                self.subscribers.discard(sub)
+                if sub in self.subscribers:
+                    self.subscribers.remove(sub)
 
     def _run(self):
         # Whether the gateway was running at the last check; None before the
@@ -269,17 +289,29 @@ class MonitorStream:
                 pass
 
     def subscribe(self):
+        """Register a viewer, making room if the limit is reached.
+
+        The oldest viewer is evicted rather than the newest refused. Refusing
+        is the wrong way round: the person refused is the one sitting in front
+        of the page right now, and the eight holding the slots may be ghosts —
+        connections whose browsers are asleep or gone. An evicted viewer that
+        is still really there reconnects by itself, because closing the
+        response is what makes EventSource retry.
+        """
         sub = Subscriber(QUEUE_DEPTH)
         with self.lock:
-            if len(self.subscribers) >= MAX_CLIENTS:
-                return None, []
-            self.subscribers.add(sub)
+            while len(self.subscribers) >= MAX_CLIENTS:
+                oldest = self.subscribers[0]
+                oldest.dropped.set()
+                del self.subscribers[0]
+            self.subscribers.append(sub)
             backlog = list(self.history)
         return sub, backlog
 
     def unsubscribe(self, sub):
         with self.lock:
-            self.subscribers.discard(sub)
+            if sub in self.subscribers:
+                self.subscribers.remove(sub)
 
 
 class Settings:
@@ -415,32 +447,64 @@ class Handler(BaseHTTPRequestHandler):
                    json.dumps(SETTINGS.get()).encode())
 
     def _events(self):
+        # subscribe() always succeeds now: at the limit it evicts the oldest
+        # viewer rather than refusing this one. The 503 that used to live here
+        # turned out to be the wrong answer — it refused the person actually
+        # looking at the page in favour of connections that were often already
+        # dead.
         sub, backlog = STREAM.subscribe()
-        if sub is None:
-            self._send(503, "text/plain; charset=utf-8", b"too many viewers\n")
-            return
+
+        # A deadline on every write. Without one, a viewer that went away
+        # without closing holds its slot indefinitely: the write neither
+        # succeeds nor fails, and MAX_CLIENTS of those make the page return
+        # "too many viewers" to everyone. socket.timeout is an OSError, so the
+        # handler below already treats it as the disconnection it is.
+        try:
+            self.connection.settimeout(WRITE_TIMEOUT)
+        except OSError:
+            pass
 
         self._head(200, "text/event-stream; charset=utf-8", stream=True)
         try:
             for event in backlog:
                 self._send_event(event)
+            last_keepalive = time.monotonic()
             while True:
+                # Checked before blocking, not only after a timeout. A viewer
+                # cut loose while its queue still held events used to be sent
+                # all of them first — up to QUEUE_DEPTH of them — before the
+                # connection closed.
+                if sub.dropped.is_set():
+                    # Closing the response is what makes EventSource
+                    # reconnect, which re-subscribes and replays the history.
+                    break
                 try:
-                    self._send_event(sub.queue.get(timeout=20))
+                    self._send_event(sub.queue.get(timeout=DROPPED_POLL_SECONDS))
+                    continue
                 except queue.Empty:
-                    if sub.dropped.is_set():
-                        # Cut loose for falling too far behind. Closing the
-                        # response is what makes EventSource reconnect, which
-                        # re-subscribes and replays the history.
-                        break
+                    pass
+                now = time.monotonic()
+                if now - last_keepalive >= KEEPALIVE_SECONDS:
                     # Comment frame: keeps proxies and phone radios from
                     # dropping an idle connection on a quiet band.
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
+                    last_keepalive = now
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             STREAM.unsubscribe(sub)
+            # Close the socket, do not return it to the keep-alive loop.
+            #
+            # The whole drop-and-reconnect design rests on this: EventSource
+            # only retries when the response ends. The streaming header says
+            # Connection: keep-alive with no Content-Length, so without this
+            # the base class simply waited for another request on the same
+            # socket — the viewer's slot was freed while its connection stayed
+            # open and silent, and the page sat there reading "live" and
+            # frozen. That is indistinguishable from a quiet band, and it is
+            # the symptom that sent us looking at the gateway instead.
+            self.close_connection = True
 
     def _send_event(self, event):
         self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
