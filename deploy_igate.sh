@@ -2641,6 +2641,100 @@ cmd_selftest() {
   return 1
 }
 
+cmd_reach() {
+  load_and_resolve "${1:-}"
+  local mine="${CFG[MYCALL]}"
+
+  # --- why this reads history rather than transmitting ------------------
+  #
+  # "Does a digipeater repeat this station" cannot be answered from aprs.fi.
+  # A digipeated copy carries the same source and payload as the direct one,
+  # APRS-IS discards duplicates, and a neighbour hearing the direct
+  # transmission gates it first — so the repeat is dropped before it is ever
+  # visible there, whatever the digipeater did.
+  #
+  # The station's own receiver has no such problem: a repeat of its own beacon
+  # arrives over the air like any other frame, carrying the callsign of
+  # whatever repeated it and a `*` marking the hop as used. Every beacon
+  # already sent is a measurement that was taken and not read.
+
+  # Not _selftest_log: that reads the last 2000 lines, which on a busy gateway
+  # is a couple of hours however long you wait — and a repeat rate wants more
+  # beacons than a 30-minute interval produces in two hours. The rotated
+  # generations are on disk (8M, two kept, compressed), so read those too and
+  # measure over as much history as the card holds.
+  local log tx rx
+  if [[ "$MODE" == docker ]]; then
+    log="$(docker logs "$CONTAINER_NAME" 2>&1 || true)"
+  else
+    log="$( { [[ -f "${BARE_LOG}.2.gz" ]] && zcat "${BARE_LOG}.2.gz"
+              [[ -f "${BARE_LOG}.1.gz" ]] && zcat "${BARE_LOG}.1.gz"
+              [[ -f "${BARE_LOG}.1" ]] && cat "${BARE_LOG}.1"
+              [[ -f "$BARE_LOG" ]] && cat "$BARE_LOG"; } 2>/dev/null || true)"
+  fi
+  if [[ -z "$log" ]]; then
+    echo "No log to read yet." >&2
+    exit 1
+  fi
+
+  # Transmitted by this station: Direwolf's own transmit line.
+  tx="$(grep -cE "^\[0L\] ${mine}>" <<<"$log" || true)"
+  # Heard back, with a digipeater's call marked used. A frame from MYCALL
+  # arriving on the radio can only have got there by being repeated.
+  rx="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$log" | grep -c '\*' || true)"
+
+  local span; span="$(grep -cE "^\\[0" <<<"$log" || true)"
+  echo "Reach, from this station's own receiver (${span} frames of log):"
+  echo
+  echo "  transmitted by ${mine}:       ${tx}"
+  echo "  heard back, digipeated:       ${rx}"
+  if (( tx > 0 )); then
+    echo "  repeat rate:                  $(( rx * 100 / tx ))%"
+  fi
+  echo
+
+  if (( rx > 0 )); then
+    echo "Heard directly by:"
+    # Attribution is not "whatever carries the asterisk". A digipeater that
+    # consumes a WIDE1-1 hop inserts its own callsign and marks the ALIAS used,
+    # so `W3YA-1,WIDE1*` was repeated by W3YA-1 — reporting `WIDE1` names a
+    # routing alias as though it were a station, which the first version did.
+    # What matters for reach is the FIRST real callsign in the path: that is
+    # the station that heard this one off the air. Anything after it heard the
+    # repeat, not us.
+    grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$log" | grep '\*' \
+      | python3 -c '
+import re, sys, collections
+ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
+seen = collections.Counter()
+for line in sys.stdin:
+    body = line.split("]", 1)[-1].strip()
+    head = body.split(":", 1)[0]
+    for hop in head.split(",")[1:]:
+        call = hop.strip().rstrip("*")
+        if not call or ALIAS.match(call):
+            continue
+        seen[call] += 1
+        break
+for call, n in seen.most_common():
+    print(f"  {call:<12} {n}")
+'
+  else
+    echo "Nothing has repeated this station's transmissions."
+    echo
+    echo "  TX_VIA is currently: ${CFG[TX_VIA]:-direct, no digipeater}"
+    if [[ "${CFG[TX_VIA]:-}" == WIDE1-1 ]]; then
+      echo "  WIDE1-1 asks for one hop and names fill-in digipeaters as the"
+      echo "  intended responders. The first station to answer consumes it, and"
+      echo "  a wide-area digipeater that hears the repeat can do nothing with"
+      echo "  it. WIDE2-1 asks the same single hop of the wide-area digis only,"
+      echo "  which fill-ins ignore."
+    fi
+  fi
+  echo
+  echo "This reads only what was already logged — nothing was transmitted."
+}
+
 cmd_uninstall() {
   load_and_resolve "${1:-}"
   # The Raspberry Pi image installs systemd units that this script did not
@@ -2700,11 +2794,12 @@ main() {
     monitor) cmd_monitor "${2:-}" ;;
     audio) cmd_audio "${2:-}" ;;
     selftest) cmd_selftest "${2:-}" "${3:-}" ;;
+    reach) cmd_reach "${2:-}" ;;
     is-running) cmd_is_running "${2:-}" ;;
     watchdog) cmd_watchdog "${2:-}" ;;
     uninstall) cmd_uninstall "${2:-}" ;;
     *)
-      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|selftest|is-running|watchdog|uninstall} [config-file]" >&2
+      echo "Usage: $0 {config|build|up|down|restart|status|logs|monitor|audio|selftest|reach|is-running|watchdog|uninstall} [config-file]" >&2
       exit 1
       ;;
   esac

@@ -133,8 +133,8 @@ demonstrated rather than what is intended.
 | FR-14 | Run in a container on a workstation and bare-metal on a Pi, from the same configuration. | met — `DEPLOY_MODE` |
 | FR-15 | Build a bootable Pi card in one command. | met — `build_pi_image.sh` |
 | FR-16 | Help set audio levels, and say what the levels mean. | met — `./deploy_igate.sh audio` |
-| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | partly met — two repeats in eight beacons, measured through an antenna since replaced; needs measuring again |
-| FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | partly met — four of five criteria; only FR-18d remains |
+| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | partly met — `./deploy_igate.sh reach` measures it from the station's own receiver at no airtime cost; the 2-in-8 figure predates the outdoor antenna and has not been retaken |
+| FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | met — all five criteria |
 
 ### FR-18 in detail
 
@@ -149,16 +149,18 @@ testable criteria:
 | FR-18a | A message from APRS-IS to a whitelisted call is transmitted within seconds, regardless of whether that station has been heard recently. | met — `IGFILTER` fetches it, `FILTER IG 0` transmits it unconditionally |
 | FR-18b | Delivery is confirmed end to end by the addressee's acknowledgement, not inferred from the gateway having transmitted. | met and demonstrated — `./deploy_igate.sh selftest` passed all four steps on 2026-09-26, at full power through the outdoor antenna |
 | FR-18c | A broken RF path is detected within four hours without the operator going to look. | met — `igate-selftest.timer`, every four hours, 20 minutes after boot |
-| FR-18d | The station's public presence reflects its RF capability, so a dead transmitter cannot look healthy. | **not met** — `BEACON_TO = BOTH` sends an internet copy whether or not the radio works |
-| FR-18e | Every step of the chain is separately observable when a delivery fails. | met — `IS GATED`, `[0L]`, `RF RX` of the returning copy, and the ack each identify a different link |
+| FR-18d | The station's public presence reflects its RF capability, so a dead transmitter cannot look healthy. | met — `BEACON_TO = RF`; the only route to aprs.fi is over the air, so presence there is evidence |
+| FR-18e | Every step of the chain is separately observable when a delivery fails. | met — `IS GATED`, `[0L]`, `RF RX` of the returning copy, and the ack each identify a different link; `reach` reads the same evidence out of the log afterwards |
 
 The two unmet criteria are the ones that matter, and last night demonstrated
 why: the gateway restarted seven times and spent hours with an unverified
 transmitter while showing continuously on the map. Both are addressable:
 
-* **FR-18d** is a one-line change, `BEACON_TO = RF`. The cost is that an RF
-  failure removes the station from the map — which is the point. Presence
-  becomes evidence rather than decoration.
+* **FR-18d** is `BEACON_TO = RF`. The cost is that an RF failure removes the
+  station from the map — which is the point. Presence becomes evidence rather
+  than decoration. This is only affordable because FR-18c covers what the
+  beacon was standing in for; reverting the self-test timer means reverting
+  this too, or the station loses both signals at once.
 * **FR-18c** is `./deploy_igate.sh selftest`: it injects a message to a
   whitelisted SSID into APRS-IS under this station's own login, confirms the
   gateway transmits it, and waits for the acknowledgement to return over RF. A
@@ -210,13 +212,13 @@ with no alternative.
 | NFR-6 | The station's advertised symbol describes what it actually does for other operators. | met — `R` overlay: receive-only from anyone else's point of view, because the transmit path is whitelist-only |
 | NFR-7 | Courteous on a shared national channel: a 30-minute beacon, and a hard cap on internet-to-RF traffic. | met — `BEACON_EVERY`, `IGTXLIMIT 6 10` |
 | NFR-8 | Refuse to start rather than start half-working. A station that looks healthy and transmits nothing is worse than one that fails loudly. | met — `up` refuses with no audio device and no PTT node |
-| NFR-9 | A failure says so, within a bounded time, without being looked for. | partly met — see FR-18c and FR-18d, which are the two specific gaps |
+| NFR-9 | A failure says so, within a bounded time, without being looked for. | met — FR-18c and FR-18d, which were the two gaps, are both closed |
 | NFR-10 | Spare the SD card: `run/` on tmpfs, journal in RAM. | met — with a known cost: post-mortem evidence does not survive a reboot (§15) |
 | NFR-11 | Find the interface by what it is, not where it is plugged in. | met — `ADEVICE = auto` by USB id; the CM108 node is found on the same USB device as the audio card |
 | NFR-12 | Reproducible: a card is built from `pi.conf`, `igate.conf` and the secrets files. | met — `build_pi_image.sh` |
 | NFR-13 | Record what was verified against what was assumed, and correct the record when an assumption turns out wrong. | met — §14; the W3YA-1 alias claim and the `netdev` claim were both wrong and are both corrected in place |
 | NFR-14 | Survive its own transmissions. | met after rework — RF on the feedline was resetting the interface once every other transmission; fixed at full power by choking the coax and moving the antenna outside |
-| NFR-15 | Survive loss of power without corrupting the card. | not met — a pulled plug is an unclean shutdown; a supercapacitor HAT and a read-only root are outstanding (§15) |
+| NFR-15 | Survive loss of power without corrupting the card. | decided, hardware on order (2026-09-26) — a PiShop UPS HAT; see §15 for what it does and does not buy |
 
 ---
 
@@ -1080,6 +1082,55 @@ belongs only in a test.
 ---
 
 ## 15. Limitations and future work
+
+**Open, as of 2026-09-26.** Recorded here rather than left implicit, because
+"what is still wrong" is the part of a design document that rots first.
+
+* **NFR-15, surviving power loss — decided, hardware on order (2026-09-26).**
+  A PiShop UPS HAT: 3 A output, a 450 mAh Li-Ion cell, a DS3231, and a vendor
+  shutdown script. It suits this Pi specifically — the 3B+ is supported and the
+  40-pin header is free, since `CM108_GPIO` is a pin inside the USB sound card
+  rather than on the Pi.
+
+  **The battery is not the fix; the script is.** A UPS that keeps the Pi alive
+  and then dies mid-write corrupts the card exactly as a pulled plug does. What
+  closes the requirement is power loss being detected and a clean `poweroff`
+  issued with minutes in hand. That is a systemd unit and a test performed by
+  actually pulling the plug, repeatedly — not an afternoon's work, and not
+  finished when the board arrives.
+
+  **It does not keep the station on the air**, and expecting that would be a
+  misreading. 450 mAh runs a Pi for 10–30 minutes and cannot touch an FT-2900R,
+  which is where nearly all the power goes. In an outage the gateway goes down
+  either way; this makes it go down cleanly.
+
+  **The DS3231 on it is a second benefit**, since this station has no clock and
+  comes up wrong until NTP corrects it. The cyberdeck already paid the learning
+  cost: `rtc-ds1307` is the correct driver for a DS3231, `i2cdetect` needs
+  `i2c-dev` loaded first, and `hwclock` is in `util-linux-extra`.
+
+  **A read-only root would close the same requirement for nothing**, and
+  protect against a flat UPS battery too — but it pulls against
+  `PI_PERSISTENT_JOURNAL`, which exists so that a reboot stops erasing its own
+  explanation. UPS plus writable root plus persistent journal is the coherent
+  combination; read-only root would mean giving up the journal or adding an
+  overlay.
+* **FR-17, reach.** `./deploy_igate.sh reach` now measures it for free, and the
+  measurement has not been taken since the antenna moved outside. Until it is,
+  `TX_VIA` is a guess: `WIDE1-1` asks one hop of fill-in digipeaters, and a
+  near neighbour answering it consumes the hop before it travels.
+* **The web monitor's pipeline stall has no known cause.** The supervisor
+  detects it and announces a restart; it has been observed announcing and not
+  recovering. A reproduction that stalls a live-but-silent pipeline while the
+  log grows recovers correctly every time, so the real failure has a different
+  shape and has not been found. The three *other* monitor faults — an unclosed
+  response, leaked viewer slots, and a refusal that turned away the newest
+  viewer in favour of dead ones — are fixed.
+* **No persistent journal.** `Storage=volatile` spares the card and means a
+  reboot erases the evidence of whatever caused it. That cost a definite answer
+  once already: whether the previous radio also caused USB resets is now
+  unknowable. A capped `SystemMaxUse` is the compromise.
+
 
 - **The egress restriction degrades open, and has not been verified in place.**
   The `DOCKER-USER` rules of §13.4 need `sudo`; without it `up` warns and starts

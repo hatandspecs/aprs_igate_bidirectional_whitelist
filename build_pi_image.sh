@@ -546,14 +546,31 @@ EOF
   sudo cp "$tmp" "${ROOT_MNT}/etc/systemd/system/igate-logrotate.timer"
   sudo chmod 644 "${ROOT_MNT}/etc/systemd/system/igate-logrotate.timer"
 
-  # 3. The journal. Storage=volatile keeps it in /run, so systemd stops writing
-  #    to the card too. The cost is that logs do not survive a reboot — an
-  #    acceptable trade for an appliance, and unavoidable anyway once run/ is
-  #    tmpfs, since the packet log does not survive either.
+  # 3. The journal.
+  #
+  #    Volatile keeps it in /run and writes nothing to the card, which is the
+  #    obvious choice for an appliance — and it erases the evidence of whatever
+  #    caused a reboot, every time. That has already cost a definite answer
+  #    here: whether the previous radio also caused USB resets is unknowable,
+  #    because dmesg only went back to the boot that preceded the new one.
+  #
+  #    Persistent, hard-capped, is the compromise. 32M is a few days of this
+  #    station's logging, rotated by systemd, and a rounding error against an
+  #    SD card's endurance — far less than the packet log would be if run/ were
+  #    not tmpfs. Set PI_PERSISTENT_JOURNAL = no in pi.conf for the old
+  #    behaviour.
   sudo mkdir -p "${ROOT_MNT}/etc/systemd/journald.conf.d"
-  printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' \
-    | sudo tee "${ROOT_MNT}/etc/systemd/journald.conf.d/volatile.conf" >/dev/null
-  note "journal kept in RAM, capped at 16M"
+  if [[ "${CFG[PI_PERSISTENT_JOURNAL]:-yes}" == yes ]]; then
+    sudo mkdir -p "${ROOT_MNT}/var/log/journal"
+    printf '[Journal]\nStorage=persistent\nSystemMaxUse=32M\nSystemMaxFileSize=8M\nRuntimeMaxUse=16M\n' \
+      | sudo tee "${ROOT_MNT}/etc/systemd/journald.conf.d/volatile.conf" >/dev/null
+    note "journal persistent, capped at 32M (survives a reboot)"
+  else
+    sudo rm -rf "${ROOT_MNT}/var/log/journal"
+    printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' \
+      | sudo tee "${ROOT_MNT}/etc/systemd/journald.conf.d/volatile.conf" >/dev/null
+    note "journal kept in RAM, capped at 16M (erased by a reboot)"
+  fi
   note "log rotated hourly at 8M, 2 generations kept"
 
   # 4. Swap. Raspberry Pi OS's rpi-swap defaults to Mechanism=auto, which is

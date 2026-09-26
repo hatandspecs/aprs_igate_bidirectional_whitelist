@@ -631,6 +631,43 @@ own radios, switched on and in range — and must match the whitelist, or the
 gateway will correctly refuse and the test will fail at step 3 for the right
 reason.
 
+### `reach` — which digipeaters repeat this station
+
+```bash
+./deploy_igate.sh reach
+```
+
+Counts the station's own transmissions against its own receiver hearing them
+come back digipeated, and names what repeated them.
+
+```
+  transmitted by KD3CCO-10:       4
+  heard back, digipeated:       3
+  repeat rate:                  75%
+
+Repeated by:
+  W3TM-10      2
+  W3YA-1       1
+```
+
+**It transmits nothing.** Every beacon already sent was a measurement; this
+reads them out of the log.
+
+aprs.fi cannot answer this question and never will. A digipeated copy carries
+the same source and payload as the direct one, APRS-IS discards duplicates
+within about thirty seconds, and a neighbouring gate that hears the direct
+transmission submits it first — so the repeat is dropped before it is visible
+there, whatever the digipeater did. A station's own receiver has no such
+problem: a repeat of its own beacon arrives over the air like any other frame,
+carrying the callsign of whatever repeated it.
+
+Use it to choose `TX_VIA`. `WIDE1-1` asks for one hop and names fill-in
+digipeaters as the intended responders, so the nearest station to answer
+consumes it and a wide-area digipeater that hears the repeat can do nothing
+with it. `WIDE2-1` asks the same single hop of the wide-area digis only, which
+fill-ins ignore. Which is better is a question about your neighbours, and this
+is how to answer it rather than guess.
+
 ## Monitoring
 
 `./deploy_igate.sh monitor` is the one to use. It annotates Direwolf's output

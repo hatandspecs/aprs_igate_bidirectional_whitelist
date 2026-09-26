@@ -802,6 +802,9 @@ The gateway runs under systemd as `aprs-igate.service`.
 | Web monitor state | `systemctl status igate-web` |
 | Watchdog state | `systemctl status igate-watchdog.timer` and `journalctl -u igate-watchdog -n 30` |
 | Calibrate audio levels | `cd ~/aprs-igate && ./deploy_igate.sh audio` |
+| Prove delivery end to end | `cd ~/aprs-igate && ./deploy_igate.sh selftest` — transmits |
+| Which digipeaters repeat this station | `cd ~/aprs-igate && ./deploy_igate.sh reach` — transmits nothing |
+| Self-test history | `journalctl -u igate-selftest -n 40` and `systemctl list-timers igate-selftest.timer` |
 | Start / stop | `sudo systemctl start aprs-igate` / `sudo systemctl stop aprs-igate` |
 | Apply a config change | `sudo systemctl restart aprs-igate` |
 | Why did it fail? | `journalctl -u aprs-igate -n 50` |
