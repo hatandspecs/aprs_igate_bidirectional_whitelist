@@ -1110,6 +1110,68 @@ work in §15 of the [design document](aprs-igate-prototype-test.md).
 
 ## Troubleshooting
 
+**The gateway restarts every time it transmits.**
+The signature is a USB reset one second after each transmission:
+
+```
+[Sat Sep 26 00:14:38] usb 1-1.1.3: reset full-speed USB device number 4 using dwc_otg
+```
+
+with `Audio input device 0 error code -19: No such device` in the Direwolf log
+just before it, and the watchdog restarting the gateway just after. On
+aprs.fi it shows as an extra beacon about a minute after a scheduled one, with
+the 30-minute schedule shifting to the new time — which is the only visible
+sign, because `BEACON_TO = BOTH` keeps sending the internet copy whether the
+radio works or not. The station looks continuously healthy on the map while
+restarting hourly.
+
+Establish three things before changing anything:
+
+```bash
+sudo dmesg -T | grep -iE "reset|disconnect|over-current" | tail -40
+sudo dmesg -T | grep -c "reset full-speed"     # is the list above complete?
+vcgencmd get_throttled                          # 0x0 = the supply is innocent
+```
+
+* **`reset`, not `disconnect`, and the same device number throughout.** A
+  disconnect means the device lost power or fell out of its socket. A reset
+  means the kernel saw errors on a link that never left the bus, which is RF
+  corrupting USB traffic.
+* **`throttled=0x0`** rules out the Pi browning out under transmit current.
+  That failure looks identical from the log and needs the opposite fix, so it
+  is worth one command to eliminate.
+* **Every reset within a second or two of a transmission**, and none between.
+  Correlate `dmesg -T` against the beacon times; coincidence does not survive
+  eight for eight.
+
+The fixes, in order of how much they help:
+
+1. **Choke the coax.** A mobile whip on a tripod or any antenna without a real
+   ground plane makes the feedline braid part of the antenna, so the strongest
+   RF in the room runs along the coax — past the Pi. A common-mode choke at the
+   feedpoint attacks the cause. This is also why a 5 W handheld can be
+   blameless where a 30 W mobile is not: it is not only the power.
+2. **Distance.** Move the antenna and its coax as far from the Pi and the
+   interface as the cables allow. Costs nothing.
+3. **Ferrites on the interface's USB cable**, several turns through a clamp-on
+   at the Pi end.
+4. **Less power**, which is worth measuring rather than assuming: if the
+   station's reach does not drop, the resets stopping is pure gain.
+5. **Put the antenna outside**, which usually fixes the station's reach at the
+   same time.
+
+**What actually fixed it here**, 2026-09-26: a common-mode choke at the
+feedpoint, the antenna changed from a ground-plane-less mobile whip on an
+indoor tripod to a slim jim outside several metres from the Pi, and ferrites
+on the interface and Pi power cables. The reset count then held at 8 across
+eight transmissions at **full power** — the setting that had been causing a
+reset roughly every other transmission. At the previous rate, eight clean
+transmissions is about a 1% coincidence.
+
+Power was never the variable. Backing it off would have hidden the problem
+without fixing it, and the cure was the antenna not needing the feedline as a
+counterpoise.
+
 **Nothing on the network after 10+ minutes.**
 Most likely the WiFi credentials or the country code. With no Ethernet port
 there's no way in to check, so pull the card and inspect it on your laptop:
