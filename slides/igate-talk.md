@@ -16,10 +16,16 @@ style: |
     font-size: 23px;
     line-height: 1.45;
     padding: 44px 56px 56px;
-    justify-content: flex-start;
+    /* The built-in theme wins on specificity for these, and its selectors are
+       not ones a style block can match, so they are forced. The h1 colour is a
+       variable the theme exposes; the rest are not. */
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+    --h1-color: #111111;
   }
   /* The assertion. A whole sentence, left aligned, never a category label. */
-  section h1 { font-size: 32px; font-weight: 600; line-height: 1.25; margin: 0 0 20px 0; }
+  section h1 { font-size: 32px; font-weight: 600; line-height: 1.25; margin: 0 0 20px 0; color: #111111 !important; }
   section h2 { font-size: 25px; font-weight: 600; margin: 0 0 12px 0; }
   section p { margin: 0 0 12px 0; }
   section ul { margin: 0 0 12px 0; padding-left: 26px; }
@@ -37,7 +43,7 @@ style: |
   /* A slide whose evidence is a tall photograph: the picture is a panel down
      one side, so it is never scaled to a stamp to make it fit. */
   section.panel h1 { margin-bottom: 18px; }
-  section.title, section.closing { justify-content: center; }
+  section.title, section.closing { justify-content: center !important; }
   section.title h1 { font-size: 42px; margin-bottom: 16px; }
   section.title p, section.closing p { font-size: 25px; color: #444444; }
   section .caption { display: block; font-size: 18px; color: #555555; margin-top: 10px; }
@@ -161,13 +167,15 @@ A whitelist with a well-intentioned exception is not a whitelist.
 
 ---
 
-![bg right:34% fit](img/web-monitor-phone-round-trip.png)
+![bg right:34% fit](img/web-monitor-alias-round-trip.png)
 
 <!-- _class: panel -->
 
 # The filter is visible while it works, not just in the config file
 
-A phone in the shack, watching a round trip as it happens: heard on RF, gated up to the internet, the reply gated back down, acknowledged.
+A phone in the shack, watching a round trip as it happens. `IS GATED` in green is the one packet the whitelist let onto the air; five seconds later the handheld's acknowledgement comes back on RF.
+
+In the eighteen minutes around this capture the gateway saw **187 packets and transmitted exactly one**. Everything else was either somebody else's internet traffic, dropped, or RF heard and passed upward.
 
 Every line is labeled with the direction it went, which is how three separate faults were eventually cornered.
 
@@ -252,7 +260,7 @@ It is a retrieval system over what other people have already worked out. Use it 
 
 # Code, documentation, slides and the blog in one window, where the assistant can see all of it
 
-![width:740px](img/vscode-workspace.png)
+![width:810px](img/vscode-workspace.png)
 
 <span class="caption">Documentation is markdown in the repository, beside the code. Everything advances in the same sitting, so nothing drifts. The blog is another repository in the same workspace; these slides are markdown in this one.</span>
 
