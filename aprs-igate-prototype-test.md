@@ -230,7 +230,49 @@ with no alternative.
 | iGate radio | Yaesu FTX-1 Optima | HF/50/70/144/430, one USB-C cable carries CAT + TX control + audio codec |
 | Field / witness station | Any 2 m radio (HT is fine) as KD3CCO-7 | Originates the uplink test and receives the downlink test |
 | Internet | Home network | APRS-IS reachable outbound on TCP 14580 |
-| SMS bridge | NA7Q SMS gateway | Registered for this station's call |
+| SMS bridge | NA7Q SMS gateway, `SMS` on the air, `866-352-4096` from a phone, documented at <https://aprs.wiki/> | Every participating phone number must be opted in on that site before anything is delivered; see §3.1. It replaced SMSGTE, which shut down |
+
+### 3.1 The SMS bridge, and the prerequisite that reports nothing
+
+The bridge between APRS messaging and cell SMS is run by NA7Q and documented at
+<https://aprs.wiki/>. It answers to the APRS callsign `SMS` and is reached from
+a phone by texting `866-352-4096`. It replaced SMSGTE, which shut down over spam
+and carrier-regulation problems; that service's domain has since lapsed and
+serves unrelated content, while much published guidance still points at it.
+
+**Every participating phone number must be opted in before the bridge will
+deliver to it.** The requirement comes from the carriers rather than from APRS:
+*"All SMS users are required to opt-in due to carrier regulations used by this
+service."* Opting in is done on a web form on the front page of the site — enter
+the number at the digit count for its country (10 for the US, Puerto Rico and
+Canada; 11 for Australia; 12 for the UK, with no leading `1` and no punctuation)
+and press **Opt-In**. An **Opt-Out** box sits beside it, and texting `STOP` from
+the phone has the same effect.
+
+This belongs in a failure-modes section as much as a setup one. A message to a
+number that has not opted in is **not delivered, and nothing reports an error**:
+not the bridge, not this gateway, not the monitor. The symptom is a message that
+leaves correctly and is never answered, which is the same symptom as a dead
+transmitter, a wrong frequency, or a path that does not close. It is worth
+eliminating first precisely because it costs nothing to check and looks like
+everything else.
+
+**Aliases.** An APRS message is transmitted in clear text and archived publicly
+and permanently, so addressing a phone by raw number publishes that number,
+paired with a callsign and a timestamp, on every message. The bridge accepts
+alias commands over the air, addressed to `SMS`:
+
+```
+#alias #add wife 2125550123        create
+@wife heading home, 20 minutes     use
+#alias #remove wife 2125550123     delete
+```
+
+Alias management takes 10-digit numbers only, without a leading `1`; UK numbers
+take 12. The number still crosses the air once, in the `#alias #add` message
+itself, and that packet is archived like any other — the gain is one exposure
+rather than one per message. Sending the same command from the phone side keeps
+it off RF entirely.
 
 Two points about the FTX-1 Optima that shape everything below:
 
@@ -439,7 +481,7 @@ sequenceDiagram
 
 **Test C, PTT.** Trigger a transmit (Test D will do it naturally, or use the `rigctl` keying test). Confirm the FTX-1 actually keys and the witness radio hears carrier.
 
-**Test D, downlink with the whitelist.** From a registered phone number, text the SMS gateway a message to KD3CCO-7. Watch for the `[ig>tx]` line and confirm the witness radio receives the message. This proves Internet to RF.
+**Test D, downlink with the whitelist.** From an opted-in phone number (§3.1 — a number that has not opted in produces silence rather than an error, which is indistinguishable from an RF fault), text the SMS gateway a message to KD3CCO-7. Watch for the `[ig>tx]` line and confirm the witness radio receives the message. This proves Internet to RF.
 
 **Test E, strictness (the important negative test).** Arrange or wait for an APRS message addressed to *someone else*, or send a position rather than a message. Confirm Direwolf **does not** transmit it. Passing the negative test is what establishes that the whitelist is real and not permissive by luck.
 

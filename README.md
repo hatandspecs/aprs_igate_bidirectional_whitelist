@@ -867,7 +867,87 @@ that arrived and were correctly refused. Seeing them is the whitelist working.
 
 **4. Full round trip.** Text `@KD3CCO-7 <message>` to the aprs.wiki SMS gateway
 at `866-352-4096`. It should appear as `IS GATED`. From RF, address a message to
-`SMS` with body `@<your-number> <message>`.
+`SMS` with body `@<your-number> <message>`. Both directions need the phone number
+opted in first — see below.
+
+### Using the aprs.wiki SMS gateway
+
+The gateway that bridges APRS messages and cell phone SMS is run by NA7Q and
+documented at <https://aprs.wiki/>. On the air it answers to the callsign `SMS`.
+From a phone it is reached by texting `866-352-4096`.
+
+**Do not follow guides that point at SMSGTE.** That was the previous service; it
+shut down over spam and carrier-regulation problems, and its domain has since
+lapsed and now serves unrelated commercial content. A surprising number of
+tutorials still link to it.
+
+#### Every phone number must opt in first
+
+This is a carrier requirement, not an APRS one, and it is the step most likely to
+be missed: *"All SMS users are required to opt-in due to carrier regulations used
+by this service."* A message to a number that has not opted in is simply not
+delivered, and **nothing reports an error** — not the gateway, not your iGate,
+not the monitor. From this end it looks exactly like a radio path problem.
+
+1. Open <https://aprs.wiki/> in a browser. The opt-in box is on the front page.
+2. Enter the phone number in the digit count for its country: **10 digits** for
+   the US, Puerto Rico and Canada, 11 for Australia, 12 for the UK. No leading
+   `1`, no punctuation.
+3. Press **Opt-In**.
+
+Repeat for every phone that will exchange messages with a radio — yours, and
+anyone else's who agrees to it. Opting in is consent to receive messages from
+APRS and Winlink users of the service.
+
+To reverse it, use the **Opt-Out** box on the same page, or text `STOP` to the
+gateway from the phone itself. Either works at any time.
+
+The service covers the USA, Puerto Rico, Canada, Australia and the UK for APRS;
+its Winlink side is US and Canada only.
+
+#### Sending in each direction
+
+| Direction | What to send | Where |
+|---|---|---|
+| Phone to radio | `@KD3CCO-7 your message` | text to `866-352-4096` |
+| Radio to phone | `@2125550123 your message` | APRS message to `SMS` |
+
+The recipient's callsign must be on this gateway's whitelist for the phone-to-
+radio direction to reach RF — that is the whole point of this project.
+
+#### Aliases, so a phone number is not broadcast every time
+
+An APRS message is transmitted in the clear and archived publicly and
+permanently — aprs.fi keeps it, indexed and searchable. Addressing a phone by
+raw number therefore publishes that number, paired with your callsign and a
+timestamp, on every message you send. The service supports aliases to avoid
+this, managed entirely over the air by messaging `SMS`:
+
+```
+#alias #add wife 2125550123        create the alias
+@wife heading home, 20 minutes     use it, no number on the air
+#alias #remove wife 2125550123     delete it
+```
+
+Alias management takes **10-digit numbers only** — do not prefix with `1`. UK
+numbers use 12 digits.
+
+Note what this does and does not buy you. The number still crosses the air once,
+in the clear, in the `#alias #add` message itself, and that packet is archived
+like any other. What you get is one exposure instead of one per message. If even
+that matters, the alias can be created from the phone side by texting the same
+command to the gateway, which never puts it on RF at all.
+
+#### Other commands worth knowing
+
+| Send to `SMS` | Does |
+|---|---|
+| `APRSM` | Deliver any messages that were missed while you were off the air |
+| `del` | Discard the missed-message queue |
+| `ALLMSG` | Check SMS and mail queues together |
+
+Putting `APOSMS` in a beacon's status or comment text makes the gateway deliver
+queued messages automatically, about every ten minutes.
 
 ## Configuration
 

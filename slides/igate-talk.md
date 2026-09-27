@@ -173,6 +173,16 @@ Raising power changed nothing measurable. An end-fed half-wave outside, several 
 
 ---
 
+# One more silent failure, and it is the first thing to check
+
+The SMS bridge — NA7Q's, `SMS` on the air, documented at **aprs.wiki** — will not deliver to a phone number that has not **opted in**. That is a carrier rule, not an APRS one.
+
+**Nothing reports an error.** The message leaves correctly, it is never answered, and that is precisely what a dead transmitter looks like.
+
+Opting in is one web form on aprs.wiki: the number, 10 digits, press the button. Then keep it off the air afterwards — message `SMS` with `#alias #add wife 2125550123`, and address `@wife` from then on.
+
+---
+
 <!-- _class: evidence -->
 
 # An AI coding assistant reads your whole repository, and that changes which projects are worth starting
