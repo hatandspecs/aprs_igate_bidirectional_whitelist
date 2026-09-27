@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 300" width="1240" height="300" font-family="Liberation Sans, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#111111"/>
+    </marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7680"/>
+    </marker>
+  </defs>
+  <rect width="1240" height="300" fill="#ffffff"/>
+
+  <text x="620" y="30" text-anchor="middle" font-size="21" fill="#111111" font-weight="600">phone to radio &#8212; needs a transmitter the internet can key. This project.</text>
+  <line x1="50" y1="52" x2="1190" y2="52" stroke="#111111" stroke-width="3" marker-end="url(#r)"/>
+
+  <g stroke="#111111" stroke-width="2.5" fill="#ffffff">
+    <rect x="40"  y="86" width="220" height="92" rx="6"/>
+    <rect x="350" y="86" width="220" height="92" rx="6"/>
+    <rect x="660" y="86" width="220" height="92" rx="6"/>
+    <rect x="970" y="86" width="220" height="92" rx="6"/>
+  </g>
+  <g text-anchor="middle" fill="#111111" font-size="23">
+    <text x="150"  y="124">a phone</text>
+    <text x="460"  y="124">aprs.wiki</text>
+    <text x="770"  y="124">my gateway</text>
+    <text x="1080" y="124">FT5D</text>
+  </g>
+  <g text-anchor="middle" fill="#5b6770" font-size="17">
+    <text x="150"  y="152">any phone, opted in</text>
+    <text x="460"  y="152">the SMS bridge</text>
+    <text x="770"  y="152">KD3CCO-10, whitelist</text>
+    <text x="1080" y="152">on 144.390</text>
+  </g>
+
+  <g text-anchor="middle" fill="#5b6770" font-size="16">
+    <text x="305" y="138">SMS</text>
+    <text x="615" y="138">APRS-IS</text>
+    <text x="925" y="138">RF</text>
+  </g>
+
+  <line x1="1190" y1="214" x2="50" y2="214" stroke="#6b7680" stroke-width="3" marker-end="url(#g)"/>
+  <text x="620" y="248" text-anchor="middle" font-size="21" fill="#5b6770" font-weight="600">radio to phone &#8212; free, works today, no hardware to build</text>
+</svg>

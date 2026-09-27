@@ -876,10 +876,10 @@ The gateway that bridges APRS messages and cell phone SMS is run by NA7Q and
 documented at <https://aprs.wiki/>. On the air it answers to the callsign `SMS`.
 From a phone it is reached by texting `866-352-4096`.
 
-**Do not follow guides that point at SMSGTE.** That was the previous service; it
-shut down over spam and carrier-regulation problems, and its domain has since
-lapsed and now serves unrelated commercial content. A surprising number of
-tutorials still link to it.
+**Do not follow guides that point at SMSGTE.** That is a different, earlier
+service, unrelated to this one. It shut down over spam and carrier-regulation
+problems, its domain has since lapsed and now serves unrelated commercial
+content, and a surprising number of tutorials still link to it.
 
 #### Every phone number must opt in first
 
@@ -928,6 +928,10 @@ this, managed entirely over the air by messaging `SMS`:
 @wife heading home, 20 minutes     use it, no number on the air
 #alias #remove wife 2125550123     delete it
 ```
+
+The gateway answers `Alias Added.` on success, so the command is confirmed
+rather than silent — which matters here, because almost nothing else on this
+path reports anything when it fails.
 
 Alias management takes **10-digit numbers only** — do not prefix with `1`. UK
 numbers use 12 digits.

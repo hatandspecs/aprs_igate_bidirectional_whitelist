@@ -41,6 +41,14 @@ style: |
   section.title h1 { font-size: 42px; margin-bottom: 16px; }
   section.title p, section.closing p { font-size: 25px; color: #444444; }
   section .caption { display: block; font-size: 18px; color: #555555; margin-top: 10px; }
+  /* Two pieces of evidence side by side, each with its own label. Sized by
+     height so a tall photograph and a wide screenshot sit level, and so a
+     replacement image of any shape still fits the slide. */
+  section .pair { display: flex; gap: 30px; justify-content: center; align-items: flex-end; margin-top: 8px; }
+  section .pair figure { margin: 0; text-align: center; }
+  section .pair img { max-height: 232px; width: auto; margin: 0 0 6px 0; }
+  section .pair figcaption { font-size: 17px; color: #555555; }
+  section .trio img { max-height: 182px; }
   section footer { font-size: 14px; color: #888888; }
   section::after { font-size: 14px; color: #888888; }
 ---
@@ -57,7 +65,7 @@ Texting a handheld from a phone, without trusting the internet
 
 ---
 
-![bg left:38%](img/ft5d-rx-sms-first-downlink-laptop-prototype.jpg)
+![bg left:38%](img/ft5d-rx-alias-from-phone.jpg)
 
 <!-- _class: panel -->
 
@@ -69,13 +77,48 @@ The handheld on the left is receiving one. Nothing between the two of us had to 
 
 ---
 
-# APRS already does this. The part that stops people is the second direction
+![bg right:32% fit](img/aprs-wiki-opt-in-form.png)
 
-Most iGates are **receive only**. They listen on 144.390 and pass what they hear up to the internet. Nothing goes back down.
+<!-- _class: panel -->
 
-Going the other way means running **a transmitter that traffic from the internet can key**.
+# Half of what I wanted, you can have tonight, without building anything
 
-That is the part worth being careful about, and the reason I built my own rather than enabling it on someone else's.
+**Radio to phone already works — for everyone, for free.** NA7Q runs an APRS-to-SMS bridge, documented at **aprs.wiki**. It answers to `SMS` on the air, and to `866-352-4096` from a phone.
+
+1. **Opt the number in** on this form. Ten digits, press the button. It is a carrier requirement — skip it and your messages vanish with **no error anywhere**.
+2. **From the radio**, send an APRS message to `SMS` reading `@2125550123 your text`.
+
+No hardware you do not already own. Five minutes.
+
+---
+
+![bg right:33%](img/ft5d-alias-added.jpg)
+
+<!-- _class: panel -->
+
+# Then set up an alias, so the number never goes on the air again
+
+APRS is transmitted in clear text and archived publicly, permanently and searchably. Address a phone by its raw number and you publish that number, beside your callsign, on every single message.
+
+Send one message to `SMS`:
+
+```
+#alias #add wife 5705550123
+```
+
+It answers **"Alias Added."** From then on you address `@wife`, and the number is never transmitted again.
+
+Send that same command from the phone instead, and it never touches RF at all.
+
+---
+
+# Getting a message back to the radio is the half nobody hands you
+
+That bridge will happily carry my text to a phone. Nothing sends one back to me.
+
+Most iGates are **receive only**: they listen on 144.390 and pass what they hear up to the internet. Nothing goes back down. Going the other way means running **a transmitter that traffic from the internet can key** — which is the part worth being careful about, and the reason I built my own rather than asking to enable it on someone else's.
+
+That is the whole project: the return leg.
 
 ---
 
@@ -89,15 +132,17 @@ From every other operator's point of view this station is receive-only — so it
 
 ---
 
-![bg right:38%](img/ft5d-tx-sms-radio-to-phone.jpg)
+<!-- _class: evidence trio -->
 
-<!-- _class: panel -->
+# Both directions work, end to end, through the public SMS bridge
 
-# Both directions work, end to end, through the public SMS gateway
+![width:840px](img/round-trip.svg)
 
-Handheld → RF → my gateway → the internet → SMS → a phone, and the reply comes back the same way.
-
-Typed on the radio's keypad, arriving as an ordinary text message a few seconds later.
+<div class="pair">
+<figure><img src="img/screen-radio-to-phone.png"/><figcaption>sent from the radio</figcaption></figure>
+<figure><img src="img/phone-sms-thread.png"/><figcaption>both messages, on the phone</figcaption></figure>
+<figure><img src="img/screen-phone-to-radio.png"/><figcaption>the reply, back on the radio</figcaption></figure>
+</div>
 
 ---
 
@@ -170,16 +215,6 @@ A beacon proves the transmitter keys. **Only an acknowledged message proves the 
 A mobile whip on a tripod, indoors, with no ground plane — so the coax braid was doing the radiating.
 
 Raising power changed nothing measurable. An end-fed half-wave outside, several meters from the radio, changed everything the software could not.
-
----
-
-# One more silent failure, and it is the first thing to check
-
-The SMS bridge — NA7Q's, `SMS` on the air, documented at **aprs.wiki** — will not deliver to a phone number that has not **opted in**. That is a carrier rule, not an APRS one.
-
-**Nothing reports an error.** The message leaves correctly, it is never answered, and that is precisely what a dead transmitter looks like.
-
-Opting in is one web form on aprs.wiki: the number, 10 digits, press the button. Then keep it off the air afterwards — message `SMS` with `#alias #add wife 2125550123`, and address `@wife` from then on.
 
 ---
 

@@ -230,15 +230,19 @@ with no alternative.
 | iGate radio | Yaesu FTX-1 Optima | HF/50/70/144/430, one USB-C cable carries CAT + TX control + audio codec |
 | Field / witness station | Any 2 m radio (HT is fine) as KD3CCO-7 | Originates the uplink test and receives the downlink test |
 | Internet | Home network | APRS-IS reachable outbound on TCP 14580 |
-| SMS bridge | NA7Q SMS gateway, `SMS` on the air, `866-352-4096` from a phone, documented at <https://aprs.wiki/> | Every participating phone number must be opted in on that site before anything is delivered; see §3.1. It replaced SMSGTE, which shut down |
+| SMS bridge | NA7Q SMS gateway, `SMS` on the air, `866-352-4096` from a phone, documented at <https://aprs.wiki/> | Every participating phone number must be opted in on that site before anything is delivered; see §3.1 |
 
 ### 3.1 The SMS bridge, and the prerequisite that reports nothing
 
 The bridge between APRS messaging and cell SMS is run by NA7Q and documented at
 <https://aprs.wiki/>. It answers to the APRS callsign `SMS` and is reached from
-a phone by texting `866-352-4096`. It replaced SMSGTE, which shut down over spam
-and carrier-regulation problems; that service's domain has since lapsed and
-serves unrelated content, while much published guidance still points at it.
+a phone by texting `866-352-4096`. It is the bridge this station has used
+throughout.
+
+Much of the published guidance on APRS-to-SMS describes SMSGTE instead, a
+different and earlier service that shut down over spam and carrier-regulation
+problems. Its domain has since lapsed and serves unrelated content, and a good
+deal of material still links there.
 
 **Every participating phone number must be opted in before the bridge will
 deliver to it.** The requirement comes from the carriers rather than from APRS:
@@ -267,6 +271,10 @@ alias commands over the air, addressed to `SMS`:
 @wife heading home, 20 minutes     use
 #alias #remove wife 2125550123     delete
 ```
+
+The bridge answers `Alias Added.` on success. That confirmation is worth noting
+because it is the exception on this path: the opt-in requirement above fails
+silently, and so does delivery to a number that has not met it.
 
 Alias management takes 10-digit numbers only, without a leading `1`; UK numbers
 take 12. The number still crosses the air once, in the `#alias #add` message
