@@ -222,7 +222,21 @@ A beacon proves the transmitter keys. **Only an acknowledged message proves the 
 
 A mobile whip on a tripod, indoors, with no ground plane — so the coax braid was doing the radiating.
 
-Raising power changed nothing measurable. An end-fed half-wave outside, several meters from the radio, changed everything the software could not.
+Raising power changed nothing measurable. Eight decibels bought nothing, because the limiting item was never the path.
+
+---
+
+![bg right:40%](img/n9tax-slim-jim-on-the-porch.jpg)
+
+<!-- _class: panel -->
+
+# The fix was hanging a proper half-wave outside
+
+A slim jim is a **self-contained end-fed half-wave** — the matching stub does the job the missing ground plane was doing, so it does not need the feedline as a counterpoise.
+
+A monoband N9TAX I already had, hung from the porch roof for now, coax running back inside.
+
+RF stopped knocking the sound card off the USB bus at full power, and digipeaters began repeating the gateway that never had.
 
 ---
 
