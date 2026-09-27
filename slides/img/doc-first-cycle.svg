@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 330" width="1240" height="330" font-family="Liberation Sans, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7680"/>
+    </marker>
+    <marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#111111"/>
+    </marker>
+  </defs>
+  <rect width="1240" height="330" fill="#ffffff"/>
+
+  <g stroke="#111111" stroke-width="2.5" fill="#ffffff">
+    <rect x="30"  y="26" width="250" height="104" rx="6"/>
+    <rect x="330" y="26" width="250" height="104" rx="6"/>
+    <rect x="630" y="26" width="250" height="104" rx="6"/>
+    <rect x="930" y="26" width="250" height="104" rx="6"/>
+  </g>
+
+  <g text-anchor="middle" fill="#111111" font-size="23">
+    <text x="155"  y="66">write down what</text><text x="155"  y="92">it should do</text>
+    <text x="455"  y="66">number the</text><text x="455"  y="92">requirements</text>
+    <text x="755"  y="66">build it, or</text><text x="755"  y="92">configure it</text>
+    <text x="1055" y="79">run the tests</text>
+  </g>
+  <g text-anchor="middle" fill="#5b6770" font-size="17">
+    <text x="155"  y="117">before any of it exists</text>
+    <text x="455"  y="117">met / partly met / not met</text>
+    <text x="755"  y="117">fast enough to try it three ways</text>
+    <text x="1055" y="112">with no hardware attached</text>
+  </g>
+
+  <g stroke="#6b7680" stroke-width="2.5" marker-end="url(#b)" fill="none">
+    <line x1="286" y1="78" x2="322" y2="78"/>
+    <line x1="586" y1="78" x2="622" y2="78"/>
+    <line x1="886" y1="78" x2="922" y2="78"/>
+  </g>
+
+  <path d="M1055,136 L1055,224 L155,224 L155,140" fill="none" stroke="#111111" stroke-width="3.5" marker-end="url(#c)"/>
+  <text x="605" y="262" text-anchor="middle" font-size="23" fill="#111111" font-weight="600">what you learned goes back into the document</text>
+  <text x="605" y="292" text-anchor="middle" font-size="19" fill="#5b6770">the step everyone skips &#8212; and arguably where the AI helps most</text>
+</svg>

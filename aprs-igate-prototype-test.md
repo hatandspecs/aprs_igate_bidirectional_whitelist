@@ -123,7 +123,7 @@ demonstrated rather than what is intended.
 | FR-4 | Match whitelist entries by callsign with an optional wildcard, so every SSID of one call is covered by one entry. | met — `WHITELIST_CALLS` |
 | FR-5 | Beacon the station's position, with the choice of internet only, RF only, both, or not at all. | met — `BEACON_TO` |
 | FR-6 | Express the beacon position as a grid square, so it is rounded by construction. | met — `BEACON_GRID` |
-| FR-7 | Force a digipeater path on everything transmitted, and be able to name a specific digipeater. | met — `TX_VIA` |
+| FR-7 | Force a digipeater path on what is transmitted, and be able to name a specific digipeater. | met — `TX_VIA` for gated messages, `BEACON_VIA` for the beacon; either may name a callsign instead of an alias |
 | FR-8 | Restrict what is gated upward to packets a named digipeater actually repeated, as a measurement tool. | met — `RX_VIA`, using the has-been-repeated bit |
 | FR-9 | Drive more than one radio, with everything radio-specific in a profile and nothing about the station in it. | met — `radios/*.conf`; a profile setting a station key is refused |
 | FR-10 | Resolve settings from layers — profile, station, machine, secrets, environment — and report which layer supplied each one. | met — `./deploy_igate.sh config` |
@@ -133,7 +133,7 @@ demonstrated rather than what is intended.
 | FR-14 | Run in a container on a workstation and bare-metal on a Pi, from the same configuration. | met — `DEPLOY_MODE` |
 | FR-15 | Build a bootable Pi card in one command. | met — `build_pi_image.sh` |
 | FR-16 | Help set audio levels, and say what the levels mean. | met — `./deploy_igate.sh audio` |
-| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | partly met — `./deploy_igate.sh reach` measures it from the station's own receiver at no airtime cost; the 2-in-8 figure predates the outdoor antenna and has not been retaken |
+| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | met — measured 2026-09-27 over 112 beacons: 42 repeated, a 37% repeat rate, by W3TM-10 (28) and W3YA-1 (14). `TX_VIA` is now `WIDE1-1,WIDE2-2` so a gated message can reach the mountain digipeater by way of the near one; `BEACON_VIA` keeps the beacon at one hop |
 | FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | met — all five criteria |
 
 ### FR-18 in detail
@@ -148,7 +148,7 @@ testable criteria:
 |---|---|---|
 | FR-18a | A message from APRS-IS to a whitelisted call is transmitted within seconds, regardless of whether that station has been heard recently. | met — `IGFILTER` fetches it, `FILTER IG 0` transmits it unconditionally |
 | FR-18b | Delivery is confirmed end to end by the addressee's acknowledgement, not inferred from the gateway having transmitted. | met and demonstrated — `./deploy_igate.sh selftest` passed all four steps on 2026-09-26, at full power through the outdoor antenna |
-| FR-18c | A broken RF path is detected within four hours without the operator going to look. | met — `igate-selftest.timer`, every four hours, 20 minutes after boot |
+| FR-18c | A broken RF path is detected within four hours without the operator going to look. | met and demonstrated — `igate-selftest.timer`, every four hours, 20 minutes after boot; four consecutive unattended passes 2026-09-26 19:31 through 2026-09-27 07:31, and one true FAIL at 2026-09-26 15:32 that correctly caught the addressee's radio tuned away from 144.390 |
 | FR-18d | The station's public presence reflects its RF capability, so a dead transmitter cannot look healthy. | met — `BEACON_TO = RF`; the only route to aprs.fi is over the air, so presence there is evidence |
 | FR-18e | Every step of the chain is separately observable when a delivery fails. | met — `IS GATED`, `[0L]`, `RF RX` of the returning copy, and the ack each identify a different link; `reach` reads the same evidence out of the log afterwards |
 
@@ -353,7 +353,7 @@ IGLOGIN  KD3CCO 123456       # APRS-IS passcode
 IGFILTER  g/KD3CCO*          # what the server SENDS to this station
 FILTER    IG 0 g/KD3CCO*     # what this station may TRANSMIT
 IGMSP     0                  # no courtesy position reports
-IGTXVIA   0                  # digipeat path, or none; rendered from TX_VIA
+IGTXVIA   0                  # path on gated messages; rendered from TX_VIA
 IGTXLIMIT 6 10
 ```
 
@@ -764,13 +764,22 @@ Three settings govern what leaves this station and what it forwards. All three
 default to the most conservative value, so each is a deliberate choice rather
 than something inherited.
 
-**`TX_VIA`** is the AX.25 digipeat path applied to everything transmitted —
-gated messages and the RF beacon alike — and renders as `IGTXVIA 0 <path>`.
+**`TX_VIA`** is the AX.25 digipeat path on traffic gated from APRS-IS to RF —
+the messages this station exists to deliver — and renders as `IGTXVIA 0 <path>`.
 Blank transmits direct. Naming a digipeater explicitly is the deterministic
 form, because a digipeater repeats any frame carrying its own callsign whatever
 `WIDEn-N` aliases it answers to; the generic form depends on that digipeater's
 configuration, and a local digipeater answering `WIDE2` but not `WIDE1` will
-never see a `WIDE1-1` path.
+never see a `WIDE1-1` path. Several hops are written comma-separated, and are
+rendered that way: Direwolf splits a config line on whitespace, so a path
+written with spaces is one hop followed by tokens nothing reads.
+
+**`BEACON_VIA`** is the same thing for the RF beacon, rendering as `PBEACON
+... via="<path>"`. Blank inherits `TX_VIA`, which is what this setting's
+absence used to mean for everybody. It exists because the two have volumes
+that differ by two orders of magnitude — a beacon every `BEACON_EVERY` forever
+against a handful of gated messages a month — so reach that is worth buying for
+a message is not worth buying 1,400 times a month for a beacon. See §15.
 
 **`RX_VIA`** restricts what is gated **up**, rendering as `FILTER 0 IG d/<call>`
 — the RF→APRS-IS direction, the reverse of the whitelist's `FILTER IG 0`.
@@ -1115,10 +1124,58 @@ belongs only in a test.
   explanation. UPS plus writable root plus persistent journal is the coherent
   combination; read-only root would mean giving up the journal or adding an
   overlay.
-* **FR-17, reach.** `./deploy_igate.sh reach` now measures it for free, and the
-  measurement has not been taken since the antenna moved outside. Until it is,
-  `TX_VIA` is a guess: `WIDE1-1` asks one hop of fill-in digipeaters, and a
-  near neighbour answering it consumes the hop before it travels.
+* **FR-17 is closed, and the residual limit is the repeat rate itself.**
+  Measured on 2026-09-27 from 3406 frames of log: of 112 beacons transmitted
+  with `via="WIDE1-1"`, 42 came back digipeated — 37% — attributed to
+  W3TM-10 (28) and W3YA-1 (14). Because the beacon carries the same path, the
+  same power and the same antenna as a transmitted message, this is a direct
+  measurement of what happens to a message, not a proxy for one.
+
+  **That measurement is what `TX_VIA` is now set from**, rather than the guess
+  it replaced; what it argues for is below. The figure is a slight underestimate — a repeat this
+  station did not hear back is not counted — and the 63% that were not repeated
+  are most likely collisions on a channel that carries a frame every few
+  seconds. For an addressee out of direct range, one transmission therefore has
+  roughly one chance in three of being extended by a digipeater; retries are
+  what turn that into a delivery, which is why FR-18b measures the
+  acknowledgement rather than the transmission.
+
+  **The digipeater with the best coverage is the one that hears this station
+  least.** W3TM-10 is 3.5 miles away, advertises no height or power, and took
+  28 of the 42 repeats. W3YA-1 is 6.4 miles away on Pine Grove Mountain at
+  PHG7680 — 49 W, 640 ft HAAT, 8 dBi — and took 14. Those are hearing rates,
+  not a race: with one hop offered, every digipeater that hears the original
+  repeats it. So W3YA-1 hears this station on roughly one beacon in eight and
+  W3TM-10 on one in four.
+
+  That inverts the obvious fix. Naming W3YA-1 in the path would trade the
+  digipeater that hears this station most often for the one that covers the
+  most ground, and the station would get quieter rather than louder. What
+  reaches the mountain is a **second slot**: W3TM-10 hears the original and
+  repeats it, the wide-area hop survives that repeat, and W3YA-1 takes it off a
+  transmitter that is not fighting this station's terrain. Both digipeaters are
+  used, in the order that plays to what each is good at.
+
+  **`TX_VIA` is therefore `WIDE1-1,WIDE2-2` and the beacon is not.** Direwolf
+  has always kept these apart — `IGTXVIA` for gated traffic, `PBEACON via=` for
+  the beacon — and this script drove both from one setting, which made them one
+  decision. They are not one decision: phone-to-handheld traffic here is a few
+  messages a month, while the beacon goes out roughly 1,400 times a month, so
+  the two differ in volume by more than two orders of magnitude. Buying reach
+  for the rare event costs almost nothing; paying the same on every beacon is
+  what makes long paths deservedly unpopular. `BEACON_VIA` now names the
+  beacon's path separately, blank inherits `TX_VIA` so no existing config
+  changes behavior, and here it is set to `WIDE1-1` — the beacon's job under
+  FR-18d is to reach any one iGate, not to cover the region.
+
+  **What is still unmeasured** is whether the second and third hops are used,
+  or whether they buy another transmission of the same footprint. `reach` now
+  reports onward relays and the chains that produced them (`W3TM-10 then
+  W3YA-1`) rather than only the first hop, which is the instrument for exactly
+  that question. It needs a few days of beacons on the new path before it
+  says anything, and the beacon deliberately does not carry the new path — so
+  answering this wants a `reach` run after some real message traffic, or a
+  temporary `BEACON_VIA` matching `TX_VIA` for as long as the measurement takes.
 * **The web monitor's pipeline stall has no known cause.** The supervisor
   detects it and announces a restart; it has been observed announcing and not
   recovering. A reproduction that stalls a live-but-silent pipeline while the
@@ -1254,6 +1311,17 @@ belongs only in a test.
   as a failure to enumerate at power-up is not supported, because the cables had
   been handled around each occurrence. The practical remedy is to mark the plug's
   working orientation.
+- **A multi-hop `TX_VIA` would have been silently truncated to its first hop.**
+  `build_tx_via` normalised the path to spaces, and `IGTXVIA` was emitted with
+  it unchanged. Direwolf splits a config line on whitespace, so `IGTXVIA 0
+  WIDE1-1 WIDE2-2` is the path `WIDE1-1` followed by a token the parser never
+  reads. Every log line would still have said the message was transmitted, and
+  it would have been — one hop short of where it was aimed, with no error
+  anywhere. This survived unnoticed for as long as `TX_VIA` had one element,
+  which is the whole time until 2026-09-27; it was found by reading the
+  rendered `run/direwolf.conf` rather than by anything failing. Both emit sites
+  now write commas, and the rendered file is the thing to check after a path
+  change, because nothing downstream will complain.
 - **A USB reset of the sound card was not recovered; it is now.** Direwolf keeps
   the card it opened at start. A reset leaves the device present — `lsusb` and
   `arecord -l` still list it — while every packet is lost and Direwolf logs `Audio

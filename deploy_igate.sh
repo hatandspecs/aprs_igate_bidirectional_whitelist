@@ -447,7 +447,40 @@ build_tx_via() {
     legacy="${legacy#0}"
     via="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$legacy")"
   fi
-  # Commas are the natural separator to write; AX.25 wants spaces.
+  # Commas are the natural separator to write; this returns the path
+  # space-separated so callers can normalise it, and every emit site converts
+  # back to whatever that directive wants.
+  #
+  # BOTH directives want commas, and for the same reason: Direwolf splits a
+  # config line on whitespace, so a path written with spaces is not a path with
+  # several hops in it — it is one hop followed by tokens the parser never
+  # looks at. `IGTXVIA 0 WIDE1-1 WIDE2-2` would silently mean `WIDE1-1`, which
+  # is the worst kind of wrong here: a message goes out one hop short and every
+  # log says it was transmitted. Single-element paths hid this for as long as
+  # TX_VIA had one element.
+  tr ',' ' ' <<<"$via" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//'
+}
+
+# The beacon's path, which is NOT necessarily the path a gated message takes.
+#
+# Direwolf keeps these apart already — IGTXVIA sets the path on traffic gated
+# from APRS-IS to RF, and PBEACON's own via= sets the beacon's — and this
+# script used to drive both from TX_VIA, which made them one decision. They are
+# not one decision, because the two have volumes that differ by two orders of
+# magnitude: the beacon goes out every BEACON_EVERY, forever, while a gated
+# message to a whitelisted station is a rare event. Buying reach for the rare
+# event by lengthening the path costs almost nothing; paying the same price on
+# every beacon is what makes long paths unpopular, and deservedly.
+#
+# Blank inherits TX_VIA, which is what every existing config file does and
+# means nothing changes for anyone who does not set this. The literal words
+# "direct" or "none" mean no path at all.
+build_beacon_via() {
+  local via="${CFG[BEACON_VIA]:-}"
+  [[ -z "$via" ]] && { build_tx_via; return; }
+  case "${via,,}" in
+    direct|none) return ;;
+  esac
   tr ',' ' ' <<<"$via" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//'
 }
 
@@ -512,13 +545,15 @@ build_beacon() {
   local overlay="${CFG[BEACON_OVERLAY]:-R}"
 
   # via= applies only to the RF beacon; a digipeat path is meaningless on the
-  # copy sent straight to APRS-IS over the internet.
-  local txvia; txvia="$(build_tx_via)"
+  # copy sent straight to APRS-IS over the internet. This is BEACON_VIA, not
+  # TX_VIA: see build_beacon_via for why the beacon and a gated message do not
+  # want the same answer.
+  local bvia; bvia="$(build_beacon_via)"
   _emit_beacon() {
     printf 'PBEACON %sdelay=%s every=%s overlay=%s symbol="igate" lat=%s long=%s' \
       "$1" "$2" "$every" "$overlay" "$lat" "$lon"
     [[ -n "$comment" ]] && printf ' comment="%s"' "$comment"
-    [[ -z "$1" && -n "$txvia" ]] && printf ' via="%s"' "${txvia// /,}"
+    [[ -z "$1" && -n "$bvia" ]] && printf ' via="%s"' "${bvia// /,}"
     printf '\n'
   }
 
@@ -576,6 +611,11 @@ mask_secret() {
 # A bare "0" in the config listing reads like a port number, not like "off".
 via_desc() {
   local v; v="$(build_tx_via)"
+  if [[ -z "$v" ]]; then echo "direct (no digipeater)"; else echo "via ${v}"; fi
+}
+
+beacon_via_desc() {
+  local v; v="$(build_beacon_via)"
   if [[ -z "$v" ]]; then echo "direct (no digipeater)"; else echo "via ${v}"; fi
 }
 
@@ -763,6 +803,7 @@ IGLOGIN_CALL     = ${CFG[IGLOGIN_CALL]}
 IGLOGIN_PASSCODE = $(mask_secret "${CFG[IGLOGIN_PASSCODE]}")
 WHITELIST_CALLS  = ${CFG[WHITELIST_CALLS]}
 TX_VIA           = $(via_desc)
+BEACON_VIA       = $(beacon_via_desc)
 RX_VIA           = $(rx_via_desc)
 BEACON           = $(beacon_desc)
 AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
@@ -844,7 +885,7 @@ $(build_rx_filter)
 # exceptions, courtesy or otherwise.
 IGMSP     0
 
-IGTXVIA   0 $(build_tx_via)
+IGTXVIA   0 $(build_tx_via | tr ' ' ',')
 IGTXLIMIT ${CFG[IGTXLIMIT]:-6 10}
 
 $(build_beacon)
@@ -916,6 +957,7 @@ render_status_html() {
 <tr><td>CAT device</td><td><code>$(hw_value CAT_DEVICE)</code></td></tr>
 <tr><td>PTT device</td><td><code>$(if [[ "${CFG[PTT_METHOD]}" == cm108 ]]; then cm108_desc; else hw_value PTT_DEVICE; fi)</code></td></tr>
 <tr><td>TX via</td><td>$(via_desc)</td></tr>
+<tr><td>Beacon via</td><td>$(beacon_via_desc)</td></tr>
 <tr><td>RX gating</td><td>$(rx_via_desc)</td></tr>
 <tr><td>TX rate limit</td><td>${CFG[IGTXLIMIT]:-}</td></tr>
 <tr><td>Direwolf FILTER</td><td><code>IG 0 ${filter}</code></td></tr>
@@ -2702,22 +2744,46 @@ cmd_reach() {
     # What matters for reach is the FIRST real callsign in the path: that is
     # the station that heard this one off the air. Anything after it heard the
     # repeat, not us.
+    #
+    # Later hops are counted separately rather than discarded. With a
+    # single-slot TX_VIA there can never be one, so that section stays empty
+    # and says nothing. With a two-slot path it is the whole question: whether
+    # the second hop is reaching a digipeater the first one did not, or is
+    # buying a second transmission of the same footprint.
     grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$log" | grep '\*' \
       | python3 -c '
 import re, sys, collections
 ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
-seen = collections.Counter()
+first = collections.Counter()
+later = collections.Counter()
+pairs = collections.Counter()
 for line in sys.stdin:
     body = line.split("]", 1)[-1].strip()
     head = body.split(":", 1)[0]
+    real = []
     for hop in head.split(",")[1:]:
         call = hop.strip().rstrip("*")
         if not call or ALIAS.match(call):
             continue
-        seen[call] += 1
-        break
-for call, n in seen.most_common():
+        real.append(call)
+    if not real:
+        continue
+    first[real[0]] += 1
+    for call in real[1:]:
+        later[call] += 1
+    if len(real) > 1:
+        pairs[" then ".join(real[:2])] += 1
+for call, n in first.most_common():
     print(f"  {call:<12} {n}")
+if later:
+    print()
+    print("Relayed onward by, on a second hop:")
+    for call, n in later.most_common():
+        print(f"  {call:<12} {n}")
+    print()
+    print("Chains:")
+    for chain, n in pairs.most_common():
+        print(f"  {chain}   {n}")
 '
   else
     echo "Nothing has repeated this station's transmissions."

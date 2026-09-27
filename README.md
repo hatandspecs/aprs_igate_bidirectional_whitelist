@@ -641,14 +641,34 @@ Counts the station's own transmissions against its own receiver hearing them
 come back digipeated, and names what repeated them.
 
 ```
-  transmitted by KD3CCO-10:       4
-  heard back, digipeated:       3
-  repeat rate:                  75%
+  transmitted by KD3CCO-10:       112
+  heard back, digipeated:       42
+  repeat rate:                  37%
 
-Repeated by:
-  W3TM-10      2
-  W3YA-1       1
+Heard directly by:
+  W3TM-10      28
+  W3YA-1       14
+
+Relayed onward by, on a second hop:
+  W3YA-1       9
+
+Chains:
+  W3TM-10 then W3YA-1   9
 ```
+
+**"Heard directly by" is the first real callsign in the path**, which is the
+station that heard this one off the air. A digipeater consuming a `WIDE1-1`
+inserts its own callsign and marks the *alias* used, so `W3YA-1,WIDE1*` was
+repeated by W3YA-1 — reporting `WIDE1` would name a routing alias as though it
+were a station. Anything after the first hop heard the repeat, not this
+station, and is counted separately.
+
+**The onward sections stay empty with a single-hop path**, because one slot can
+only ever be taken by one digipeater. They are the instrument for a multi-hop
+`TX_VIA`: whether the second hop is reaching a digipeater the first one could
+not, or buying another transmission of the same footprint. Note that `reach`
+counts *beacons*, so it measures `BEACON_VIA`, not `TX_VIA` — to measure a
+message path, set `BEACON_VIA` to match it for as long as the measurement takes.
 
 **It transmits nothing.** Every beacon already sent was a measurement; this
 reads them out of the log.
@@ -661,12 +681,12 @@ there, whatever the digipeater did. A station's own receiver has no such
 problem: a repeat of its own beacon arrives over the air like any other frame,
 carrying the callsign of whatever repeated it.
 
-Use it to choose `TX_VIA`. `WIDE1-1` asks for one hop and names fill-in
-digipeaters as the intended responders, so the nearest station to answer
-consumes it and a wide-area digipeater that hears the repeat can do nothing
-with it. `WIDE2-1` asks the same single hop of the wide-area digis only, which
-fill-ins ignore. Which is better is a question about your neighbours, and this
-is how to answer it rather than guess.
+Use it to choose `TX_VIA`, and expect it to overturn the obvious choice. The
+run above says the mountain-top digipeater hears this station on one beacon in
+eight and the near one on one in four, so naming the mountain explicitly would
+have made the gateway quieter rather than louder. Counts like those are a
+question about your own neighbors, and this is how to answer it rather than
+guess.
 
 ## Monitoring
 
@@ -1125,14 +1145,30 @@ runs, so it keeps both properties and adds tolerance of renumbering.
 
 ### Forcing a digipeat path
 
-`TX_VIA` sets the AX.25 digipeat path on everything this station transmits —
-gated messages and the RF beacon alike. Blank means direct, with no digipeater.
+`TX_VIA` sets the AX.25 digipeat path on traffic gated from APRS-IS to RF —
+the messages this station exists to deliver. `BEACON_VIA` sets it for the RF
+beacon. Blank `TX_VIA` means direct, with no digipeater; blank `BEACON_VIA`
+inherits `TX_VIA`, which is what a config file without the setting has always
+done.
 
 ```
-TX_VIA =                  # direct
-TX_VIA = W3YA-1           # force every transmission through that digipeater
-TX_VIA = WIDE2-1          # generic single hop via whatever answers WIDE2
-TX_VIA = W3YA-1,WIDE2-1   # that digi first, then one more generic hop
+TX_VIA =                     # direct
+TX_VIA = W3YA-1              # force every message through that digipeater
+TX_VIA = WIDE2-1             # generic single hop via whatever answers WIDE2
+TX_VIA = WIDE1-1,WIDE2-2     # any digipeater, then two wide-area hops onward
+
+BEACON_VIA =                 # inherit TX_VIA
+BEACON_VIA = WIDE1-1         # one hop for the beacon, whatever messages use
+BEACON_VIA = direct          # no path on the beacon at all
+```
+
+Several hops are written comma-separated and rendered that way. Direwolf splits
+a config line on whitespace, so a path written with spaces is one hop followed
+by tokens nothing reads — a message would go out a hop short with no error
+anywhere. After changing a path, read it back out of the rendered file:
+
+```
+./deploy_igate.sh restart && grep -E '^IGTXVIA|^PBEACON' run/direwolf.conf
 ```
 
 Naming a digipeater explicitly is the deterministic choice: a digipeater repeats
@@ -1612,9 +1648,12 @@ Three things must all be true:
 
 ### What `TX_VIA` changes
 
-`TX_VIA` sets the digipeat path on everything this station transmits — gated
-messages and the beacon alike. It renders as Dire Wolf's `IGTXVIA` and as the
-beacon's `via=`.
+`TX_VIA` sets the digipeat path on gated messages, rendering as Dire Wolf's
+`IGTXVIA`. `BEACON_VIA` sets it on the beacon, rendering as the beacon's `via=`.
+They are separate because their volumes differ by two orders of magnitude: a
+beacon goes out every `BEACON_EVERY` forever, while a gated message to a
+whitelisted station may be a few times a month. Reach worth buying for the
+message is not worth buying 1,400 times a month for the beacon.
 
 **Blank is direct-only.** A packet with no path is a packet no digipeater will
 repeat, because it was not asked to. Downlink coverage is then exactly this
@@ -1622,8 +1661,21 @@ station's own footprint, however good the digipeater on the hill is. A handheld
 gateway covers its own neighbourhood, while its *receive* coverage spans several
 states because it hears everyone else's repeats.
 
-**`TX_VIA = WIDE1-1`** gives the downlink the same relay the uplink already uses.
-One hop. `WIDE2-2` from a gateway is antisocial and unnecessary.
+**`TX_VIA = WIDE1-1`** gives the downlink the same relay the uplink already
+uses. One hop, and the right default.
+
+**A second slot is how a distant digipeater gets used at all.** Measured here
+over 112 beacons on a single `WIDE1-1`: the near digipeater 3.5 miles away took
+28 repeats, the mountain-top one 6.4 miles away took 14. Those are hearing
+rates and not a race — with one hop offered, every digipeater that hears the
+original repeats it — so naming the mountain explicitly would have traded the
+station that hears this one most often for the one that covers the most ground,
+and made the gateway quieter. What reaches the mountain is `WIDE1-1,WIDE2-1`:
+the near digipeater repeats, the wide-area hop survives that repeat, and the
+far one takes it off a transmitter that is not fighting this station's terrain.
+
+Extra hops are cheap on a message and expensive on a beacon, which is what
+`BEACON_VIA` is for. `WIDE2-2` on a beacon really is antisocial.
 
 ```mermaid
 flowchart TB
@@ -1633,8 +1685,15 @@ flowchart TB
   end
   subgraph wide["TX_VIA = WIDE1-1"]
     A2["gateway"] --> B2["stations within<br/>its own footprint"]
-    A2 -- "WIDE1-1" --> C2["W3YA-1"]
-    C2 --> D2["everything the<br/>digipeater reaches"]
+    A2 -- "WIDE1-1" --> C2["nearest digipeater<br/>that hears it"]
+    C2 --> D2["everything that<br/>digipeater reaches"]
+  end
+  subgraph two["TX_VIA = WIDE1-1,WIDE2-1"]
+    A3["gateway"] --> B3["stations within<br/>its own footprint"]
+    A3 -- "WIDE1-1" --> C3["near digipeater"]
+    C3 --> D3["everything it reaches"]
+    C3 -- "WIDE2-1 survives<br/>the first hop" --> E3["mountain digipeater<br/>that could not hear<br/>the gateway directly"]
+    E3 --> F3["everything it reaches"]
   end
 ```
 
