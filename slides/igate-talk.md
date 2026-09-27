@@ -67,7 +67,7 @@ style: |
 
 **KD3CCO**
 
-Texting a handheld from a phone, without trusting the internet
+Texting a handheld from a phone, where the cell network does not reach
 
 ---
 
