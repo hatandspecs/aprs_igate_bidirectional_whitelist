@@ -175,7 +175,7 @@ A whitelist with a well-intentioned exception is not a whitelist.
 
 A phone in the shack, watching a round trip as it happens. `IS GATED` in green is the one packet the whitelist let onto the air; five seconds later the handheld's acknowledgement comes back on RF.
 
-In the eighteen minutes around this capture the gateway saw **187 packets and transmitted exactly one**. Everything else was either somebody else's internet traffic, dropped, or RF heard and passed upward.
+Over thirty hours the servers offered this station **10,151 packets. Eight reached the air** — every one a message to a whitelisted call. The other transmissions were its own beacons.
 
 Every line is labeled with the direction it went, which is how three separate faults were eventually cornered.
 

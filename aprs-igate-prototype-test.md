@@ -133,7 +133,7 @@ demonstrated rather than what is intended.
 | FR-14 | Run in a container on a workstation and bare-metal on a Pi, from the same configuration. | met — `DEPLOY_MODE` |
 | FR-15 | Build a bootable Pi card in one command. | met — `build_pi_image.sh` |
 | FR-16 | Help set audio levels, and say what the levels mean. | met — `./deploy_igate.sh audio` |
-| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | met — measured 2026-09-27 over 112 beacons: 42 repeated, a 37% repeat rate, by W3TM-10 (28) and W3YA-1 (14). `TX_VIA` is now `WIDE1-1,WIDE2-2` so a gated message can reach the mountain digipeater by way of the near one; `BEACON_VIA` keeps the beacon at one hop |
+| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | met — measured twice: 42 of 112 beacons repeated (37%) on 2026-09-27, and 41 of 68 (60%) on 2026-09-28. The difference is significant (z = 2.97, p = 0.003) and unexplained. `TX_VIA` is `WIDE1-1,WIDE2-2` so a gated message can reach the mountain digipeater by way of the near one; `BEACON_VIA` keeps the beacon at one hop |
 | FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | met — all five criteria |
 
 ### FR-18 in detail
@@ -204,7 +204,7 @@ with no alternative.
 
 | | Requirement | Status |
 |---|---|---|
-| NFR-1 | The whitelist has no exceptions. Any feature that transmits something not on it is a defect, however well-intentioned. | met — `IGMSP 0` disables Dire Wolf's courtesy position report, which was observed transmitting the SMS gateway's own beacon |
+| NFR-1 | The whitelist has no exceptions. Any feature that transmits something not on it is a defect, however well-intentioned. | met, and measured — over 30 hours to 2026-09-28 the servers offered **10,151** packets and **8** reached the air, all of them self-test messages to a whitelisted call (the other 60 of 68 transmissions were this station's own beacons). `IGMSP 0` disables Dire Wolf's courtesy position report, which was observed transmitting the SMS gateway's own beacon |
 | NFR-2 | Never transmit under another operator's callsign, in testing or otherwise. | met — all test traffic uses this station's own SSIDs |
 | NFR-3 | No unauthenticated control port. Anything that can reach a KISS port can transmit arbitrary packets under this callsign. | met — `AGW_PORT = 0`, `KISS_PORT = 0`; Dire Wolf offers no bind address, so off is the only safe value |
 | NFR-4 | The container reaches DNS and APRS-IS and nothing else. | met — `RESTRICT_EGRESS`, DOCKER-USER chain |
@@ -1180,6 +1180,17 @@ belongs only in a test.
   W3TM-10 (28) and W3YA-1 (14). Because the beacon carries the same path, the
   same power and the same antenna as a transmitted message, this is a direct
   measurement of what happens to a message, not a proxy for one.
+
+  **Remeasured on 2026-09-28 at 60%**, 41 of 68, attributed to W3TM-10 (32) and
+  W3YA-1 (9). That is not sampling noise: against the previous 42 of 112 it
+  gives z = 2.97, p = 0.003, and the 95% intervals barely meet (48–71% against
+  29–47%). **The cause is unknown.** Propagation, something at W3YA-1, or a
+  change in local noise are all consistent with it; nothing on this station
+  changed between the two runs except the reboot at 16:20 on the 27th. Note
+  also that the share moved the wrong way for coverage — the near digipeater
+  took a larger fraction of a larger total — so the second figure is better
+  news for whether anything repeats this station than for how far the repeats
+  travel. A third measurement is what settles whether 60% is the new normal.
 
   **That measurement is what `TX_VIA` is now set from**, rather than the guess
   it replaced; what it argues for is below. The figure is a slight underestimate — a repeat this
