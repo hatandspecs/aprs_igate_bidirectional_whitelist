@@ -36,6 +36,12 @@ The design doc separates **Specification** (what it must do) from **Findings**
   status` reports what is actually running.
 - **`igate.local.conf` and `igate.secrets` exist only on the Pi** and are
   excluded from the deployment rsync. Do not expect them in the repository.
+- **Never decode the packet log strictly.** It carries other stations' APRS
+  comment text verbatim and plenty of it is Latin-1, not UTF-8 — a degree sign
+  in a bearing is `0xB0`. `UnicodeDecodeError` is a `ValueError`, so a broad
+  `except ValueError` will swallow it and look like a clean shutdown.
+- **In the monitor's logs, `rc=None` means the pipeline is still running**, not
+  that it ended. A reader that stops must kill its pipeline or it orphans one.
 - **`bash -n deploy_igate.sh`** after any edit. It is 2,800 lines of bash and
   there is no test suite.
 
@@ -52,17 +58,32 @@ The design doc separates **Specification** (what it must do) from **Findings**
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
 
-## Where it stands (2026-09-27)
+## Where it stands (2026-09-30)
 
-All functional requirements met. Measured reach: 112 beacons, 42 repeated, 37%,
-by W3TM-10 (28) and W3YA-1 (14) — the near digipeater hears the station twice as
-often as the mountain-top one, which is why `TX_VIA` is `WIDE1-1,WIDE2-2` rather
-than naming a digipeater. Self-test runs every four hours unattended. USB resets
-from RF are stable at 8 since the choke and the outdoor slim jim.
+All functional requirements met. Self-test runs every four hours unattended and
+is believed by default: three consecutive step-4 failures on 2026-09-30 were a
+true alarm — the witness radio was switched off. Whitelist, measured over 30
+hours: APRS-IS offered 10,151 packets and 8 reached the air, all of them
+messages to a whitelisted call.
 
-**Open:** the web monitor's pipeline stall has no known cause; instrumentation
-is in place for the next occurrence. Untested: delivery to a handheld genuinely
-outside the gateway's own footprint.
+Reach has been measured twice and moved: 42 of 112 (37%) on 09-27, then 41 of
+68 (60%) on 09-28. The difference is significant (z = 2.97, p = 0.003) and
+**unexplained** — a third measurement is wanted before anything is concluded
+from it. `TX_VIA` is `WIDE1-1,WIDE2-2` because the near digipeater (W3TM-10)
+hears this station far more often than the mountain-top one (W3YA-1), so a
+second slot is what reaches the mountain.
+
+**The web monitor's long-standing stall is solved** (2026-09-30). A Latin-1
+degree sign in another station's APRS comment raised `UnicodeDecodeError` in a
+strictly-decoded pipeline; that is a `ValueError`, so the read loop caught it
+and exited *without killing the pipeline*, orphaning a `tail -f | gawk` each
+time until the Pi ran out of threads. Fixed by `errors="replace"` and by
+killing the process group whenever the reader stops. If something like this
+recurs, note that `rc=None` means the pipeline is still running, and that
+`stderr` was being discarded — which is why it took four days.
+
+**Untested:** delivery to a handheld genuinely outside the gateway's own
+footprint.
 
 ## How I work — standing preferences
 

@@ -1237,17 +1237,25 @@ belongs only in a test.
   says anything, and the beacon deliberately does not carry the new path — so
   answering this wants a `reach` run after some real message traffic, or a
   temporary `BEACON_VIA` matching `TX_VIA` for as long as the measurement takes.
-* **The web monitor's pipeline stall has no known cause.** The supervisor
-  detects it and announces a restart; it has been observed announcing and not
-  recovering. A reproduction that stalls a live-but-silent pipeline while the
-  log grows recovers correctly every time, so the real failure has a different
-  shape and has not been found. The three *other* monitor faults — an unclosed
-  response, leaked viewer slots, and a refusal that turned away the newest
-  viewer in favour of dead ones — are fixed.
-* **No persistent journal.** `Storage=volatile` spares the card and means a
-  reboot erases the evidence of whatever caused it. That cost a definite answer
-  once already: whether the previous radio also caused USB resets is now
-  unknowable. A capped `SystemMaxUse` is the compromise.
+* **The web monitor's stall is solved — it was one byte of somebody else's
+  comment text.** Closed 2026-09-30; see the faults section below for the full
+  account. In short: the log carries other stations' APRS comments verbatim,
+  many of them contain a Latin-1 degree sign (`0xB0`) in a bearing, the
+  pipeline's stdout was decoded as strict UTF-8, and `UnicodeDecodeError` is a
+  subclass of `ValueError` — which the read loop's own handler caught, ending
+  the loop while leaving the pipeline running. Every occurrence orphaned a
+  `tail -f | gawk`. After several days the Pi ran out of thread slots and the
+  page died with `RuntimeError("can't start new thread")`. Both halves are
+  fixed: the stream is decoded with `errors="replace"`, and a reader that stops
+  now kills its pipeline rather than abandoning it.
+* **The persistent journal earned its cost on 2026-09-30.** `Storage=volatile`
+  spared the card and meant a reboot erased the evidence of whatever caused it,
+  which cost a definite answer once: whether the previous radio also caused USB
+  resets is now unknowable. `PI_PERSISTENT_JOURNAL` (default `yes`,
+  `SystemMaxUse=32M`) was the compromise, and it is what made the monitor fault
+  above findable — the decisive evidence was the *first* occurrence at 00:00,
+  sixteen hours and one service restart before anyone went looking. Under the
+  old setting that line would not have existed.
 
 
 - **The egress restriction degrades open, and has not been verified in place.**
@@ -1372,6 +1380,42 @@ belongs only in a test.
   as a failure to enumerate at power-up is not supported, because the cables had
   been handled around each occurrence. The practical remedy is to mark the plug's
   working orientation.
+- **One non-UTF-8 byte in a stranger's APRS comment took the monitor down, and
+  it took four days to find.** Stations routinely put a Latin-1 degree sign in
+  a bearing — `DX: W8QT-1 71.9mi 286\xb0 03:43` — and Dire Wolf writes the
+  comment to the log verbatim. The monitor read that pipeline with `text=True`,
+  which is strict UTF-8, so the byte raised `UnicodeDecodeError`. That is a
+  subclass of `ValueError`, and the read loop's own `except (ValueError,
+  OSError)` caught it and ended the loop.
+
+  **The damage was not the crash, it was the cleanup that did not happen.** The
+  pipeline was never killed — the `rc=None` in every log line was `poll()`
+  reporting the child still running — so each occurrence left a `tail -f |
+  gawk` behind and started another. Days of that exhausted the Pi's thread
+  slots: requests began failing with `RuntimeError("can't start new thread")`
+  and new pipelines failed to start, reporting `rc=254`. The visible symptom
+  was the last link of the chain, which is why it misdirected the first several
+  attempts at it.
+
+  Three things hid it, and each is worth avoiding on its own:
+
+  * **`stderr=subprocess.DEVNULL`** meant the pipeline could never explain
+    itself. The one output that would have named the cause was being discarded
+    by design.
+  * **systemd cleaned up the evidence.** Restarting the unit kills the whole
+    cgroup, so the orphaned pipelines were gone before anyone ran `pgrep`. An
+    earlier orphan hypothesis was recorded here as refuted on exactly that
+    basis; it was correct, and the refutation was an artifact of looking after
+    a restart.
+  * **`rc=None` reads like "it ended."** It means the opposite.
+
+  Fixed by decoding with `encoding="utf-8", errors="replace"` — this program
+  has no business requiring other people's comment text to be well-formed — and
+  by killing the pipeline's process group whenever the reader stops, escalating
+  to `SIGKILL` after five seconds, with a log line when it happens. The first
+  change makes the fault impossible; the second makes any future variant
+  self-limiting rather than cumulative.
+
 - **A multi-hop `TX_VIA` would have been silently truncated to its first hop.**
   `build_tx_via` normalised the path to spaces, and `IGTXVIA` was emitted with
   it unchanged. Direwolf splits a config line on whitespace, so `IGTXVIA 0
@@ -1397,11 +1441,16 @@ belongs only in a test.
   timer and on a udev event, restarts the gateway when the card moves, when
   Direwolf is gone, or when those `-19` lines accumulate. Both have since run on
   the pi-gate against a real reset and a real replug (§15.1).
-- **A pi-gate that misbehaves overnight cannot be diagnosed after a reboot.**
-  `run/` is a tmpfs and the journal is `Storage=volatile`, both deliberate, to
-  keep the SD card from being written during normal operation. The cost is that
-  a power cycle — the first thing anyone tries — erases the packet log, the
-  watchdog state and the whole journal. This happened: the web monitor froze
+- **A pi-gate that misbehaves overnight could not be diagnosed after a reboot;
+  the journal half of this is now fixed.** `run/` is a tmpfs and the journal was
+  `Storage=volatile`, both deliberate, to keep the SD card from being written
+  during normal operation. The cost was that a power cycle — the first thing
+  anyone tries — erased the packet log, the watchdog state and the whole
+  journal. The journal is now persistent and capped
+  (`PI_PERSISTENT_JOURNAL`, `SystemMaxUse=32M`), which is what made the
+  monitor's decode fault findable on 2026-09-30; `run/` remains a tmpfs, so the
+  packet log and watchdog state still do not survive a reboot. This happened:
+  the web monitor froze
   overnight while the gateway went on beaconing and carrying messages, and by the
   time the question was asked the power cycle had removed every record of what
   the gateway had been doing. The stall detector above removes the need to
@@ -1997,7 +2046,7 @@ The routine writers on a stock installation, and the image's treatment of each:
 |--------|-----------|
 | `run/` — rendered `direwolf.conf`, `status.html`, pidfiles, and the packet log | Mounted as a size-capped `tmpfs`. Every file in it is regenerated on each start, so none of it needs to persist |
 | The packet log growing without bound | Rotated hourly at 8 MB, two generations kept, so it cannot exhaust the tmpfs on a 512 MB machine |
-| The systemd journal | `Storage=volatile`, capped, so systemd writes to `/run` rather than the card |
+| The systemd journal | `Storage=persistent` and capped at 32 MB by default (`PI_PERSISTENT_JOURNAL = no` restores the old `volatile` behavior). The bounded write is worth it: a reboot no longer erases the evidence of what caused it |
 | Swap | On the card in two forms. One is `dphys-swapfile`, which first boot removes. The other is the `/var/swap` writeback file of rpi-swap's default mechanism (`auto`, currently `zram+file`), to which `rpi-zram-writeback` periodically moves idle zram pages; the Pi's boot log shows it as `zram: setup backing device /dev/disk/by-backingfile/var-swap`. The image sets `Mechanism=zram` in `/etc/rpi/swap.conf.d/50-igate.conf`: compressed swap in RAM, worth keeping on 512 MB, and per `swap.conf(5)` no file. Images built before this change keep the default |
 
 The tmpfs is declared in `/etc/fstab` rather than as a `.mount` unit, to avoid

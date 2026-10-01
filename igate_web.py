@@ -208,7 +208,18 @@ class MonitorStream:
                     self.cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
-                    text=True,
+                    # errors="replace", NOT strict. The log carries other
+                    # people's APRS comment text verbatim, and plenty of
+                    # stations send a Latin-1 degree sign (0xB0) in a bearing:
+                    #   DX: W8QT-1 71.9mi 286\xb0 03:43
+                    # Decoded strictly, that raises UnicodeDecodeError — which
+                    # is a ValueError, so the read loop's own handler caught it
+                    # and ended the loop. One malformed byte from a stranger
+                    # three states away took the monitor down. It cost days to
+                    # find because stderr was discarded and the orphans were
+                    # cleaned up by systemd before anyone went looking.
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=1,
                     start_new_session=True,
                 )
@@ -248,7 +259,27 @@ class MonitorStream:
             # The monitor ends when the gateway stops or restarts. The next pass
             # finds out which: a restart resumes silently, a stop is announced
             # once.
-            _log(f"monitor pipeline ended, rc={self.proc.poll()}")
+            #
+            # Kill it before looping. `rc=None` here means the pipeline is
+            # still alive and only the reader stopped, and starting a second
+            # one without ending the first is how a single bad byte became
+            # hundreds of orphaned `tail -f | gawk` pipelines over several
+            # days, until the Pi ran out of threads and the page died with
+            # RuntimeError("can't start new thread"). The pipeline is its own
+            # session, so nothing reaps it for us.
+            rc = self.proc.poll()
+            if rc is None:
+                _log("monitor pipeline still alive after the reader stopped; "
+                     "killing it so it cannot be orphaned")
+                self.stop()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(self.proc.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+            _log(f"monitor pipeline ended, rc={rc}")
             time.sleep(5)
 
     def _log_size(self):
