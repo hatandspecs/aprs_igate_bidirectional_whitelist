@@ -17,7 +17,7 @@ style: |
     line-height: 1.45;
     padding: 44px 56px 56px;
     /* The built-in theme wins on specificity for these, and its selectors are
-       not ones a style block can match, so they are forced. The h1 colour is a
+       not ones a style block can match, so they are forced. The h1 color is a
        variable the theme exposes; the rest are not. */
     display: flex !important;
     flex-direction: column !important;
