@@ -584,6 +584,36 @@ EOF
     | sudo tee "${ROOT_MNT}/etc/rpi/swap.conf.d/50-igate.conf" >/dev/null
   note "swap is zram only (no /var/swap writeback file on the card)"
 
+  # 5. data=journal on the root filesystem. ext4's default, data=ordered,
+  #    journals metadata but not file contents, so a file being written when the
+  #    power is cut can be left torn. The gateway's own rendered files live on
+  #    the tmpfs and are regenerated, but igate.local.conf, igate.secrets,
+  #    NetworkManager connection files and Direwolf's own state are all on the
+  #    card and written without fsync. data=journal journals data too, at a
+  #    write-throughput cost that is irrelevant on a machine whose steady-state
+  #    card output is approximately nothing.
+  #
+  #    It has to go on the kernel command line: data= cannot be changed by the
+  #    remount that fstab drives, so root must be mounted with it from the
+  #    start. Verified on the running gateway 2026-10-02 — data=ordered before,
+  #    data=journal after, with no change in behaviour.
+  #
+  #    The UPS HAT covers a planned shutdown. This covers a brownout, a pulled
+  #    barrel jack, and the HAT's own battery going flat.
+  local cmd="${BOOT_MNT}/cmdline.txt"
+  if [[ "${CFG[PI_DATA_JOURNAL]:-yes}" == yes && -f "$cmd" ]]; then
+    local line; line="$(sudo cat "$cmd")"
+    if [[ "$line" == *rootflags=data=journal* ]]; then
+      note "rootflags=data=journal already present"
+    elif [[ "$line" == *rootwait* ]]; then
+      line="${line/rootwait/rootwait rootflags=data=journal}"
+      echo "$line" | sudo tee "$cmd" >/dev/null
+      note "root mounted data=journal (torn-file protection for everything that does not fsync)"
+    else
+      note "WARNING: no rootwait in cmdline.txt; data=journal not applied"
+    fi
+  fi
+
   rm -f "$tmp"
 }
 

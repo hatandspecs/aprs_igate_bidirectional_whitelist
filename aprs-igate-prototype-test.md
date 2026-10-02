@@ -218,7 +218,7 @@ with no alternative.
 | NFR-12 | Reproducible: a card is built from `pi.conf`, `igate.conf` and the secrets files. | met — `build_pi_image.sh` |
 | NFR-13 | Record what was verified against what was assumed, and correct the record when an assumption turns out wrong. | met — §14; the W3YA-1 alias claim and the `netdev` claim were both wrong and are both corrected in place |
 | NFR-14 | Survive its own transmissions. | met after rework — RF on the feedline was resetting the interface once every other transmission; fixed at full power by choking the coax and moving the antenna outside |
-| NFR-15 | Survive loss of power without corrupting the card. | decided, hardware on order (2026-09-26) — a PiShop UPS HAT; see §15 for what it does and does not buy |
+| NFR-15 | Survive loss of power without corrupting the card. | partly met — `run/` and the journal in RAM, swap zram-only with no writeback file, and `rootflags=data=journal` on the root filesystem (2026-10-02), which closes the torn-file window for everything on the card that does not `fsync`. A PiShop UPS HAT is on order for a clean shutdown; see §15 for what it does and does not buy |
 
 ---
 
@@ -1145,7 +1145,21 @@ belongs only in a test.
 **Open, as of 2026-09-26.** Recorded here rather than left implicit, because
 "what is still wrong" is the part of a design document that rots first.
 
-* **NFR-15, surviving power loss — decided, hardware on order (2026-09-26).**
+* **NFR-15, surviving power loss — partly met, hardware still on order.**
+  Four software layers are in place and verified on the running gateway: `run/`
+  and the journal in RAM, swap as zram with no `/var/swap` writeback file, and —
+  added 2026-10-02 — the root filesystem mounted `rootflags=data=journal`, so
+  ext4 journals file *contents* and not only metadata. That matters because
+  nothing on the card except the gateway's rendered files is written carefully:
+  `igate.local.conf`, `igate.secrets`, NetworkManager connections and Direwolf's
+  own state are all written plainly. `data=journal` has to be on the kernel
+  command line, because `data=` cannot be changed by the remount `fstab` drives.
+
+  These reduce the probability of corruption; they do not remove it, and none of
+  them helps if the card's own controller loses its mapping tables, which is a
+  property of the card rather than the operating system.
+
+  **The remaining piece is the clean shutdown.**
   A PiShop UPS HAT: 3 A output, a 450 mAh Li-Ion cell, a DS3231, and a vendor
   shutdown script. It suits this Pi specifically — the 3B+ is supported and the
   40-pin header is free, since `CM108_GPIO` is a pin inside the USB sound card

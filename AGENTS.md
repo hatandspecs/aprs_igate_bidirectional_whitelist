@@ -42,6 +42,14 @@ The design doc separates **Specification** (what it must do) from **Findings**
   `except ValueError` will swallow it and look like a clean shutdown.
 - **In the monitor's logs, `rc=None` means the pipeline is still running**, not
   that it ended. A reader that stops must kill its pipeline or it orphans one.
+- **Card-durability settings live outside the repo's own config.**
+  `rootflags=data=journal` is on the kernel command line, because `data=` cannot
+  be changed by the remount `fstab` drives. The swap writeback file is disabled
+  by `[Main]` / `Mechanism=zram` in `/etc/rpi/swap.conf.d/` — stock Pi OS
+  defaults to `zram+file` and keeps a `/var/swap` file that `swapon --show` does
+  not reveal; check `/sys/block/zram0/backing_dev` instead. Both are written by
+  `build_pi_image.sh`, so a rebuilt card inherits them and a hand-built one
+  does not.
 - **`bash -n deploy_igate.sh`** after any edit. It is 2,800 lines of bash and
   there is no test suite.
 
