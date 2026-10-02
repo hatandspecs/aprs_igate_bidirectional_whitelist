@@ -90,8 +90,17 @@ killing the process group whenever the reader stops. If something like this
 recurs, note that `rc=None` means the pipeline is still running, and that
 `stderr` was being discarded — which is why it took four days.
 
+**Power and time, added 2026-10-02.** A PiShop UPS HAT is fitted: GPIO17 is
+mains-fail, GPIO27 a heartbeat the HAT toggles, GPIO18 held low to mean "the Pi
+is running" — the kernel releasing it at power-off is what tells the HAT to cut
+output. `igate-ups.service` powers off 30 s after mains loss. It uses the
+deprecated sysfs GPIO interface **deliberately**: a libgpiod line is released
+when its process exits, which would drop GPIO18 and cut power to a healthy Pi
+whenever the service stopped. The HAT's DS3231 is set up via `PI_RTC = ds3231`.
+
 **Untested:** delivery to a handheld genuinely outside the gateway's own
-footprint.
+footprint, and the UPS shutdown against a real power cut — simulated GPIO is
+not a plug being pulled.
 
 ## How I work — standing preferences
 

@@ -218,7 +218,8 @@ with no alternative.
 | NFR-12 | Reproducible: a card is built from `pi.conf`, `igate.conf` and the secrets files. | met — `build_pi_image.sh` |
 | NFR-13 | Record what was verified against what was assumed, and correct the record when an assumption turns out wrong. | met — §14; the W3YA-1 alias claim and the `netdev` claim were both wrong and are both corrected in place |
 | NFR-14 | Survive its own transmissions. | met after rework — RF on the feedline was resetting the interface once every other transmission; fixed at full power by choking the coax and moving the antenna outside |
-| NFR-15 | Survive loss of power without corrupting the card. | partly met — `run/` and the journal in RAM, swap zram-only with no writeback file, and `rootflags=data=journal` on the root filesystem (2026-10-02), which closes the torn-file window for everything on the card that does not `fsync`. A PiShop UPS HAT is on order for a clean shutdown; see §15 for what it does and does not buy |
+| NFR-15 | Survive loss of power without corrupting the card. | met in software, untested in anger (2026-10-02) — `run/` and the journal in RAM, swap zram-only with no writeback file, `rootflags=data=journal`, and a UPS HAT fitted with `igate-ups.service` powering off 30 s after mains loss. What remains is the only evidence that counts: pulling the plug five or six times. See §15 |
+| NFR-16 | Come up with the right time, with no network. | met — a DS3231 on the UPS HAT, `PI_RTC = ds3231`, verified reading correctly 2026-10-02. Every packet this station gates is timestamped, and before this it was wrong until NTP corrected it |
 
 ---
 
@@ -1159,28 +1160,77 @@ belongs only in a test.
   them helps if the card's own controller loses its mapping tables, which is a
   property of the card rather than the operating system.
 
-  **The remaining piece is the clean shutdown.**
-  A PiShop UPS HAT: 3 A output, a 450 mAh Li-Ion cell, a DS3231, and a vendor
-  shutdown script. It suits this Pi specifically — the 3B+ is supported and the
-  40-pin header is free, since `CM108_GPIO` is a pin inside the USB sound card
-  rather than on the Pi.
+  **The clean shutdown is built (2026-10-02).** A PiShop UPS HAT — 3 A output,
+  a 450 mAh Li-Ion cell, a DS3231 — fitted and verified supplying clean power
+  under transmit load (`vcgencmd get_throttled` = `0x0`). The 40-pin header was
+  free because `CM108_GPIO` is a pin inside the USB sound card rather than on
+  the Pi, so GPIO 17/18/27 were available.
 
   **The battery is not the fix; the script is.** A UPS that keeps the Pi alive
   and then dies mid-write corrupts the card exactly as a pulled plug does. What
   closes the requirement is power loss being detected and a clean `poweroff`
-  issued with minutes in hand. That is a systemd unit and a test performed by
-  actually pulling the plug, repeatedly — not an afternoon's work, and not
-  finished when the board arrives.
+  issued with charge in hand: `igate-ups.service` watches GPIO17 and powers off
+  after 30 s on battery, out of 10–30 minutes available.
+
+  **The vendor's script was not used as shipped**, for four reasons worth
+  recording. It is a SysV init script, so nothing restarts it if the loop dies —
+  the same silent-loss-of-protection shape as the monitor pipeline. It logs
+  nothing, so a shutdown at 3 a.m. leaves no explanation. Its pin exports are
+  unguarded, so after any restart the direction writes fail and it polls pins it
+  never configured. And its timer is 60 s with documentation claiming 5, which
+  is too eager for an unattended station — a mains flicker would take the
+  gateway off the air for a full boot cycle.
+
+  **One design decision looks backwards and is not.** The script uses the
+  deprecated sysfs GPIO interface rather than libgpiod, deliberately. GPIO18 is
+  held low to mean "the Pi is running", and the HAT cuts its own output when
+  that pin goes high-impedance — which the kernel does at power-off. A libgpiod
+  line is released when the holding process exits, so stopping the service would
+  drop GPIO18 and the HAT would cut power to a healthy Pi. An exported sysfs pin
+  keeps its value after the exporting process dies, which is the behavior wanted.
+
+  **The heartbeat guard was wrong on the first attempt**, and a simulated GPIO
+  tree caught it. The HAT toggles GPIO27 about twice a second; an unconnected
+  GPIO17 is a floating pin whose value means nothing, so the script must not act
+  on it without that heartbeat. The first version treated the HAT as present
+  until proven absent, with a grace period — and with a hold shorter than the
+  grace period the countdown won and it powered off a machine with no HAT
+  attached. It now treats the HAT as absent until a toggle proves otherwise,
+  which makes the guard independent of the timer.
+
+  **What remains is the test.** Pulling the plug five or six times and
+  confirming each boot comes back clean. Simulated GPIO is not a power cut, and
+  this is not finished until that has been done.
 
   **It does not keep the station on the air**, and expecting that would be a
   misreading. 450 mAh runs a Pi for 10–30 minutes and cannot touch an FT-2900R,
   which is where nearly all the power goes. In an outage the gateway goes down
   either way; this makes it go down cleanly.
 
-  **The DS3231 on it is a second benefit**, since this station has no clock and
-  comes up wrong until NTP corrects it. The cyberdeck already paid the learning
-  cost: `rtc-ds1307` is the correct driver for a DS3231, `i2cdetect` needs
-  `i2c-dev` loaded first, and `hwclock` is in `util-linux-extra`.
+  **The DS3231 on it is a second benefit, and is done (2026-10-02).** This
+  station had no clock and came up wrong until NTP corrected it, while
+  timestamping every packet it gated in between. `PI_RTC = ds3231` now puts
+  `dtparam=i2c_arm=on` and `dtoverlay=i2c-rtc,ds3231` under `[all]` in
+  config.txt, installs `i2c-tools` and `util-linux-extra`, removes
+  `fake-hwclock`, and writes the chip from NTP once on first boot. Verified:
+  `/dev/rtc0` present, `rtc_ds1307` bound, `UU` at `0x68`, `hwclock -r` correct.
+
+  The cyberdeck had already paid the learning cost and this consumed all of it:
+  `rtc-ds1307` is the correct driver for a DS3231 despite the name, `hwclock` is
+  in `util-linux-extra` rather than `util-linux` on Bookworm and later, and
+  `/dev/i2c-1` needs the `i2c-dev` module — which neither the overlay nor
+  `dtparam` loads. That last one is only a diagnostic: the clock works without
+  it because the kernel driver talks to the chip directly, but `i2cdetect` is
+  the first thing anyone reaches for when a clock misbehaves, so the image now
+  writes `/etc/modules-load.d/i2c-dev.conf`. The knowledge had been recorded
+  here since the cyberdeck learned it; neither build script acted on it until
+  now, which is the gap between documenting a lesson and automating it.
+
+  `fake-hwclock` turned out not to be installed on this image at all, so its
+  removal is a no-op here — guarded with `|| true` and left in, because it is
+  present on other Raspberry Pi OS variants and the conflict it causes is
+  nasty: it restores the last shutdown's timestamp at every boot, and with a
+  real clock fitted the stale value can win.
 
   **A read-only root would close the same requirement for nothing**, and
   protect against a flat UPS battery too — but it pulls against

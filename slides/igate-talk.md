@@ -206,6 +206,18 @@ A beacon proves the transmitter keys. **Only an acknowledged message proves the 
 
 ---
 
+# It shuts itself down now, when the power goes
+
+A UPS HAT on the header: 3 amps, a 450 mAh cell, and a clock.
+
+**The battery is not the protection — the shutdown is.** A UPS that keeps the Pi running and then dies mid-write corrupts the card exactly as a pulled plug does. Thirty seconds after mains is lost it powers off, with most of the cell still unused.
+
+**It does not keep the station on the air.** The radio is dark the moment mains goes. This only means the gateway goes down cleanly instead of badly.
+
+The clock on it is the second win: until now this station came up with the wrong time and timestamped every packet it gated until the network corrected it.
+
+---
+
 # The faults that cost the most were not in the software
 
 **An adapter cable plugged in backwards.** Three conductors into a four-conductor socket grounded the PTT line, so the radio keyed a dead carrier until its own timeout, then refused to transmit. Receive was perfect. Every log said the messages were sent.
@@ -237,6 +249,20 @@ A slim jim is a **self-contained end-fed half-wave** — the matching stub does 
 A monoband N9TAX I already had, hung from the porch roof for now, coax running back inside.
 
 RF stopped knocking the sound card off the USB bus at full power, and digipeaters began repeating the gateway that never had.
+
+---
+
+# What it takes, if you want one
+
+**The gateway** — a Raspberry Pi 3B+, a microSD card, a 5 V supply.
+
+**The radio interface** — a Digirig Lite, about \$35, and the cable for your radio. That cable is the single most error-prone item here; mine was plugged in backwards for four hours.
+
+**A 2 m radio** that will sit on 144.390 and accept external PTT. An FT-2900R here; a VX-6R and a Radtel both work on the same profile.
+
+**An antenna that is actually an antenna** — a slim jim outside, with a choke at the feedpoint. This mattered more than any software I wrote.
+
+No CAT cable, no GPS, no display, no keyboard, no monitor — ever. **Try the whole thing in Docker on a laptop first**, before buying any of it.
 
 ---
 

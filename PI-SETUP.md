@@ -68,6 +68,10 @@ can override what.
 | 5 V 2.5 A micro-USB supply | **Not** a phone charger you had lying around. An underpowered Pi browns out under load, and on this project that means the USB link to the radio dropping mid-transmission — the exact failure that sticks the radio in TX |
 | The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, and Digirig's VX-6R audio/PTT cable. On a **Pi 3A+** also a powered USB hub (with its own supply) between the Pi and the Digirig; a **Pi 3B+** takes the Digirig directly |
 | The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README. A VX-6R left running needs DC power (Yaesu E-DC-5B or E-DC-6); the battery does not last. **Not** from the hub or a USB boost cable — see Troubleshooting |
+| *Optional:* a UPS HAT with a clock | A PiShop Raspberry Pi UPS HAT is fitted to this station: 3 A, a 450 mAh cell, and a DS3231. It does **not** keep the gateway on the air — the radio is dark the moment mains goes — it makes the Pi shut down cleanly instead of dying mid-write, and it gives the station a clock. Set `PI_UPS = yes` and `PI_RTC = ds3231` in `pi.conf`. Nothing conflicts: this build's only GPIO use is a pin inside the USB sound card, not on the Pi |
+
+The full parts list, with the reasoning behind each choice, is
+["What it takes to build one" in README.md](README.md#what-it-takes-to-build-one).
 
 **On a 3B+ nothing extra is needed.** It has a USB hub chip on the board, and the
 Digirig enumerates in any of its four ports — and, since the radio's sound card is

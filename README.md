@@ -51,11 +51,68 @@ no console session at any point. You manage it entirely over the network.
 ./build_pi_image.sh flash /dev/sdX
 ```
 
+If a UPS HAT with a clock is fitted, two settings in `pi.conf` turn it on —
+`PI_UPS = yes` for the graceful shutdown and `PI_RTC = ds3231` for the clock.
+Both are documented inline there, and a card built without the HAT is unharmed
+by leaving them set: the shutdown script refuses to act without a heartbeat from
+the board, and the RTC overlay simply finds nothing.
+
 **[PI-SETUP.md](PI-SETUP.md) is the full walkthrough**, blank card to gateway on
 the air, written for someone who has never used a Raspberry Pi. It also covers
 running the monitor and editing the whitelist over SSH, and has an appendix on
 how the image is customised offline by loop-mounting it (no Raspberry Pi Imager
 involved).
+
+## What it takes to build one
+
+Everything below is what is actually fitted to this station, with the reason it
+is that part rather than another. Prices are approximate and from 2026.
+
+### The gateway itself
+
+| Part | Notes |
+|---|---|
+| **Raspberry Pi 3B+** | Four USB ports, each behind a hub chip. A 3A+ also runs this and was the original target, but its single port has no hub behind it and will not detect a Digirig Lite without a powered hub — see §16.6 of the design document |
+| **microSD card, 32 GB** | Size is irrelevant; endurance is not. The card is written very little by design (`run/` and the journal are in RAM), but power-loss behavior is a property of the card's own controller that no amount of software fixes |
+| **5 V supply, 2.5 A or better** | The Pi's own draw is modest; the margin is for the USB sound card and any hub |
+| **A case** | Anything. The Pi is never touched once it is on the air |
+
+### Radio interface
+
+| Part | Notes |
+|---|---|
+| **Digirig Lite** | ~\$35. USB sound card plus PTT on a CM108 GPIO pin. No CAT — this gateway does not need it, because the radio sits on one frequency forever |
+| **Digirig cable for your radio** | Radio-specific and the single most error-prone item in this build. A 3-conductor TRS plug in a 4-conductor TRRS socket bridges the PTT ring to sleeve and keys the transmitter permanently; see §16 of the design document for the four hours that cost |
+| **A 2 m radio** | An FT-2900R here. A VX-6R and a Radtel 880G are both proven on the same Digirig profile. Anything that will sit on 144.390 FM and accept external PTT works |
+
+### Antenna, and the part that actually mattered
+
+| Part | Notes |
+|---|---|
+| **N9TAX slim jim, 2 m** | A self-contained end-fed half-wave. The matching stub does the job a missing ground plane would, so it does not need the feedline as a counterpoise — which is exactly why a mobile whip on an indoor tripod failed. This change mattered more than any software in this repository |
+| **Coax, as short as reaches** | RG-58 is fine at these lengths and this power |
+| **Common-mode choke at the feedpoint** | ~\$15 |
+| **Ferrite clamps for the USB and power leads** | A handful. RF getting into the USB link reset the sound card roughly every other transmission at full power until the choke, the ferrites and the outdoor antenna were all in place together |
+
+### Power and time (optional, and worth it)
+
+| Part | Notes |
+|---|---|
+| **PiShop Raspberry Pi UPS HAT** | 3 A output, 450 mAh cell, and a DS3231 clock. Fits the 3B+ and leaves nothing conflicting: this gateway's only GPIO use is `CM108_GPIO`, a pin inside the USB sound card rather than on the Pi, so GPIO 17/18/27 are free for the HAT |
+| | The battery is not the protection — the shutdown is. `igate-ups.service` powers off 30 s after mains loss, with 10–30 minutes of cell left. Set `PI_UPS = yes` in `pi.conf` |
+| | Its DS3231 is the second win. Without a clock this station came up with the wrong time and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
+
+**It does not keep the station on the air.** 450 mAh runs a Pi for tens of
+minutes and cannot touch a mobile radio, which is where nearly all the power
+goes. In an outage the gateway goes down either way; this makes it go down
+cleanly.
+
+### What you do not need
+
+No CAT cable, no sound card beyond the Digirig, no GPS, no display, no keyboard
+and no monitor at any point — the card is configured on your laptop before it is
+ever powered on. A laptop running Docker is enough to try the whole thing before
+buying a Pi; see Quickstart A.
 
 ## Documents in this repo
 

@@ -728,6 +728,164 @@ EOF
   esac
 }
 
+emit_ups_file() {  # script|service  install-dir  seconds
+  local which="$1" dir="$2" secs="$3"
+  case "$which" in
+    script)
+      # Quoted heredoc: everything below is the generated script's own shell,
+      # not this one's.
+      cat <<'UPSEOF'
+#!/bin/bash
+# Graceful shutdown on mains loss, for the UPS HAT on the GPIO header.
+#
+# The battery is not the protection; this is. A UPS that keeps the Pi running
+# and then dies mid-write corrupts the card exactly as a pulled plug does.
+#
+# Three pins, per the vendor's documentation:
+#   GPIO17  in   0 = mains present, 1 = running on battery
+#   GPIO27  in   the HAT toggles this about every 0.5s while it is alive
+#   GPIO18  out  held LOW to mean "the Pi is still running"
+#
+# GPIO18 deserves care. The HAT does not watch for a signal meaning "shutting
+# down" — it watches for this pin going high-impedance, which the kernel does
+# by itself at power-off. That is what lets the HAT cut its own output and come
+# back when mains returns.
+#
+# It is also why this uses the deprecated sysfs interface rather than libgpiod.
+# A libgpiod line is released when the holding process exits, so stopping this
+# service would drop GPIO18 to Hi-Z and the HAT would cut power to a perfectly
+# healthy Pi. An exported sysfs pin keeps its value after the exporting process
+# dies, which is the behaviour wanted here.
+set -u
+
+HOLD_SECS="${1:-30}"      # seconds on battery before powering off
+POLL_SECS=1
+STALE_LIMIT=3             # polls without a GPIO27 toggle before the HAT is
+                          # treated as absent
+
+log() { echo "ups: $*"; }
+
+# Exporting a pin that is already exported is an error, and the vendor's script
+# does not guard it — after any restart its direction writes fail silently and
+# it polls a pin it never configured. udev also needs a moment to create and
+# chown the attribute files, so wait for them rather than assuming.
+setup_pin() {  # pin direction
+  local pin="$1" dir="$2" i
+  [[ -d "/sys/class/gpio/gpio${pin}" ]] || echo "$pin" > /sys/class/gpio/export 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -e "/sys/class/gpio/gpio${pin}/direction" ]] && break
+    sleep 0.2
+  done
+  if [[ ! -e "/sys/class/gpio/gpio${pin}/direction" ]]; then
+    log "GPIO${pin} did not appear under /sys/class/gpio — is the kernel built with GPIO_SYSFS?"
+    return 1
+  fi
+  echo "$dir" > "/sys/class/gpio/gpio${pin}/direction"
+}
+
+read_pin() { cat "/sys/class/gpio/gpio${1}/value" 2>/dev/null; }
+
+setup_pin 17 in  || exit 1
+setup_pin 27 in  || exit 1
+setup_pin 18 out || exit 1
+# "The Pi is alive." Deliberately never cleared: see the note above.
+echo 0 > /sys/class/gpio/gpio18/value
+
+log "watching for mains loss; will power off after ${HOLD_SECS}s on battery"
+
+on_battery=0        # consecutive seconds GPIO17 has read 1
+stale=0             # consecutive polls with no GPIO27 toggle
+warned_absent=0
+# The HAT is assumed ABSENT until a toggle proves otherwise, not present until
+# proven absent. An unconnected GPIO17 is a floating pin; counting down on it
+# would make this script the cause of the outage it exists to handle. Starting
+# pessimistic also means the guard does not depend on STALE_LIMIT being smaller
+# than HOLD_SECS, which it need not be.
+heartbeat=0
+
+while true; do
+    # The HAT toggles GPIO27 continuously. Two reads a tenth of a second apart
+    # catch it. If it never moves, either the HAT is gone or it has failed —
+    # and then GPIO17 is a floating pin whose value means nothing, so counting
+    # down on it would be a shutdown caused by the monitor itself.
+    a="$(read_pin 27)"; sleep 0.1; b="$(read_pin 27)"
+    if [[ "$a" != "$b" ]]; then
+        stale=0
+        if (( ! heartbeat )); then
+            heartbeat=1
+            (( warned_absent )) && log "UPS heartbeat is back"
+            warned_absent=0
+        fi
+    else
+        stale=$(( stale + 1 ))
+        if (( stale >= STALE_LIMIT )); then
+            heartbeat=0
+            if (( ! warned_absent )); then
+                log "no UPS heartbeat on GPIO27 — not acting on GPIO17 until it returns"
+                warned_absent=1
+            fi
+        fi
+    fi
+
+    if (( ! heartbeat )); then
+        on_battery=0
+        sleep "$POLL_SECS"
+        continue
+    fi
+
+    if [[ "$(read_pin 17)" == "1" ]]; then
+        if (( on_battery == 0 )); then
+            log "mains lost — on battery, powering off in ${HOLD_SECS}s unless it returns"
+        fi
+        on_battery=$(( on_battery + 1 ))
+        if (( on_battery % 10 == 0 && on_battery < HOLD_SECS )); then
+            log "still on battery (${on_battery}s of ${HOLD_SECS}s)"
+        fi
+        if (( on_battery >= HOLD_SECS )); then
+            log "powering off after ${on_battery}s on battery"
+            # The journal is persistent, so this line survives to explain the
+            # outage to whoever looks in the morning.
+            sync
+            systemctl poweroff
+            exit 0
+        fi
+    else
+        if (( on_battery > 0 )); then
+            log "mains restored after ${on_battery}s — shutdown cancelled"
+        fi
+        on_battery=0
+    fi
+
+    sleep "$POLL_SECS"
+done
+UPSEOF
+      ;;
+    service)
+      cat <<EOF
+[Unit]
+Description=Graceful shutdown on mains loss (UPS HAT)
+# Nothing to wait for: this must be watching before the gateway matters, and it
+# is useful even if the gateway never starts.
+DefaultDependencies=yes
+ConditionPathExists=${dir}/ups-shutdown.sh
+
+[Service]
+Type=simple
+# Root: it exports GPIO pins and calls systemctl poweroff.
+ExecStart=${dir}/ups-shutdown.sh ${secs}
+# If this dies the card loses its protection silently, which is the failure
+# mode this whole feature exists to prevent.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      ;;
+    *) die "emit_ups_file: unknown file '${which}'" ;;
+  esac
+}
+
 # Writes those three files, plus the udev rule, into a directory for copying to a
 # running Pi — the alternative to rebuilding a card for the sake of the watchdog.
 # PI-SETUP.md, "Updating a running pi-gate over SSH", has the copy commands.
@@ -740,21 +898,27 @@ cmd_watchdog_files() {
   # a redirect cannot reopen it: remove the previous run's files before writing.
   rm -f "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
         "${out}/010-igate-watchdog" "${out}/99-igate-watchdog.rules" \
-        "${out}/igate-selftest.service" "${out}/igate-selftest.timer"
+        "${out}/igate-selftest.service" "${out}/igate-selftest.timer" \
+        "${out}/igate-ups.service" "${out}/ups-shutdown.sh"
   emit_watchdog_file service "$user" "$dir" > "${out}/igate-watchdog.service"
   emit_watchdog_file timer   "$user" "$dir" > "${out}/igate-watchdog.timer"
   emit_watchdog_file sudoers "$user" "$dir" > "${out}/010-igate-watchdog"
   emit_selftest_file service "$user" "$dir" > "${out}/igate-selftest.service"
   emit_selftest_file timer   "$user" "$dir" > "${out}/igate-selftest.timer"
+  local ups_secs="${CFG[PI_UPS_SHUTDOWN_SECS]:-30}"
+  emit_ups_file script  "$dir" "$ups_secs" > "${out}/ups-shutdown.sh"
+  emit_ups_file service "$dir" "$ups_secs" > "${out}/igate-ups.service"
   cp "${SCRIPT_DIR}/udev/99-igate-watchdog.rules" "${out}/"
   chmod 644 "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
             "${out}/igate-selftest.service" "${out}/igate-selftest.timer" \
-            "${out}/99-igate-watchdog.rules"
+            "${out}/99-igate-watchdog.rules" "${out}/igate-ups.service"
+  chmod 755 "${out}/ups-shutdown.sh"
   chmod 440 "${out}/010-igate-watchdog"
   note "wrote ${out}/ for user ${user}, install dir ${dir}:"
   note "  igate-watchdog.service  igate-watchdog.timer"
   note "  igate-selftest.service  igate-selftest.timer"
   note "  010-igate-watchdog (sudoers)  99-igate-watchdog.rules (udev)"
+  note "  igate-ups.service  ups-shutdown.sh (UPS HAT, ${ups_secs}s on battery)"
 }
 
 install_services() {
@@ -912,6 +1076,17 @@ EOF
   sudo cp "$tmp" "${sysd}/igate-selftest.timer"
   sudo chmod 644 "${sysd}/igate-selftest.timer"
 
+  # UPS HAT: the script lives beside the gateway, the unit watches it. Installed
+  # unconditionally — the ConditionPathExists in the unit means a card without a
+  # HAT fitted simply does not start it, rather than failing every boot.
+  local ups_secs="${CFG[PI_UPS_SHUTDOWN_SECS]:-30}"
+  emit_ups_file script "$dir" "$ups_secs" > "$tmp"
+  sudo install -D -m 755 "$tmp" "${ROOT_MNT}${dir}/ups-shutdown.sh"
+  emit_ups_file service "$dir" "$ups_secs" > "$tmp"
+  sudo cp "$tmp" "${sysd}/igate-ups.service"
+  sudo chmod 644 "${sysd}/igate-ups.service"
+  note "UPS shutdown installed (${ups_secs}s on battery before poweroff)"
+
   emit_watchdog_file sudoers "$user" "$dir" > "$tmp"
   sudo install -D -m 440 "$tmp" "${ROOT_MNT}/etc/sudoers.d/010-igate-watchdog"
   rm -f "$tmp"
@@ -945,7 +1120,11 @@ done
 # these out of the library package); alsa-utils supplies arecord and amixer.
 # gawk is not optional: the monitor uses strftime(), a gawk extension, and
 # Debian ships mawk as the default awk.
-PKGS="direwolf libhamlib-utils alsa-utils avahi-daemon gawk python3"
+# i2c-tools and util-linux-extra are for the RTC. hwclock is in
+# util-linux-EXTRA on Bookworm and later, not util-linux, and its absence
+# presents as "hwclock: command not found" at the one moment nobody is
+# watching. They cost little and are installed whether or not PI_RTC is set.
+PKGS="direwolf libhamlib-utils alsa-utils avahi-daemon gawk python3 i2c-tools util-linux-extra"
 
 # Retry the whole update-then-install cycle, not just the install.
 #
@@ -973,6 +1152,40 @@ apt_install() {
 }
 
 apt_install
+
+# --- Real-time clock ----------------------------------------------------
+# PI_RTC put the overlay in config.txt, which is what creates /dev/rtc0. Two
+# things remain, and neither happens on its own.
+RTC_CHIP="${CFG[PI_RTC]:-}"
+if [[ -n "\$RTC_CHIP" ]]; then
+  # fake-hwclock restores the timestamp of the last shutdown at every boot and
+  # saves it back at every shutdown. With a real clock fitted the two compete
+  # to set the same system clock, and the saved value can win — which is worse
+  # than having no clock, because the wrong time looks plausible.
+  systemctl disable --now fake-hwclock.service >/dev/null 2>&1 || true
+  apt-get -y remove fake-hwclock >/dev/null 2>&1 || true
+
+  if ! command -v hwclock >/dev/null; then
+    echo "hwclock missing (util-linux-extra); RTC left unset" >&2
+  elif [[ -e /dev/rtc0 ]]; then
+    # A battery-backed clock nobody has ever set holds an arbitrary time with
+    # complete confidence. Write the system clock into it once, while NTP is
+    # known good, or the whole exercise buys nothing.
+    for i in \$(seq 1 30); do
+      [[ "\$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == yes ]] && break
+      sleep 5
+    done
+    if [[ "\$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == yes ]]; then
+      hwclock -w && echo "RTC (\$RTC_CHIP) set from NTP: \$(hwclock -r)"
+    else
+      echo "NTP never synchronized; RTC left unset. Run 'sudo hwclock -w' once it is." >&2
+    fi
+  else
+    echo "PI_RTC=\$RTC_CHIP but /dev/rtc0 is missing. Check the wiring, then:" >&2
+    echo "  i2cdetect -y 1     # the chip should answer at 0x68 (UU once claimed)" >&2
+    echo "  dmesg | grep -i rtc" >&2
+  fi
+fi
 
 # Device access without root, and sudo so the gateway can be managed over SSH.
 # On Raspberry Pi OS the first user is in sudo already; this covers the case
@@ -1085,6 +1298,17 @@ EOF
   else
     note "igate-web.service installed but not enabled (PI_WEB_MONITOR is not yes)"
   fi
+
+  # Enabled by default. On a card with no HAT fitted the unit's
+  # ConditionPathExists is still satisfied — the script is always installed —
+  # but the script exits when GPIO27 shows no heartbeat rather than acting on a
+  # floating GPIO17, so the cost of enabling it blind is a log line.
+  if [[ "${CFG[PI_UPS]:-yes}" == "yes" ]]; then
+    sudo ln -sf /etc/systemd/system/igate-ups.service "${wants}/igate-ups.service"
+    note "igate-ups.service enabled (graceful poweroff on mains loss)"
+  else
+    note "igate-ups.service installed but not enabled (PI_UPS is not yes)"
+  fi
 }
 
 # Settings in the boot partition's config.txt, read by the firmware.
@@ -1112,6 +1336,38 @@ configure_boot_config() {
     # understood here could cost the display driver, so leave it and say so.
     note "WARNING: no plain 'dtoverlay=vc4-kms-v3d' line in config.txt; HDMI audio left as is."
     note "         The radio's card number may then vary between boots (check 'arecord -l')."
+  fi
+
+  # A real-time clock on the GPIO header — the DS3231 carried by the UPS HAT,
+  # or a bare module. Without it this station comes up with the wrong time and
+  # stays wrong until NTP corrects it, which matters because every packet it
+  # gates is timestamped.
+  #
+  # The overlay is what creates /dev/rtc0. Without it the chip sits on the bus
+  # being ignored, and the symptom is indistinguishable from not having fitted
+  # one. i2c_arm is the GPIO header's bus, i2c-1, and it is off in a stock
+  # image — note that enabling it is a separate act from loading the overlay.
+  #
+  # config.txt is divided into conditional sections ([cm4], [pi5], [all]...)
+  # and a bare append inherits whichever happens to be last in the stock file.
+  # Open [all] explicitly rather than trusting the ordering.
+  if [[ -n "${CFG[PI_RTC]:-}" ]]; then
+    if sudo grep -qE '^dtoverlay=i2c-rtc' "$cfg"; then
+      note "i2c-rtc overlay already present in config.txt"
+    else
+      printf '\n[all]\n# Real-time clock on the GPIO header (UPS HAT or a bare module).\ndtparam=i2c_arm=on\ndtoverlay=i2c-rtc,%s\n' \
+        "${CFG[PI_RTC]}" | sudo tee -a "$cfg" >/dev/null
+      note "dtoverlay=i2c-rtc,${CFG[PI_RTC]} and dtparam=i2c_arm=on (under [all])"
+    fi
+    # /dev/i2c-1 is NOT created by the overlay or by dtparam — it needs the
+    # i2c-dev module, which nothing loads by default. The clock works without
+    # it, because the kernel driver talks to the chip directly; what does not
+    # work is `i2cdetect`, and that is the first thing anyone reaches for when
+    # the clock misbehaves. Loading it costs nothing and means the diagnostic
+    # is available on the day it is wanted.
+    printf '# i2c-dev: /dev/i2c-1, so i2cdetect works. The RTC itself does not need it.\ni2c-dev\n' \
+      | sudo tee "${ROOT_MNT}/etc/modules-load.d/i2c-dev.conf" >/dev/null
+    note "i2c-dev loaded at boot (so i2cdetect can see the bus)"
   fi
 }
 
