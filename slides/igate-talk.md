@@ -63,7 +63,7 @@ style: |
 <!-- _paginate: false -->
 <!-- _footer: "" -->
 
-# A two-way APRS iGate that will only ever transmit to me
+# A two-way APRS iGate that will only ever transmit to my whitelist
 
 **KD3CCO**
 
@@ -79,7 +79,7 @@ Texting a handheld from a phone, where the cell network does not reach
 
 An SMS leaves a phone, crosses the internet, reaches a gateway I own, and comes out of a radio.
 
-The handheld on the left is receiving one — in this shot from my own phone, which is what testing it looks like. The phone end is an ordinary text message over whatever network that phone is on. **The radio end is the one with no cell coverage** — the last leg is RF, and that is the leg this project is about.
+The phone end is an ordinary text message. **The radio end needs no cell service at all** — and that last leg is the whole project.
 
 ---
 
@@ -104,7 +104,7 @@ No hardware you do not already own. Five minutes.
 
 # Then set up an alias, so the number never goes on the air again
 
-APRS is transmitted in clear text and archived publicly, permanently and searchably. Address a phone by its raw number and you publish that number, beside your callsign, on every single message.
+APRS is transmitted in clear text and archived publicly. Address a phone by its raw number and you publish that number, beside your callsign, on every single message.
 
 Send one message to `SMS`:
 
@@ -118,7 +118,7 @@ Send that same command from the phone instead, and it never touches RF at all.
 
 ---
 
-# Getting a message back to the radio is the half nobody hands you
+# Getting a message back to the radio is the half you need to build yourself
 
 That bridge will happily carry my text to a phone. Nothing sends one back to me.
 
@@ -130,9 +130,7 @@ That is the whole project: the return leg.
 
 <!-- _class: evidence -->
 
-# The rule is one sentence, and everything else follows from it
-
-> Only APRS **messages addressed to a callsign on my whitelist** are ever transmitted.
+# For my iGate, only APRS messages addressed to a callsign on my whitelist are ever transmitted
 
 ![width:1040px](img/both-directions.svg)
 
@@ -193,9 +191,9 @@ Every line is labeled with the direction it went, which is how three separate fa
 
 # It is a box you plug in and forget
 
-![](img/vx6r-pi-gate-3bplus-cased.jpg)
+![](img/ft2900r-pi-gate-closeup.jpg)
 
-<span class="caption">Raspberry Pi 3B+, a handheld in its charger, a \$35 USB sound-card interface. No keyboard, no monitor.</span>
+<span class="caption">A Raspberry Pi 3B+, a \$35 USB sound-card interface, and a mobile radio. No keyboard, no monitor, no screen.</span>
 
 ---
 
@@ -229,40 +227,19 @@ A UPS HAT on the GPIO header: a lithium cell that carries the Pi on its own for 
 The clock on it is the second win: until now this station came up with the wrong time and timestamped every packet it gated until the network corrected it.
 
 ---
-
-# The faults that cost the most were not in the software
-
-**An adapter cable plugged in backwards.** Three conductors into a four-conductor socket grounded the PTT line, so the radio keyed a dead carrier until its own timeout, then refused to transmit. Receive was perfect. Every log said the messages were sent.
-
-**RF from its own antenna, knocking the sound card off the USB bus** — one reset every other transmission. A choke at the feedpoint and the antenna outside fixed it at full power.
-
-Both of them were a cable and a bit of ferrite. I guess I really am an amateur at this radio stuff.
-
----
-
-![bg left:38%](img/ft2900r-pi-gate-tripod-antenna.jpg)
+![bg right:36%](img/n9tax-slim-jim-on-the-porch.jpg)
 
 <!-- _class: panel -->
 
-# The third fault was the antenna, and no amount of power was going to fix it
+# The three faults that cost the most were none of them software
 
-A Diamond SG7500NMO on a tripod, indoors. It is sold as not needing a ground plane, and in fairness it does not need a car roof — but it needed far more counterpoise than I gave it, so the coax braid ended up doing the radiating.
+**An adapter cable in backwards.** Three conductors into a four-conductor socket grounded the PTT line, so the radio keyed a dead carrier until its own timeout. Receive was perfect and every log said the messages were sent.
 
-Raising power changed nothing measurable. Eight decibels bought nothing, because the limiting item was never the path.
+**RF from its own antenna**, knocking the sound card off the USB bus — one reset every other transmission.
 
----
+**An antenna that was not one.** A mobile whip indoors, sold as needing no ground plane, which still needed far more counterpoise than I gave it: the coax braid ended up doing the radiating. Eight decibels more power bought nothing.
 
-![bg right:40%](img/n9tax-slim-jim-on-the-porch.jpg)
-
-<!-- _class: panel -->
-
-# The fix was hanging a proper half-wave outside
-
-A slim jim is a **self-contained end-fed half-wave** — the matching stub does the job the missing ground plane was doing, so it does not need the feedline as a counterpoise.
-
-A monoband N9TAX I already had, hung from the porch roof for now, coax running back inside.
-
-RF stopped knocking the sound card off the USB bus at full power, and digipeaters began repeating the gateway that never had.
+All three were fixed by a slim jim hung outside, a choke at the feedpoint, and a cable the right way round. **I guess I really am an amateur at this radio stuff.**
 
 ---
 
@@ -279,34 +256,15 @@ RF stopped knocking the sound card off the USB bus at full power, and digipeater
 No CAT cable, no GPS, no display, no keyboard, no monitor — ever. **Try the whole thing in Docker on a laptop first**, before buying any of it.
 
 ---
-
 <!-- _class: evidence -->
 
-# An AI coding assistant reads your whole repository, and that changes which projects are worth starting
-
-![width:880px](img/agent-loop.svg)
-
-Hobby time arrives as confetti: twenty minutes before dinner, an hour on a Sunday. What decides whether a project happens is not the work in it — it is how much progress fits inside one of those fragments. A gateway that tests its own delivery every four hours was never going to happen otherwise.
-
----
-
-<!-- _class: evidence -->
-
-# The gain is not just faster and better code — it is the practices the AI made affordable
+# AI helps with faster code and better documentation practices
 
 ![width:1000px](img/doc-first-cycle.svg)
 
-<span class="caption">Interfaces, failure modes and what happens when a part is missing, all decided in the document before anything exists. Here that produced a `selftest` that proves delivery end to end, and a `reach` that measures which digipeaters hear me — out of logs I already had.</span>
+Hobby time arrives as confetti, so what decides whether a project happens is how much progress fits in twenty minutes. Writing the requirements down first, numbering them, and keeping an honest status used to be the part you skipped; it stops being overhead when the tedium is cheap.
 
----
-
-# Its best trick is telling me what I did not know to ask
-
-**Argue with it for an hour at two in the morning** without spending a friend's patience. In a solo hobby, that back-and-forth was the scarce ingredient.
-
-**Then turn it against your own design.** I write down how I think something should work, and ask for an analysis of alternatives — and specifically: *does this design imply there are tools, techniques or facts out there that I am not accounting for?*
-
-It is a retrieval system over what other people have already worked out. Use it as one.
+**Its best trick is telling me what I did not know to ask** — write down how you think something should work, then ask what the alternatives are and what you are not accounting for.
 
 ---
 
@@ -324,7 +282,7 @@ It is a retrieval system over what other people have already worked out. Use it 
 
 # A text message to a radio, where there is no cell service
 
-That is the whole point of it. When I am out past coverage with a handheld, somebody at home can reach me, and I can answer — through a gateway I own, which will transmit to nobody else.
+When I am out past coverage with a handheld, somebody at home can reach me, and I can answer — through my own well-behaved gateway
 
 **Code, four quickstarts, and a step-by-step Pi build**
 github.com/hatandspecs/aprs_igate_bidirectional_whitelist
