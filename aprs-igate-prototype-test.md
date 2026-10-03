@@ -1170,7 +1170,8 @@ belongs only in a test.
   and then dies mid-write corrupts the card exactly as a pulled plug does. What
   closes the requirement is power loss being detected and a clean `poweroff`
   issued with charge in hand: `igate-ups.service` watches GPIO17 and powers off
-  after 30 s on battery, out of 10–30 minutes available.
+  after 30 s on battery. The cell's actual runtime has not been measured; the
+  margin is large and is not relied on.
 
   **The vendor's script was not used as shipped**, for four reasons worth
   recording. It is a SysV init script, so nothing restarts it if the loop dies —
