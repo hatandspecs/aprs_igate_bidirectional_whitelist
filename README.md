@@ -98,13 +98,12 @@ is that part rather than another. Prices are approximate and from 2026.
 
 | Part | Notes |
 |---|---|
-| **PiShop Raspberry Pi UPS HAT** | 3 A output, 450 mAh cell, and a DS3231 clock. Fits the 3B+ and leaves nothing conflicting: this gateway's only GPIO use is `CM108_GPIO`, a pin inside the USB sound card rather than on the Pi, so GPIO 17/18/27 are free for the HAT |
+| **PiShop Raspberry Pi UPS HAT** | A LiPo cell — the one fitted here is marked 750 mAh / 2.775 Wh — and a DS3231 clock. Fits the 3B+ and leaves nothing conflicting: this gateway's only GPIO use is `CM108_GPIO`, a pin inside the USB sound card rather than on the Pi, so GPIO 17/18/27 are free for the HAT |
 | | The battery is not the protection — the shutdown is. `igate-ups.service` powers off 30 s after mains loss, with 10–30 minutes of cell left. Set `PI_UPS = yes` in `pi.conf` |
 | | Its DS3231 is the second win. Without a clock this station came up with the wrong time and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
 
-**It does not keep the station on the air.** 450 mAh runs a Pi for tens of
-minutes and cannot touch a mobile radio, which is where nearly all the power
-goes. In an outage the gateway goes down either way; this makes it go down
+**It does not keep the station on the air.** A cell this size runs a Pi for a
+while and cannot touch a mobile radio, which is where nearly all the power goes. In an outage the gateway goes down either way; this makes it go down
 cleanly.
 
 ### What you do not need

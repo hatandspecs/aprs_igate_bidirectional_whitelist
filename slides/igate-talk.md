@@ -79,7 +79,7 @@ Texting a handheld from a phone, where the cell network does not reach
 
 An SMS leaves a phone, crosses the internet, reaches a gateway I own, and comes out of a radio.
 
-The handheld on the left is receiving one. Nothing between the two of us had to be a cell tower.
+The handheld on the left is receiving one — in this shot from my own phone, which is what testing it looks like. The phone end is an ordinary text message over whatever network that phone is on. **The radio end is the one with no cell coverage** — the last leg is RF, and that is the leg this project is about.
 
 ---
 
@@ -128,13 +128,15 @@ That is the whole project: the return leg.
 
 ---
 
+<!-- _class: evidence -->
+
 # The rule is one sentence, and everything else follows from it
 
 > Only APRS **messages addressed to a callsign on my whitelist** are ever transmitted.
 
-Positions, telemetry, bulletins, other people's traffic: heard, gated upward, **never keyed onto the air**.
+![width:1040px](img/both-directions.svg)
 
-From every other operator's point of view this station is receive-only — so its beacon says exactly that, rather than advertising a relay nobody else can use.
+<span class="caption">Measured over thirty hours. From every other operator's point of view this station is receive-only, so its beacon says exactly that rather than advertising a relay nobody else can use.</span>
 
 ---
 
@@ -155,11 +157,17 @@ From every other operator's point of view this station is receive-only — so it
 # Four lines of configuration do the work that matters
 
 ```
-IGFILTER  g/KD3CCO*        ask the servers for that traffic at all
-FILTER IG 0 g/KD3CCO*      the whitelist itself, on the addressee
-IGMSP     0                no courtesy exceptions
-IGTXLIMIT 6 10             a hard cap, whatever else happens
+IGFILTER  g/KD3CCO*        ALSO send me messages for these calls
+FILTER IG 0 g/KD3CCO*      what I will put ON THE AIR — the whitelist
+IGMSP     0                no courtesy exceptions to it
+IGTXLIMIT 6 10             at most 6 packets a minute, 10 in five
 ```
+
+**`IGFILTER` widens what arrives; it does not narrow it.** APRS-IS already sends an iGate traffic involving stations it has recently gated up — which is most of what you see arriving and being dropped. This *adds* a subscription: send me messages for my calls **whether or not I have heard that station lately**. Without it the downlink only reaches somebody already in earshot, which is the opposite of the point.
+
+**`FILTER IG 0` is the gate.** It decides what reaches the transmitter. That one is the guarantee.
+
+`IGTXLIMIT` is a hard ceiling whatever the rest of the config says — and Dire Wolf **drops** packets over it rather than queueing them, which is the right behavior on a shared national channel.
 
 `IGMSP 0` is the one I would have missed. Dire Wolf has a courtesy feature that transmits a **message sender's position** after relaying their message — regardless of any filter. I watched it put the SMS gateway's own beacon on the air.
 
@@ -206,9 +214,13 @@ A beacon proves the transmitter keys. **Only an acknowledged message proves the 
 
 ---
 
+![bg right:34%](img/ups-hat-installed.jpg)
+
+<!-- _class: panel -->
+
 # It shuts itself down now, when the power goes
 
-A UPS HAT on the header: 3 amps, a 450 mAh cell, and a clock.
+A UPS HAT on the GPIO header: a lithium cell that carries the Pi on its own for a while, and a battery-backed clock.
 
 **The battery is not the protection — the shutdown is.** A UPS that keeps the Pi running and then dies mid-write corrupts the card exactly as a pulled plug does. Thirty seconds after mains is lost it powers off, with most of the cell still unused.
 
@@ -224,6 +236,8 @@ The clock on it is the second win: until now this station came up with the wrong
 
 **RF from its own antenna, knocking the sound card off the USB bus** — one reset every other transmission. A choke at the feedpoint and the antenna outside fixed it at full power.
 
+Both of them were a cable and a bit of ferrite. I guess I really am an amateur at this radio stuff.
+
 ---
 
 ![bg left:38%](img/ft2900r-pi-gate-tripod-antenna.jpg)
@@ -232,7 +246,7 @@ The clock on it is the second win: until now this station came up with the wrong
 
 # The third fault was the antenna, and no amount of power was going to fix it
 
-A mobile whip on a tripod, indoors, with no ground plane — so the coax braid was doing the radiating.
+A Diamond SG7500NMO on a tripod, indoors. It is sold as not needing a ground plane, and in fairness it does not need a car roof — but it needed far more counterpoise than I gave it, so the coax braid ended up doing the radiating.
 
 Raising power changed nothing measurable. Eight decibels bought nothing, because the limiting item was never the path.
 
@@ -308,7 +322,9 @@ It is a retrieval system over what other people have already worked out. Use it 
 
 <!-- _class: closing -->
 
-# A receive-only iGate is an afternoon, and your neighbors will thank you
+# A text message to a radio, where there is no cell service
+
+That is the whole point of it. When I am out past coverage with a handheld, somebody at home can reach me, and I can answer — through a gateway I own, which will transmit to nobody else.
 
 **Code, four quickstarts, and a step-by-step Pi build**
 github.com/hatandspecs/aprs_igate_bidirectional_whitelist

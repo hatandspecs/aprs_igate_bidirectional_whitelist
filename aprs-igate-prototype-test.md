@@ -401,7 +401,7 @@ PTT RIG 2 localhost:4532
 IGSERVER noam.aprs2.net
 IGLOGIN  KD3CCO 123456       # APRS-IS passcode
 
-IGFILTER  g/KD3CCO*          # what the server SENDS to this station
+IGFILTER  g/KD3CCO*          # ALSO send these, even if unheard on RF
 FILTER    IG 0 g/KD3CCO*     # what this station may TRANSMIT
 IGMSP     0                  # no courtesy position reports
 IGTXVIA   0                  # path on gated messages; rendered from TX_VIA
@@ -1161,7 +1161,7 @@ belongs only in a test.
   property of the card rather than the operating system.
 
   **The clean shutdown is built (2026-10-02).** A PiShop UPS HAT — 3 A output,
-  a 450 mAh Li-Ion cell, a DS3231 — fitted and verified supplying clean power
+  a LiPo cell marked 750 mAh / 2.775 Wh, a DS3231 — fitted and verified supplying clean power
   under transmit load (`vcgencmd get_throttled` = `0x0`). The 40-pin header was
   free because `CM108_GPIO` is a pin inside the USB sound card rather than on
   the Pi, so GPIO 17/18/27 were available.
@@ -1203,8 +1203,9 @@ belongs only in a test.
   this is not finished until that has been done.
 
   **It does not keep the station on the air**, and expecting that would be a
-  misreading. 450 mAh runs a Pi for 10–30 minutes and cannot touch an FT-2900R,
-  which is where nearly all the power goes. In an outage the gateway goes down
+  misreading. A cell this size runs a Pi for a while and cannot touch an FT-2900R,
+  which is where nearly all the power goes. The shutdown needs 30 seconds, so the
+  margin is large; the runtime itself has not been measured and is not relied on. In an outage the gateway goes down
   either way; this makes it go down cleanly.
 
   **The DS3231 on it is a second benefit, and is done (2026-10-02).** This
