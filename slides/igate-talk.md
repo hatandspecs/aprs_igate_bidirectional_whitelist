@@ -55,6 +55,19 @@ style: |
   section .pair img { max-height: 232px; width: auto; margin: 0 0 6px 0; }
   section .pair figcaption { font-size: 17px; color: #555555; }
   section .trio img { max-height: 182px; }
+  /* Heading across the full width, then two equal columns under it. `bg right`
+     cannot do this: a background image occupies its column for the whole slide
+     height, so the heading is confined to the other half and wraps. */
+  section .split { display: flex; gap: 34px; align-items: flex-start; margin-top: 4px; }
+  section .split > div { flex: 1 1 0; min-width: 0; }
+  section .split img { max-width: 100%; max-height: 420px; margin: 0; }
+  /* KaTeX's own display margin collapses against `section p`, which leaves
+     stacked equations touching. Space them deliberately. */
+  /* Marp renders math with MathJax, not KaTeX — the element is <mjx-container>
+     and a `.katex-display` rule silently matches nothing. Padding rather than
+     margin, because a display block's margins collapse with the paragraph
+     around it and the gap never changes. */
+  section mjx-container[display="true"] { margin: 0 !important; padding: 2px 0 22px 0 !important; }
   section footer { font-size: 14px; color: #888888; }
   section::after { font-size: 14px; color: #888888; }
 ---
@@ -220,6 +233,32 @@ A beacon proves the transmitter keys. **Only an acknowledged message proves deli
 **An antenna that was not one.** A mobile whip indoors, sold as needing no ground plane, which still needed far more counterpoise than I gave it: the coax braid ended up doing the radiating. Eight decibels more power bought nothing.
 
 All three were fixed by a slim jim up a fifteen-foot mast in the yard, a choke at the feedpoint, and a cable the right way round. **I guess I really am an amateur at this radio stuff.**
+
+---
+<!-- _class: evidence -->
+
+# Drive level into the radio sets deviation — mine calibrated to 2.8 kHz
+
+<div class="split">
+<div>
+
+$$BW = 2\,(\Delta f + f_{\max})$$
+
+$$\Delta f = \frac{BW}{2} - f_{\max}$$
+
+$$\Delta f = \frac{10\;\text{kHz}}{2} - 2.2\;\text{kHz} = 2.8\;\text{kHz}$$
+
+**Method:** key up, read the occupied bandwidth off any band scope — 10 kHz here — and solve for $\Delta f$ with $f_{\max}$ at 2200 Hz, the higher APRS tone. Adjust the Digirig's drive level, repeat until **2.5 to 3.0 kHz**.
+
+Much past 3 and the radio's voice processing takes over: pre-emphasis, deviation limiter, splatter filter. All of it built so clipped speech still sounds right. AFSK is two tones that must stay balanced, and one bad bit discards the whole packet.
+
+</div>
+<div>
+
+![](img/ftx1-bandscope-deviation-check.jpg)
+
+</div>
+</div>
 
 ---
 

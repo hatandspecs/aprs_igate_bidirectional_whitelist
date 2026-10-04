@@ -116,12 +116,19 @@ killing the process group whenever the reader stops. If something like this
 recurs, note that `rc=None` means the pipeline is still running, and that
 `stderr` was being discarded — which is why it took four days.
 
-**Power and time.** The UPS HAT is **out** — or on its way out: the cell is
-disconnected and `PI_UPS = no` as of 2026-10-04, and it is being replaced by a
-plain DS3231 module, which is the only part of it this station ever needed.
-`PI_RTC = ds3231` is unchanged by the swap: same chip, same address, same
-overlay. Mains loss is an instant cut; mains return is an unattended boot. The
-card protections are what do the real work and are independent of all this:
+**Power and time — state as of 2026-10-04.** The UPS HAT is still on the header
+but its **cell is disconnected**, `PI_UPS = no`, and `igate-ups.service` is
+disabled on the running Pi. In that state the HAT is doing nothing but carrying
+its DS3231, which is the only part of it this station ever needed. Mains loss is
+an instant cut; mains return is an unattended boot.
+
+**Pending:** an **Adafruit PiRTC** (product 4282) with an **Energizer CR1220**
+has been ordered to replace it. The swap is physical only — same DS3231, same
+I2C address `0x68`, same `i2c-rtc` overlay — so `PI_RTC = ds3231` and everything
+`build_pi_image.sh` writes stay exactly as they are. Afterwards, confirm with
+`i2cdetect -y 1` showing `68` and `sudo hwclock -r` returning a sane time.
+
+The card protections are what do the real work and are independent of all this:
 `run/` on tmpfs, journal in RAM and capped, zram with no writeback file, root
 mounted `data=journal`.
 

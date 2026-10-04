@@ -2520,16 +2520,14 @@ Two knobs, and the second is usually the one that matters:
 After each change: sudo systemctl restart aprs-igate  (or ./deploy_igate.sh restart)
 then leave the monitor running for a few minutes and re-run this command.
 
-TRANSMIT SIDE: deviation.
+TRANSMIT SIDE: calibrating deviation.
 
-Target is 2.5-3.0 kHz peak deviation for 1200-baud AFSK on a 5 kHz wide-FM
-channel. Under-deviating arrives weak at a distant discriminator; over-deviating
-engages the radio's own limiter, distorts the tones and raises adjacent-channel
-energy, so the packet fails to decode rather than reaching further. TX_AUDIO_LEVEL
-in the radio profile is the knob.
+TX_AUDIO_LEVEL in the radio profile sets how hard the interface drives the
+radio, and that sets deviation. Target is 2.5-3.0 kHz peak for 1200-baud AFSK
+on a 5 kHz wide-FM channel. This is a calibration: measure, adjust, repeat.
 
-Dire Wolf generates the test tone itself. Stop the gateway first (the sound card
-is single-user), and transmit into a dummy load or on an unused simplex
+STEP 1. Transmit something steady. Stop the gateway first (the sound card takes
+one user at a time), and transmit into a dummy load or on an unused simplex
 frequency -- this is an unmodulated carrier, not something to put on 144.390:
 
   sudo systemctl stop aprs-igate
@@ -2537,30 +2535,51 @@ frequency -- this is an unmodulated carrier, not something to put on 144.390:
                                           # -x a = alternating, -x p = PTT only
   sudo systemctl start aprs-igate
 
-Two ways to read the result, neither needing a deviation meter:
+STEP 2. Read the occupied bandwidth off any receiver's band scope, at a span
+wide enough to show both edges. 20 kHz is comfortable on 2 m.
 
-  1. Carson's rule against any receiver's band scope.
+STEP 3. Solve for deviation with Carson's rule:
 
        BW = 2 (dF + Fmax)      so      dF = BW/2 - Fmax
 
-     Fmax is 2200 Hz, the higher APRS tone. Measured here on 2026-10-03: about
-     10 kHz occupied on an FTX-1 scope at 20 kHz span, giving 2.8 kHz. Against
-     gridlines every 4 kHz the edges read to about 100 Hz, so the deviation is
-     good to 50 Hz; the approximation is Carson's rule itself, which covers ~98%
-     of the power, not the reading. Note that a handheld transmitting in the same
-     room reads a meaningless width -- that is front-end compression rather than
-     its deviation.
+  Fmax is 2200 Hz, the higher APRS tone. So a 10 kHz trace is 2.8 kHz deviation.
 
-  2. The Bessel null, which needs only a spectrum display. An FM carrier
-     disappears at a modulation index of 2.405, so a 1200 Hz mark tone nulls its
-     carrier at exactly 2.89 kHz deviation. Raise TX_AUDIO_LEVEL until the
-     carrier collapses into the noise. Do not use the space tone: its first null
-     would require 5.29 kHz, past the channel limit.
+STEP 4. Change TX_AUDIO_LEVEL and go back to step 1, until the answer lands
+between 2.5 and 3.0 kHz. Run it even if the first reading is already in band --
+the same interface on a different radio, or the same radio on a different input,
+lands somewhere else entirely.
 
-The Digirig feeds the radio's microphone input, which normally carries
-pre-emphasis and a limiter. The 2200 Hz tone is boosted relative to the 1200 Hz
-one and hits the limiter first, and once it is limiting, more level buys
-distortion rather than deviation.
+A deviation meter does steps 2 and 3 directly and is the better instrument. The
+band scope reaches the same answer with equipment most stations already have.
+
+The Bessel null is a third way, needing only a spectrum display: an FM carrier
+disappears at a modulation index of 2.405, so a 1200 Hz mark tone nulls its
+carrier at exactly 2.89 kHz deviation. Raise TX_AUDIO_LEVEL until the carrier
+collapses into the noise and the level is calibrated against a constant. Do not
+use the space tone -- its first null would need 5.29 kHz, past the channel limit.
+
+Two things that will mislead you:
+
+  * A handheld transmitting in the same room reads a meaningless width. That is
+    the receiver's front end compressing, not the handheld's deviation. Only a
+    signal arriving at a normal level can be measured this way.
+  * The reading is tighter than the rule. Against gridlines every 4 kHz the trace
+    edges are good to about 100 Hz, which is 50 Hz of deviation; the loose term
+    is Carson's rule itself, which describes the bandwidth holding ~98% of the
+    power.
+
+Why the upper bound: it is headroom, not a cliff. Nothing falls outside the
+receiver's IF filter at 3 kHz -- Carson puts 2.8 kHz at 10.0 kHz occupied and
+5 kHz at 14.4, against an IF commonly around 15 kHz. What goes wrong above the
+target is that the radio's voice processing starts acting on the data:
+pre-emphasis, the deviation limiter clipping near 5 kHz, and the splatter filter
+behind it. All of it assumes clipped speech still sounds right. AFSK is two tones
+whose balance has to survive, and one bad bit fails the CRC and discards the
+whole frame.
+
+The Digirig feeds a microphone input, so pre-emphasis boosts the 2200 Hz tone
+and it reaches the limiter first. Once limiting, more level buys distortion
+rather than deviation.
 GUIDE
 }
 

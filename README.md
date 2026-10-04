@@ -101,7 +101,8 @@ is that part rather than another. Prices are approximate and from 2026.
 
 | Part | Notes |
 |---|---|
-| **A DS3231 real-time clock** | About \$5. The boards that press onto header pins 1-5 need no wiring. Without a clock this station came up with the wrong time after every outage and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
+| **A DS3231 real-time clock** | An **Adafruit PiRTC** (product 4282) here, about \$12. It presses onto header pins 1-9 (odd row) with no wiring and no soldering. Without a clock this station came up with the wrong time after every outage and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
+| **A CR1220 cell** | Not included with the Adafruit board. An **Energizer CR1220** here. Non-rechargeable is correct — that board has no charging circuit, and the DS3231 draws microamps, so a cell lasts five years or more. Avoid the cheap `DS3231 For Pi` modules unless you check what sits next to the holder: some carry a charge path meant for a rechargeable LIR cell, which will slowly cook a CR |
 
 **Not a UPS HAT.** One was fitted here for a week and taken out again. The
 battery backup works, but the combination this station needed — shut down

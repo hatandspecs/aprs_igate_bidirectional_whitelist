@@ -1139,15 +1139,55 @@ races it would otherwise win (§14.7), since it discards the direct copy and wai
 the digipeated one that arrives about a second later. That is one more reason it
 belongs only in a test.
 
-### 14.8 Transmit deviation, and reading it off a band scope
+### 14.8 Calibrating transmit deviation
 
-The target for 1200-baud AFSK on a 5 kHz wide-FM channel is **2.5 to 3.0 kHz
-peak deviation**. Below that the tones arrive weak at a distant discriminator.
-Above it the radio's own deviation limiter distorts them and adjacent-channel
-energy rises, so the packet fails to decode rather than travelling further.
+Deviation is set by the audio level the sound-card interface drives into the
+radio — `TX_AUDIO_LEVEL` in the radio profile — and it is a calibration, not an
+observation. The procedure below is the whole of it; everything after is why
+each step is there.
 
-A deviation meter is the direct instrument. A receiver with a band scope is an
-indirect one, through Carson's rule:
+**The procedure.**
+
+1. **Transmit something steady.** Dire Wolf has the generator built in: `-x m`
+   for a continuous 1200 Hz mark, `-x s` for the 2200 Hz space, `-x a`
+   alternating, `-x p` to key PTT silently. Stop the gateway first — the sound
+   card takes one user at a time — and transmit into a dummy load or an unused
+   simplex frequency, never 144.390. An ordinary beacon works too if a band
+   scope is all that is being read.
+2. **Read the occupied bandwidth** off a receiver's band scope, at a span wide
+   enough to see both edges. 20 kHz is comfortable on 2 m.
+3. **Solve for deviation** with Carson's rule, below.
+4. **Change `TX_AUDIO_LEVEL`** and repeat until the answer lands between
+   **2.5 and 3.0 kHz**.
+
+A deviation meter does step 2 and 3 directly and is the better instrument. A
+band scope and arithmetic reach the same answer with equipment most stations
+already own, which is the point of writing it down.
+
+**The target.** Below 2.5 kHz the tones arrive weak at a distant discriminator.
+
+The upper bound is headroom rather than a cliff, and it is worth stating
+precisely because it is easy to overstate. Nothing falls outside the receiver's
+IF filter at 3 kHz: Carson puts 2.8 kHz deviation at 10.0 kHz occupied, 4 kHz at
+12.4 and 5 kHz at 14.4, against an IF commonly around 15 kHz wide. What actually
+goes wrong above the target is that the radio's voice processing starts acting
+on the data. Pre-emphasis, +6 dB/octave on a microphone input, already makes the
+2200 Hz tone deviate more than the 1200 Hz one before anything else happens. The
+deviation limiter is a hard clipper capping peaks near 5 kHz. Behind it sits the
+splatter filter, a low-pass whose job is to remove the harmonics the clipping
+just produced. Radios with a microphone compressor or ALC add another.
+
+Every one of those is designed around speech, which tolerates clipping without
+sounding wrong. AFSK is two tones whose relative deviation has to survive
+intact, and it does not: the margin the demodulator uses to tell mark from space
+narrows, bit errors rise, and one bad bit fails the CRC and discards the whole
+frame. There is no partial credit.
+
+Adjacent-channel energy also rises with deviation, and the network is aligned to
+the same convention, so matching it is what makes one setting work into
+everybody's receiver.
+
+**Carson's rule**, which turns a bandwidth reading into a deviation:
 
 ```
 BW = 2 (dF + Fmax)        rearranged:   dF = BW/2 - Fmax
@@ -1156,16 +1196,19 @@ BW = 2 (dF + Fmax)        rearranged:   dF = BW/2 - Fmax
 `dF` is the peak deviation and `Fmax` is the highest modulating audio frequency
 — 2200 Hz, the space tone, for APRS.
 
-**Measured 2026-10-03.** The gateway transmitting from the yard occupied about
-10 kHz on an FTX-1 band scope set to a 20 kHz span, which gives
+**This station, 2026-10-03.** Transmitting from the yard, 10 kHz occupied on an
+FTX-1 band scope at a 20 kHz span:
 
 ```
 dF = 10/2 - 2.2 = 2.8 kHz
 ```
 
-inside the target band and requiring no adjustment.
+In band at the level already configured, so step 4 ran zero times. That is an
+accident of where the level happened to sit and not a reason to skip it: the
+same interface on a different radio, or the same radio on a different input,
+lands somewhere else entirely.
 
-Two cautions attach to the method:
+Two cautions attach to the measurement:
 
 * **The reading is precise; the rule is the approximation.** Against gridlines
   at 4 and 8 kHz either side of centre the trace edges are good to about 100 Hz,
@@ -1179,12 +1222,6 @@ Two cautions attach to the method:
   front-end compression in the receiver, with its antenna disconnected, and not
   the handheld's deviation. Only a signal arriving at a normal level can be
   measured this way.
-
-**Generating a steady tone.** Dire Wolf has the generator built in: `-x m` is a
-continuous mark (1200 Hz), `-x s` a continuous space (2200 Hz), `-x a`
-alternating, `-x p` keys PTT silently. The gateway service must be stopped first
-because the sound card is single-user, and the transmission is an unmodulated
-carrier — a dummy load or an unused simplex frequency, never 144.390.
 
 **The Bessel null alternative** needs only a spectrum display rather than a
 calibrated one. The carrier component of an FM signal vanishes at a modulation
@@ -1383,9 +1420,19 @@ only configuration in which the path on aprs.fi reports what actually happened.
   on a BCM2837, so no pin state here can be verified by reading it back. The
   only instrument available was the Pi's red PWR LED.
 
-  **What the station does instead.** The HAT comes off and a plain DS3231
-  module goes in — same chip, same I2C address, same `i2c-rtc` overlay, so
-  `PI_RTC = ds3231` needs no change. With the battery gone, mains loss is an
+  **What the station does instead.** The HAT comes off and an **Adafruit PiRTC**
+  (product 4282) with an **Energizer CR1220** goes in — same DS3231, same I2C
+  address `0x68`, same `i2c-rtc` overlay, so `PI_RTC = ds3231` needs no change.
+  The cell is not supplied with the board, and non-rechargeable is correct: that
+  board has no charging circuit and the DS3231 draws microamps, so one cell runs
+  for five years or more. Cheap `DS3231 For Pi` modules were considered and
+  passed over — several carry a charge path intended for a rechargeable LIR
+  cell, which will slowly destroy a CR, and in a sealed enclosure that is not a
+  risk worth five dollars.
+
+  Until the module arrives the HAT stays on the header with **its cell
+  disconnected** and the service disabled, which is functionally the same thing:
+  a DS3231 and nothing else. With the battery gone, mains loss is an
   instant cut and mains return is an unattended boot, every time. The radio runs
   from its own supply, so the gateway is off the air from the first second of
   any outage regardless, and riding one out bought nothing. The card
