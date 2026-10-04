@@ -207,22 +207,6 @@ PASS — a message from the internet reached KD3CCO-7 and was acknowledged.
 A beacon proves the transmitter keys. **Only an acknowledged message proves delivery.** This station spent hours beaconing normally while delivering nothing.
 
 ---
-
-![bg right:34%](img/ups-hat-installed.jpg)
-
-<!-- _class: panel -->
-
-# It shuts itself down now, when the power goes
-
-A UPS HAT on the GPIO header: a lithium cell that carries the Pi on its own for a while, and a battery-backed clock.
-
-**The shutdown is the protection, not the battery.** A UPS that keeps the Pi running and then dies mid-write corrupts the card exactly as a pulled plug does. Thirty seconds after mains is lost it powers off, with most of the cell still unused.
-
-**It does not keep the station on the air.** The radio is dark the moment mains goes. This only means the gateway goes down cleanly instead of badly.
-
-The clock is the other half: until now this station came up with the wrong time and timestamped every packet it gated until the network corrected it.
-
----
 ![bg right:34%](img/n9tax-slim-jim-on-mast.jpg)
 
 <!-- _class: panel -->

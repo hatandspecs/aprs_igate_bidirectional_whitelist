@@ -70,6 +70,12 @@ The design doc separates **Specification** (what it must do) from **Findings**
   `./deploy_igate.sh audio` and §14.8 of the design doc. A handheld transmitting
   in the same room reads a meaningless bandwidth — that is front-end
   compression, not its deviation.
+- **A test that builds its own fixture proves nothing about the machine.** The
+  UPS shutdown was "verified" against a simulated `/sys/class/gpio` tree that
+  the test created, so it could only confirm the arithmetic it already used. On
+  the real Pi the service crash-looped 11,735 times without arming, for two
+  days, while three documents called it verified. BCM numbers are not sysfs
+  numbers: gpiolib allocates dynamically and the base is 512 on this kernel.
 - **`bash -n deploy_igate.sh`** after any edit. It is 2,800 lines of bash and
   there is no test suite.
 
@@ -110,35 +116,40 @@ killing the process group whenever the reader stops. If something like this
 recurs, note that `rc=None` means the pipeline is still running, and that
 `stderr` was being discarded — which is why it took four days.
 
-**Power and time, added 2026-10-02.** A PiShop UPS HAT is fitted: GPIO17 is
-mains-fail, GPIO27 a heartbeat the HAT toggles, GPIO18 held low to mean "the Pi
-is running" — the kernel releasing it at power-off is what tells the HAT to cut
-output. `igate-ups.service` powers off 30 s after mains loss. It uses the
-deprecated sysfs GPIO interface **deliberately**: a libgpiod line is released
-when its process exits, which would drop GPIO18 and cut power to a healthy Pi
-whenever the service stopped. The HAT's DS3231 is set up via `PI_RTC = ds3231`.
+**Power and time.** The UPS HAT is **out** — or on its way out: the cell is
+disconnected and `PI_UPS = no` as of 2026-10-04, and it is being replaced by a
+plain DS3231 module, which is the only part of it this station ever needed.
+`PI_RTC = ds3231` is unchanged by the swap: same chip, same address, same
+overlay. Mains loss is an instant cut; mains return is an unattended boot. The
+card protections are what do the real work and are independent of all this:
+`run/` on tmpfs, journal in RAM and capped, zram with no writeback file, root
+mounted `data=journal`.
 
-**The antenna moved on 2026-10-03**, from the porch roof to a telescoping mast
-about fifteen feet up in the yard, and the station moved to a side table in a
-spare room. **The feedline was replaced on 2026-10-04**, 50 feet of RG316 for
-RG-8X — roughly 5 dB of loss at 2 m down to under 2 dB, in both directions.
+**Do not turn the UPS service back on with this HAT (settled 2026-10-04).** The
+script is correct — it detects mains loss and shuts down cleanly, both verified
+against real plug-pulls. The hardware cannot finish the job. A Pi halted by
+`poweroff` keeps its 5 V rail up, the HAT back-feeds it indefinitely, and mains
+returning makes the HAT *charge* rather than let the cell flatten — so the
+station stays halted until somebody unplugs the battery by hand. That happened
+three times in one afternoon.
 
-Both reach measurements above were taken from the porch, on RG316. Nothing
-measured before 10-04 is comparable with anything measured after it: antenna
-height, station location and feedline have all changed since, on top of a
-37%-versus-60% difference that was never explained. The 37/60 question is now
-unanswerable and should be left alone. What is needed is two fresh `reach` runs
-on different days from the finished station, as a new baseline — not a
-comparison with the old numbers.
+Driving GPIO18 **high** does start the HAT's disconnect timer; confirmed by
+doing it on battery with the Pi left running, which went dark within the minute.
+But the pin must stay high and only a running Pi can hold it there. All three
+ways of combining it with a shutdown failed: letting the pin go Hi-Z at
+power-off (what the vendor's own script relies on), driving it high then leaving
+an internal pull-up (~50k is too weak), and driving it high as a real output
+then halting — from the monitor loop and from a `/usr/lib/systemd/system-shutdown`
+hook running after every filesystem was unmounted. The halt releases the pad,
+the default pull-down wins, the timer is cancelled.
 
-Note that SWR read at the radio end will be **higher** on RG-8X than it was on
-RG316, and that is the masking going away rather than a fault: at 5 dB of line
-loss even a disconnected antenna reads about 1.9:1, while at 1.8 dB it reads
-about 5:1.
+Also note mains reaches the Pi's own micro-USB jack and only gets to the HAT
+through the GPIO header, so the HAT never had to "restore" anything; and the
+pull registers are write-only on a BCM2837, so none of these pin states can be
+verified by reading them back. The only instrument is the red PWR LED.
 
 **Untested:** delivery to a handheld genuinely outside the gateway's own
-footprint, and the UPS shutdown against a real power cut — simulated GPIO is
-not a plug being pulled.
+footprint.
 
 ## How I work — standing preferences
 

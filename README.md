@@ -51,11 +51,14 @@ no console session at any point. You manage it entirely over the network.
 ./build_pi_image.sh flash /dev/sdX
 ```
 
-If a UPS HAT with a clock is fitted, two settings in `pi.conf` turn it on —
-`PI_UPS = yes` for the graceful shutdown and `PI_RTC = ds3231` for the clock.
-Both are documented inline there, and a card built without the HAT is unharmed
-by leaving them set: the shutdown script refuses to act without a heartbeat from
-the board, and the RTC overlay simply finds nothing.
+If a DS3231 real-time clock is fitted, `PI_RTC = ds3231` in `pi.conf` sets it
+up. A card built without one is unharmed by leaving it set — the overlay simply
+finds nothing on the bus.
+
+`PI_UPS` drives a graceful shutdown on mains loss and is **off**. The script
+works; the UPS HAT it was written for cannot complete the job, and switching it
+on strands the station. The reasoning is documented inline in `pi.conf` and is
+worth reading before enabling it on any battery HAT.
 
 **[PI-SETUP.md](PI-SETUP.md) is the full walkthrough**, blank card to gateway on
 the air, written for someone who has never used a Raspberry Pi. It also covers
@@ -98,13 +101,19 @@ is that part rather than another. Prices are approximate and from 2026.
 
 | Part | Notes |
 |---|---|
-| **PiShop Raspberry Pi UPS HAT** | A LiPo cell — the one fitted here is marked 750 mAh / 2.775 Wh — and a DS3231 clock. Fits the 3B+ and leaves nothing conflicting: this gateway's only GPIO use is `CM108_GPIO`, a pin inside the USB sound card rather than on the Pi, so GPIO 17/18/27 are free for the HAT |
-| | The battery is not the protection — the shutdown is. `igate-ups.service` powers off 30 s after mains loss, with most of the cell unused. Set `PI_UPS = yes` in `pi.conf` |
-| | Its DS3231 is the second win. Without a clock this station came up with the wrong time and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
+| **A DS3231 real-time clock** | About \$5. The boards that press onto header pins 1-5 need no wiring. Without a clock this station came up with the wrong time after every outage and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
 
-**It does not keep the station on the air.** A cell this size runs a Pi for a
-while and cannot touch a mobile radio, which is where nearly all the power goes. In an outage the gateway goes down either way; this makes it go down
-cleanly.
+**Not a UPS HAT.** One was fitted here for a week and taken out again. The
+battery backup works, but the combination this station needed — shut down
+cleanly on mains loss, then come back by itself when power returns — is not
+something that board can do, and the failure mode is that the gateway stays
+dark until somebody unplugs the battery by hand. See §15 of the design doc for
+the three approaches tried and why each failed.
+
+**A UPS cannot keep the station on the air anyway.** A cell that size runs a Pi
+for half an hour and cannot touch a mobile radio, which is where nearly all the
+power goes. The radio has its own supply, so an outage takes the gateway off
+the air from the first second whether the Pi is alive or not.
 
 ### What you do not need
 

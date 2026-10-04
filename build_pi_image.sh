@@ -746,10 +746,22 @@ emit_ups_file() {  # script|service  install-dir  seconds
 #   GPIO27  in   the HAT toggles this about every 0.5s while it is alive
 #   GPIO18  out  held LOW to mean "the Pi is still running"
 #
-# GPIO18 deserves care. The HAT does not watch for a signal meaning "shutting
-# down" — it watches for this pin going high-impedance, which the kernel does
-# by itself at power-off. That is what lets the HAT cut its own output and come
-# back when mains returns.
+# THIS SCRIPT IS OFF BY DEFAULT AND SHOULD STAY OFF ON THIS HARDWARE. It
+# detects mains loss and shuts down cleanly, both verified — and that is exactly
+# the problem. A Pi halted by `poweroff` keeps its 5 V rail up, the HAT goes on
+# back-feeding it, and mains returning makes the HAT charge rather than let the
+# cell flatten, so the station stays halted until somebody unplugs the battery.
+#
+# GPIO18 driven HIGH does start the HAT's disconnect timer — confirmed on
+# battery with the Pi left running, which went dark within the minute. But the
+# pin has to STAY high, and only a running Pi can hold it there. Driving it high
+# and then halting fails whether it is done here or from a system-shutdown hook
+# after every filesystem is unmounted: the halt releases the pad, the default
+# pull-down takes over, and the timer is cancelled. There is no sequence that
+# works. See pi.conf for the full account.
+#
+# Kept because the mains-loss detection and the clean shutdown are both correct
+# and would be the right thing on a HAT that can cut its own output on command.
 #
 # It is also why this uses the deprecated sysfs interface rather than libgpiod.
 # A libgpiod line is released when the holding process exits, so stopping this
@@ -774,6 +786,32 @@ STALE_LIMIT=3             # polls without a GPIO27 toggle before the HAT is
                           # treated as absent
 
 log() { echo "ups: $*"; }
+
+# bash has no builtin sleep, and forking /bin/sleep several times a second is
+# most of this process's CPU — 15% of a Pi 3B+ core at one point, on a machine
+# whose real job is a software modem. `read -t` on a descriptor that never
+# delivers anything is a builtin wait: open a fifo read-write so the open does
+# not block for want of a writer, then unlink it. Falls back to /bin/sleep if
+# that cannot be set up, because a watchdog must not fail to start over a
+# performance trick.
+_nap_fifo="$(mktemp -u /tmp/ups-nap.XXXXXX 2>/dev/null)"
+if [[ -n "$_nap_fifo" ]] && mkfifo "$_nap_fifo" 2>/dev/null && exec 9<>"$_nap_fifo" 2>/dev/null; then
+  rm -f "$_nap_fifo"
+  nap() { read -rt "$1" -u 9 _ 2>/dev/null || :; }
+else
+  rm -f "$_nap_fifo" 2>/dev/null
+  nap() { sleep "$1"; }
+fi
+
+# Likewise the clock. `now="$(date +%s)"` once per pass is a subshell plus an
+# exec of /bin/date, and this loop runs forever. EPOCHSECONDS is a bash 5.0
+# builtin; printf's %(fmt)T covers 4.2 and later. Both set `now` directly.
+if [[ -n "${EPOCHSECONDS:-}" ]]; then
+  now_secs() { now=$EPOCHSECONDS; }
+else
+  now_secs() { printf -v now '%(%s)T' -1; }
+fi
+now=0
 
 # Find the sysfs number of BCM GPIO 0, by asking the controller rather than
 # assuming. The SoC's own pin controller is the chip labelled pinctrl-* with 54
@@ -857,7 +895,7 @@ heartbeat_alive() {
   local i first
   read_pin "$P27"; first="$PIN"
   for i in 1 2 3 4; do
-    sleep 0.2
+    nap 0.2
     read_pin "$P27"
     [[ "$PIN" != "$first" ]] && return 0
   done
@@ -899,11 +937,11 @@ while true; do
 
     if (( ! heartbeat )); then
         on_battery_since=0
-        sleep "$POLL_SECS"
+        nap "$POLL_SECS"
         continue
     fi
 
-    now="$(date +%s)"
+    now_secs
     read_pin "$P17"
     if [[ "$PIN" == "1" ]]; then
         if (( on_battery_since == 0 )); then
@@ -920,6 +958,20 @@ while true; do
             log "powering off after ${elapsed}s on battery"
             # The journal is persistent, so this line survives to explain the
             # outage to whoever looks in the morning.
+            #
+            # `poweroff` alone is not enough and leaves the station dead. It
+            # halts the SoC with the 5 V rail still up, and a Pi in that state
+            # restarts only when the rail collapses. The HAT keeps back-feeding
+            # a halted Pi, so when mains returns the HAT simply starts charging,
+            # the cell never flattens, and the station stays halted until
+            # somebody disconnects the battery by hand.
+            #
+            # What completes it is the system-shutdown hook installed alongside
+            # this script, which drives GPIO18 high after every filesystem is
+            # unmounted. The HAT then disconnects its output about ten seconds
+            # later, the rail genuinely collapses, and mains returning gives the
+            # Pi a real power-on reset. See the hook for why it has to run
+            # there and not here.
             sync
             systemctl poweroff
             exit 0
@@ -931,7 +983,7 @@ while true; do
         on_battery_since=0
     fi
 
-    sleep "$POLL_SECS"
+    nap "$POLL_SECS"
 done
 UPSEOF
       ;;
@@ -1003,7 +1055,7 @@ cmd_watchdog_files() {
   note "  igate-watchdog.service  igate-watchdog.timer"
   note "  igate-selftest.service  igate-selftest.timer"
   note "  010-igate-watchdog (sudoers)  99-igate-watchdog.rules (udev)"
-  note "  igate-ups.service  ups-shutdown.sh (UPS HAT, ${ups_secs}s on battery)"
+  note "  igate-ups.service  ups-shutdown.sh (UPS HAT, ${ups_secs}s — off by default)"
 }
 
 install_services() {

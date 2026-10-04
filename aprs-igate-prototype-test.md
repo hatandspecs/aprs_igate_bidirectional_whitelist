@@ -1313,11 +1313,106 @@ only configuration in which the path on aprs.fi reports what actually happened.
   them helps if the card's own controller loses its mapping tables, which is a
   property of the card rather than the operating system.
 
-  **The clean shutdown is built (2026-10-02).** A PiShop UPS HAT — 3 A output,
-  a LiPo cell marked 750 mAh / 2.775 Wh, a DS3231 — fitted and verified supplying clean power
-  under transmit load (`vcgencmd get_throttled` = `0x0`). The 40-pin header was
-  free because `CM108_GPIO` is a pin inside the USB sound card rather than on
-  the Pi, so GPIO 17/18/27 were available.
+  **The clean shutdown works, verified 2026-10-04 against a real plug-pull.**
+  `mains lost` at 13:10:01, `powering off after 60s on battery` at 13:11:01 —
+  sixty seconds to the second — the boot's journal ending at 13:11:04, and no
+  `recovering journal` in `dmesg` on the way back up. That is the first time
+  this station has gone down without a dirty unmount. The cancel path was
+  verified separately the same day: mains restored at 14 s, countdown abandoned,
+  station stayed up.
+
+  **It did not work at all between 2026-10-02 and 2026-10-04**, and was recorded
+  here as fitted and verified throughout. Three independent faults, none of
+  which the original test could have caught because it built its own
+  `/sys/class/gpio` tree and so only ever confirmed the arithmetic it was
+  already using:
+
+  1. **BCM numbers are not sysfs numbers.** gpiolib allocated the Pi's
+     controller at base 512 rather than 0, so exporting pin 17 silently failed
+     and the service crash-looped **11,735 times in one uptime**, never once
+     arming. The script now reads the base from the controller.
+  2. **The heartbeat window was shorter than the signal.** Two reads 0.1 s apart
+     against a 0.5 s half-period caught an edge about one time in five, measured
+     at 19 misses in 25. A miss zeroes the countdown, so even with the pin
+     numbers right, a real mains loss would probably never have survived 60
+     consecutive seconds of counting. Now five reads across 0.8 s: 0 misses in
+     30, and still correct on a dead pin.
+  3. **`StartLimitIntervalSec` and `StartLimitBurst` were in `[Service]`.** They
+     are `[Unit]` keys; systemd logged `Unknown key ... ignoring` and retried
+     without limit, which is how 11,735 restarts filled the 32 MB persistent
+     journal and evicted the history of the reboots it exists to explain.
+
+  The loop also cost 15% of a core — forking a subshell, a `cat` and a `sleep`
+  several times a second on a machine whose real job is a software modem. Reads
+  are now bash builtins, the clock is `EPOCHSECONDS`, and the waits are `read -t`
+  on a fifo: **0.6%**.
+
+  **The hardware cannot complete the shutdown, and the service is therefore
+  off.** `PI_UPS = no`, the cell is disconnected, and the HAT is kept on the
+  header for its DS3231 alone.
+
+  A Raspberry Pi starts only when its 5 V rail collapses. `poweroff` halts the
+  SoC and leaves the rail up, and the HAT goes on back-feeding a halted Pi.
+  Mains returning then makes the HAT *charge*, so the cell never flattens, the
+  rail never collapses, and the station stays halted until the battery is
+  unplugged by hand. Observed three times on 2026-10-04. A clean shutdown turns
+  a ten-minute outage into one that lasts until somebody is in the room, which
+  for this station is strictly worse than the dirty cut it was avoiding.
+
+  Driving GPIO18 **high** does start the HAT's disconnect timer — confirmed by
+  doing it on battery with the Pi left running, which went dark within the
+  minute. The pin must be a push-pull output and must stay high. Three ways of
+  combining that with a shutdown were tried and all failed:
+
+  1. Letting the pin go high-impedance when the kernel releases it at
+     power-off, which is what the vendor's own script relies on.
+  2. Driving it high and then leaving it an input with the internal pull-up —
+     ~50k is too weak for the HAT to read as a high.
+  3. Driving it high as a real push-pull output and then halting, both from the
+     monitor loop and from a `/usr/lib/systemd/system-shutdown` hook running
+     after every filesystem was unmounted and the root remounted read-only.
+
+  In every case the halt releases the pad, GPIO18 falls to its default
+  pull-down, and the timer is cancelled before it expires. Only a running Pi can
+  hold the pin high, and a running Pi is the one thing a shutdown cannot leave
+  behind. **There is no sequence that works on this board.**
+
+  Two facts that shaped the search and are worth keeping: mains reaches the
+  Pi's own micro-USB jack and only gets to the HAT through the GPIO header, so
+  the HAT never had to "restore" anything; and the pull registers are write-only
+  on a BCM2837, so no pin state here can be verified by reading it back. The
+  only instrument available was the Pi's red PWR LED.
+
+  **What the station does instead.** The HAT comes off and a plain DS3231
+  module goes in — same chip, same I2C address, same `i2c-rtc` overlay, so
+  `PI_RTC = ds3231` needs no change. With the battery gone, mains loss is an
+  instant cut and mains return is an unattended boot, every time. The radio runs
+  from its own supply, so the gateway is off the air from the first second of
+  any outage regardless, and riding one out bought nothing. The card
+  protections above are independent of all this and are what were always doing
+  the real work.
+
+  NFR-15 is therefore **met by the card protections alone**, which is where it
+  stood before the HAT was bought. What the week produced is not a feature but
+  a documented negative: this class of board cannot give an unattended station
+  both a clean shutdown and an unattended restart, and the attempt leaves it in
+  a worse state than no UPS at all.
+
+  **The hardware as fitted (2026-10-02).** A PiShop UPS HAT with a LiPo cell
+  marked 750 mAh / 2.775 Wh and a DS3231, verified supplying clean power under
+  transmit load (`vcgencmd get_throttled` = `0x0`). The 40-pin header was free
+  because `CM108_GPIO` is a pin inside the USB sound card rather than on the Pi,
+  so GPIO 17/18/27 were available.
+
+  The vendor's "3 A output" was recorded here as fact and is almost certainly a
+  pass-through or peak figure rather than anything the cell sustains. 3 A at 5 V
+  is 15 W, which a 2.775 Wh cell could hold for about eleven minutes before
+  losses, and would draw roughly 5 A through the converter — around 6C, where
+  small pouch cells are typically rated 1-2C continuous. It is also irrelevant:
+  this station draws on the order of 1 A, and what is actually demonstrated is
+  that the HAT carried the Pi on battery for the 63 seconds of the 2026-10-04
+  shutdown test. Treat every other unqualified number from that datasheet the
+  same way — the one about the output returning with mains was simply wrong.
 
   **The battery is not the fix; the script is.** A UPS that keeps the Pi alive
   and then dies mid-write corrupts the card exactly as a pulled plug does. What
