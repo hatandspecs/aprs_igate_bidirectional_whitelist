@@ -1139,14 +1139,167 @@ races it would otherwise win (§14.7), since it discards the direct copy and wai
 the digipeated one that arrives about a second later. That is one more reason it
 belongs only in a test.
 
+### 14.8 Transmit deviation, and reading it off a band scope
+
+The target for 1200-baud AFSK on a 5 kHz wide-FM channel is **2.5 to 3.0 kHz
+peak deviation**. Below that the tones arrive weak at a distant discriminator.
+Above it the radio's own deviation limiter distorts them and adjacent-channel
+energy rises, so the packet fails to decode rather than travelling further.
+
+A deviation meter is the direct instrument. A receiver with a band scope is an
+indirect one, through Carson's rule:
+
+```
+BW = 2 (dF + Fmax)        rearranged:   dF = BW/2 - Fmax
+```
+
+`dF` is the peak deviation and `Fmax` is the highest modulating audio frequency
+— 2200 Hz, the space tone, for APRS.
+
+**Measured 2026-10-03.** The gateway transmitting from the yard occupied about
+10 kHz on an FTX-1 band scope set to a 20 kHz span, which gives
+
+```
+dF = 10/2 - 2.2 = 2.8 kHz
+```
+
+inside the target band and requiring no adjustment.
+
+Two cautions attach to the method:
+
+* **The reading is precise; the rule is the approximation.** Against gridlines
+  at 4 and 8 kHz either side of centre the trace edges are good to about 100 Hz,
+  which is 50 Hz of deviation. The looser term is Carson's rule itself, which
+  describes the bandwidth containing about 98% of the power — so which contour on
+  the display corresponds to that is a systematic question, and a scope with more
+  dynamic range shows sidebands below it. At 2.8 kHz there is margin on both
+  sides of the target band and the offset does not change the conclusion.
+* **A near-field signal reads meaningless width.** The same capture shows a
+  handheld's acknowledgement from inside the room as a far wider trace. That is
+  front-end compression in the receiver, with its antenna disconnected, and not
+  the handheld's deviation. Only a signal arriving at a normal level can be
+  measured this way.
+
+**Generating a steady tone.** Dire Wolf has the generator built in: `-x m` is a
+continuous mark (1200 Hz), `-x s` a continuous space (2200 Hz), `-x a`
+alternating, `-x p` keys PTT silently. The gateway service must be stopped first
+because the sound card is single-user, and the transmission is an unmodulated
+carrier — a dummy load or an unused simplex frequency, never 144.390.
+
+**The Bessel null alternative** needs only a spectrum display rather than a
+calibrated one. The carrier component of an FM signal vanishes at a modulation
+index of 2.405, and the index is deviation divided by tone frequency, so a
+1200 Hz mark tone nulls its carrier at exactly 2.89 kHz deviation. Raise
+`TX_AUDIO_LEVEL` until the carrier collapses into the noise and the level is
+calibrated. The space tone cannot be used for this: its first null would require
+5.29 kHz, past the channel limit.
+
+**Pre-emphasis is in the path on this station.** The Digirig feeds the radio's
+microphone input, which normally carries pre-emphasis and a limiter, so the
+2200 Hz tone is boosted relative to the 1200 Hz one and reaches the limiter
+first. Once the limiter is engaged, more audio level buys distortion rather than
+deviation.
+
+### 14.9 APRS-IS deduplication hides digipeating, and most negative results with it
+
+This is the single easiest way to draw a wrong conclusion from this station, and
+it did so repeatedly before it was understood. §14.7 records the mechanism as a
+race between gating stations. The consequence for experiments is larger than that
+framing suggests.
+
+**The filter.** APRS-IS discards a packet whose source callsign, destination and
+information field match one seen in roughly the previous 30 seconds. **The
+digipeater path is not part of that comparison.** A beacon repeated by a
+digipeater is therefore byte-identical, as far as the filter is concerned, to the
+copy a neighbouring iGate heard directly. Only the first arrival survives.
+
+**The digipeated copy always loses.** A digipeater is store-and-forward: it
+receives the complete frame, waits out channel access, and transmits it again.
+At 1200 baud that is on the order of 1.5 to 3 seconds behind the original —
+comfortably inside the dedup window, every time. Whenever any iGate hears the
+original directly, the repeat is suppressed before it can be recorded.
+
+**This station is permanently in that condition.** W3SWL-2 at 4.0 miles and
+W3TM-10 at 3.5 miles both hear it directly and gate it. A digipeater repeat of a
+gateway beacon can essentially never appear in a path on aprs.fi, no matter how
+many digipeaters repeat it.
+
+**aprs.fi shows what APRS-IS stored,** which is the surviving copy. Its raw-packet
+view is not "all copies of this transmission"; it is "the copies that won."
+Absence of a digipeater from the path is not evidence that it did not repeat.
+
+#### The same transmission, two records, opposite conclusions
+
+Observed directly on this station with `TX_VIA = W3YA-1`, naming the digipeater
+rather than an alias:
+
+```
+17:01:03  TX LOCAL   KD3CCO-10>APDW17,W3YA-1:!...RX iGate | TX whitelist only
+17:01:05  RF RX      KD3CCO-10>APDW17,W3YA-1*:!...RX iGate | TX whitelist only
+```
+
+Two seconds apart, with the has-been-repeated asterisk moved onto `W3YA-1`. The
+gateway transmitted the frame and then decoded the digipeater's repeat of it on
+its own receiver. The digipeater unambiguously heard the station.
+
+aprs.fi recorded the same beacon as `KD3CCO-10>APDW17,W3YA-1,qAO,W3SWL-2`, with
+**no asterisk** — reading as proof the digipeater had not repeated it. That is a
+different copy of the same transmission: W3SWL-2 heard the original directly and
+gated it about a second earlier, so the gateway's own copy of the repeat was
+discarded on arrival. One transmission, one digipeater, and two records that
+support opposite findings.
+
+#### Which instrument answers which question
+
+| Question | Authority | Why |
+|---|---|---|
+| Did a digipeater repeat this station? | The gateway's own receiver — `reach`, or `grep 'KD3CCO-10>APDW17' run/direwolf.log \| grep -i W3YA-1` | Never touches APRS-IS, so no dedup and no race |
+| Did the packet reach the internet at all? | aprs.fi | What it is actually for |
+| Which iGate gated it? | The q-construct on aprs.fi | Names the race winner, not everyone who heard it |
+| Can a remote station be reached? | An acknowledgement (FR-18b, `selftest`) | Transmission is not delivery |
+
+**The error is one-sided, which is what makes it dangerous.** A digipeater
+*appearing* in a path on aprs.fi is real evidence that it repeated the frame. A
+digipeater *not* appearing is no evidence of anything. Any experiment whose
+read-out is an aprs.fi path can confirm a success and cannot confirm a failure,
+so a run of negative results from that instrument means only that the instrument
+was blind.
+
+**The one case where the digipeated copy wins** is a transmission no iGate hears
+directly — a station outside the footprint of every local gate. That is the field
+measurement still open in §15, and a second reason it is worth making: it is the
+only configuration in which the path on aprs.fi reports what actually happened.
+
 ---
 
 ## 15. Limitations and future work
 
-**Open, as of 2026-09-26.** Recorded here rather than left implicit, because
+**Open, as of 2026-10-04.** Recorded here rather than left implicit, because
 "what is still wrong" is the part of a design document that rots first.
 
-* **NFR-15, surviving power loss — partly met, hardware still on order.**
+* **Reach has no current baseline.** The two measurements on record — 42 of 112
+  (37%) on 09-27 and 41 of 68 (60%) on 09-28 — were both taken from the porch
+  antenna position on the RG316 feedline. The difference between them is
+  statistically significant (z = 2.97, p = 0.003) and was never explained.
+
+  Three things have changed since: the antenna moved to a fifteen-foot mast in
+  the yard and the station to a spare room (2026-10-03), and 50 feet of RG316
+  was replaced with RG-8X (2026-10-04), recovering roughly 3.5 dB in each
+  direction. Nothing measured from here is comparable with that pair, so the
+  37-versus-60 question is closed unanswered rather than still open.
+
+  What the station needs is two fresh `reach` runs on different days from the
+  finished configuration, as a new baseline. A single number, and particularly
+  the first one back, is not one — this project has already produced one
+  retraction from concluding a change from a small sample.
+
+  Note also that SWR measured at the radio through RG316 was meaningless as an
+  antenna check. At roughly 5 dB of line loss the round trip is 10 dB, so even a
+  disconnected cable reads about 1.9:1; the 1.2:1 recorded before the swap was
+  consistent with any antenna. Through RG-8X at about 1.8 dB, a disconnected
+  cable reads about 5:1, and the reading becomes diagnostic.
+
+* **NFR-15, surviving power loss — partly met; hardware fitted, untested against a real power cut.**
   Four software layers are in place and verified on the running gateway: `run/`
   and the journal in RAM, swap as zram with no `/var/swap` writeback file, and —
   added 2026-10-02 — the root filesystem mounted `rootflags=data=journal`, so
@@ -1647,6 +1800,17 @@ into finding out why.
 
 #### What was tried
 
+**Read this table knowing what its instrument could not see (§14.9).** Every
+"not repeated by W3YA-1" below was read off aprs.fi, and W3SWL-2 heard the
+gateway directly on the same beacons — so a repeat by W3YA-1 would have been
+deduplicated before it could appear. Those rows are unobservable results rather
+than negative ones. The single positive, at 12:23:37, is sound: a digipeater
+appearing in a path is real evidence, and the control transmission most likely
+succeeded in being *seen* because the digipeated copy happened to win that race.
+The day's conclusions about the gateway reaching W3YA-1 rest on this, and the
+later `reach` measurements — which listen on RF and are immune to the problem —
+superseded them.
+
 | Time | Action | Result |
 |---|---|---|
 | 12:03:01 | Gateway beacon with `WIDE1-1`, indoors | No echo; no `W3YA-1` in the path on aprs.fi |
@@ -1804,9 +1968,11 @@ give intermediate steps worth using rather than skipping.
 getting into the USB link at 5 W. Ten watts is three times that field, seventy-five
 is fifteen times. Commissioning starts at the lowest power, confirms `TX LOCAL`
 with no `-19` beneath it, confirms W3YA-1 repeats the beacon, and only then steps
-up. `dmesg | grep -c 'reset full-speed'` is the ingress instrument; `W3YA-1` in
-the beacon's path on aprs.fi is the reach instrument. Both are free and both run
-continuously.
+up. `dmesg | grep -c 'reset full-speed'` is the ingress instrument. The reach
+instrument is the gateway's **own** receiver — `reach`, or `grep
+'KD3CCO-10>APDW17' run/direwolf.log | grep -i W3YA-1` — and not the beacon's path
+on aprs.fi, which cannot show a digipeater repeat while a neighbouring gate hears
+this station directly (§14.9). Both are free and both run continuously.
 
 **Supply.** The radio draws on the order of 11–12 A at full power. The supply's
 continuous rating wants confirming against that before first transmission. Two

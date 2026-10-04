@@ -63,11 +63,11 @@ style: |
 <!-- _paginate: false -->
 <!-- _footer: "" -->
 
-# A two-way APRS iGate that will only ever transmit to my whitelist
+# A two-way APRS iGate that only transmits to my whitelist
 
 **KD3CCO**
 
-Texting a handheld from a phone, where the cell network does not reach
+Bi-directional cell phone to HT text messaging
 
 ---
 
@@ -79,7 +79,7 @@ Texting a handheld from a phone, where the cell network does not reach
 
 An SMS leaves a phone, crosses the internet, reaches a gateway I own, and comes out of a radio.
 
-The phone end is an ordinary text message. **The radio end needs no cell service at all** — and that last leg is the whole project.
+The phone end is an ordinary text message. **The radio end needs no cell service.** That last leg is the project.
 
 ---
 
@@ -87,14 +87,14 @@ The phone end is an ordinary text message. **The radio end needs no cell service
 
 <!-- _class: panel -->
 
-# Half of what I wanted, you can have tonight, without building anything
+# Radio to phone already works, free, with no hardware
 
 **Radio to phone already works — for everyone, for free.** NA7Q runs an APRS-to-SMS bridge, documented at **aprs.wiki**. It answers to `SMS` on the air, and to `866-352-4096` from a phone.
 
 1. **Opt the number in** on this form. Ten digits, press the button. It is a carrier requirement — skip it and your messages vanish with **no error anywhere**.
 2. **From the radio**, send an APRS message to `SMS` reading `@2125550123 your text`.
 
-No hardware you do not already own. Five minutes.
+Five minutes, using the radio you have.
 
 ---
 
@@ -120,11 +120,9 @@ Send that same command from the phone instead, and it never touches RF at all.
 
 # Getting a message back to the radio is the half you need to build yourself
 
-That bridge will happily carry my text to a phone. Nothing sends one back to me.
+That bridge carries my text to a phone. Nothing sends one back to me.
 
-Most iGates are **receive only**: they listen on 144.390 and pass what they hear up to the internet. Nothing goes back down. Going the other way means running **a transmitter that traffic from the internet can key** — which is the part worth being careful about, and the reason I built my own rather than asking to enable it on someone else's.
-
-That is the whole project: the return leg.
+Most iGates are **receive only**: they listen on 144.390 and pass what they hear up to the internet. Nothing goes back down. Going the other way means running **a transmitter that traffic from the internet can key.** That is why I built my own instead of asking someone to enable it on theirs.
 
 ---
 
@@ -134,7 +132,7 @@ That is the whole project: the return leg.
 
 ![width:1040px](img/both-directions.svg)
 
-<span class="caption">Measured over thirty hours. From every other operator's point of view this station is receive-only, so its beacon says exactly that rather than advertising a relay nobody else can use.</span>
+<span class="caption">Measured over thirty hours. From every other operator's point of view this station is receive-only, so its beacon says receive-only.</span>
 
 ---
 
@@ -165,11 +163,9 @@ IGTXLIMIT 6 10             at most 6 packets a minute, 10 in five
 
 **`FILTER IG 0` is the gate.** It decides what reaches the transmitter. That one is the guarantee.
 
-`IGTXLIMIT` is a hard ceiling whatever the rest of the config says — and Dire Wolf **drops** packets over it rather than queueing them, which is the right behavior on a shared national channel.
+`IGTXLIMIT` is a hard ceiling whatever the rest of the config says — and Dire Wolf **drops** packets over it rather than queueing them.
 
 `IGMSP 0` is the one I would have missed. Dire Wolf has a courtesy feature that transmits a **message sender's position** after relaying their message — regardless of any filter. I watched it put the SMS gateway's own beacon on the air.
-
-A whitelist with a well-intentioned exception is not a whitelist.
 
 ---
 
@@ -177,13 +173,13 @@ A whitelist with a well-intentioned exception is not a whitelist.
 
 <!-- _class: panel -->
 
-# The filter is visible while it works, not just in the config file
+# The monitor shows every packet and which direction it went
 
 A phone in the shack, watching a round trip as it happens. `IS GATED` in green is the one packet the whitelist let onto the air; five seconds later the handheld's acknowledgement comes back on RF.
 
 Over thirty hours the servers offered this station **10,151 packets. Eight reached the air** — every one a message to a whitelisted call. The other transmissions were its own beacons.
 
-Every line is labeled with the direction it went, which is how three separate faults were eventually cornered.
+Every line is labeled with the direction it went, which is how I found three separate faults.
 
 ---
 
@@ -191,9 +187,9 @@ Every line is labeled with the direction it went, which is how three separate fa
 
 # It is a box you plug in and forget
 
-![](img/ft2900r-pi-gate-closeup.jpg)
+![](img/pi-gate-spare-room-closeup.jpg)
 
-<span class="caption">A Raspberry Pi 3B+, a \$35 USB sound-card interface, and a mobile radio. No keyboard, no monitor, no screen.</span>
+<span class="caption">A Raspberry Pi 3B+, a \$35 USB sound-card interface, and a mobile radio, on a side table in a spare room. No keyboard, no monitor, no screen.</span>
 
 ---
 
@@ -208,7 +204,7 @@ step 4 OK: KD3CCO-7 acknowledged it over RF
 PASS — a message from the internet reached KD3CCO-7 and was acknowledged.
 ```
 
-A beacon proves the transmitter keys. **Only an acknowledged message proves the station can do the thing it exists for** — and this one had spent hours beaconing happily while unable to deliver anything.
+A beacon proves the transmitter keys. **Only an acknowledged message proves delivery.** This station spent hours beaconing normally while delivering nothing.
 
 ---
 
@@ -220,14 +216,14 @@ A beacon proves the transmitter keys. **Only an acknowledged message proves the 
 
 A UPS HAT on the GPIO header: a lithium cell that carries the Pi on its own for a while, and a battery-backed clock.
 
-**The battery is not the protection — the shutdown is.** A UPS that keeps the Pi running and then dies mid-write corrupts the card exactly as a pulled plug does. Thirty seconds after mains is lost it powers off, with most of the cell still unused.
+**The shutdown is the protection, not the battery.** A UPS that keeps the Pi running and then dies mid-write corrupts the card exactly as a pulled plug does. Thirty seconds after mains is lost it powers off, with most of the cell still unused.
 
 **It does not keep the station on the air.** The radio is dark the moment mains goes. This only means the gateway goes down cleanly instead of badly.
 
-The clock on it is the second win: until now this station came up with the wrong time and timestamped every packet it gated until the network corrected it.
+The clock is the other half: until now this station came up with the wrong time and timestamped every packet it gated until the network corrected it.
 
 ---
-![bg right:36%](img/n9tax-slim-jim-on-the-porch.jpg)
+![bg right:34%](img/n9tax-slim-jim-on-mast.jpg)
 
 <!-- _class: panel -->
 
@@ -239,7 +235,7 @@ The clock on it is the second win: until now this station came up with the wrong
 
 **An antenna that was not one.** A mobile whip indoors, sold as needing no ground plane, which still needed far more counterpoise than I gave it: the coax braid ended up doing the radiating. Eight decibels more power bought nothing.
 
-All three were fixed by a slim jim hung outside, a choke at the feedpoint, and a cable the right way round. **I guess I really am an amateur at this radio stuff.**
+All three were fixed by a slim jim up a fifteen-foot mast in the yard, a choke at the feedpoint, and a cable the right way round. **I guess I really am an amateur at this radio stuff.**
 
 ---
 
@@ -247,11 +243,11 @@ All three were fixed by a slim jim hung outside, a choke at the feedpoint, and a
 
 **The gateway** — a Raspberry Pi 3B+, a microSD card, a 5 V supply.
 
-**The radio interface** — a Digirig Lite, about \$35, and the cable for your radio. That cable is the single most error-prone item here; mine was plugged in backwards for four hours.
+**The radio interface** — a Digirig Lite, about \$35, and the cable for your radio. Mine was plugged in backwards for four hours.
 
 **A 2 m radio** that will sit on 144.390 and accept external PTT. An FT-2900R here; a VX-6R and a Radtel both work on the same profile.
 
-**An antenna that is actually an antenna** — a slim jim outside, with a choke at the feedpoint. This mattered more than any software I wrote.
+**A real antenna** — a slim jim outside, with a choke at the feedpoint. This mattered more than any software I wrote.
 
 No CAT cable, no GPS, no display, no keyboard, no monitor — ever. **Try the whole thing in Docker on a laptop first**, before buying any of it.
 
@@ -282,7 +278,7 @@ Hobby time arrives as confetti, so what decides whether a project happens is how
 
 # A text message to a radio, where there is no cell service
 
-When I am out past coverage with a handheld, somebody at home can reach me, and I can answer — through my own well-behaved gateway
+When I am out past coverage with a handheld, somebody at home can reach me, and I can answer — through my own gateway
 
 **Code, four quickstarts, and a step-by-step Pi build**
 github.com/hatandspecs/aprs_igate_bidirectional_whitelist

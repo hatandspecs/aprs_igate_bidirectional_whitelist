@@ -2519,6 +2519,48 @@ Two knobs, and the second is usually the one that matters:
 
 After each change: sudo systemctl restart aprs-igate  (or ./deploy_igate.sh restart)
 then leave the monitor running for a few minutes and re-run this command.
+
+TRANSMIT SIDE: deviation.
+
+Target is 2.5-3.0 kHz peak deviation for 1200-baud AFSK on a 5 kHz wide-FM
+channel. Under-deviating arrives weak at a distant discriminator; over-deviating
+engages the radio's own limiter, distorts the tones and raises adjacent-channel
+energy, so the packet fails to decode rather than reaching further. TX_AUDIO_LEVEL
+in the radio profile is the knob.
+
+Dire Wolf generates the test tone itself. Stop the gateway first (the sound card
+is single-user), and transmit into a dummy load or on an unused simplex
+frequency -- this is an unmodulated carrier, not something to put on 144.390:
+
+  sudo systemctl stop aprs-igate
+  direwolf -c run/direwolf.conf -x m      # steady 1200 Hz mark; -x s = space,
+                                          # -x a = alternating, -x p = PTT only
+  sudo systemctl start aprs-igate
+
+Two ways to read the result, neither needing a deviation meter:
+
+  1. Carson's rule against any receiver's band scope.
+
+       BW = 2 (dF + Fmax)      so      dF = BW/2 - Fmax
+
+     Fmax is 2200 Hz, the higher APRS tone. Measured here on 2026-10-03: about
+     10 kHz occupied on an FTX-1 scope at 20 kHz span, giving 2.8 kHz. Against
+     gridlines every 4 kHz the edges read to about 100 Hz, so the deviation is
+     good to 50 Hz; the approximation is Carson's rule itself, which covers ~98%
+     of the power, not the reading. Note that a handheld transmitting in the same
+     room reads a meaningless width -- that is front-end compression rather than
+     its deviation.
+
+  2. The Bessel null, which needs only a spectrum display. An FM carrier
+     disappears at a modulation index of 2.405, so a 1200 Hz mark tone nulls its
+     carrier at exactly 2.89 kHz deviation. Raise TX_AUDIO_LEVEL until the
+     carrier collapses into the noise. Do not use the space tone: its first null
+     would require 5.29 kHz, past the channel limit.
+
+The Digirig feeds the radio's microphone input, which normally carries
+pre-emphasis and a limiter. The 2200 Hz tone is boosted relative to the 1200 Hz
+one and hits the limiter first, and once it is limiting, more level buys
+distortion rather than deviation.
 GUIDE
 }
 

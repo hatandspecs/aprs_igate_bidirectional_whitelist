@@ -31,6 +31,16 @@ The design doc separates **Specification** (what it must do) from **Findings**
   frame reached the modem, not that the radio keyed. Only an acknowledgement
   proves delivery, which is what `selftest` measures.
 - **`reach` counts beacons**, so it measures `BEACON_VIA`, not `TX_VIA`.
+- **A digipeater missing from a path on aprs.fi proves nothing.** APRS-IS
+  deduplicates on source, destination and payload over ~30 s and ignores the
+  path, and a digipeated copy arrives 1.5-3 s late, so it loses to any iGate that
+  heard the original directly — and W3SWL-2 at 4 mi and W3TM-10 at 3.5 mi always
+  do. The error is one-sided: a digi *appearing* in a path is real evidence, a
+  digi *absent* is no evidence. For "did anything repeat this station," the only
+  authority is the gateway's own receiver — `reach`, or `grep
+  'KD3CCO-10>APDW17' run/direwolf.log | grep -i W3YA-1`. §14.9 of the design doc
+  has the worked example: one transmission recorded two ways, supporting opposite
+  conclusions.
 - **`systemctl start` on an active oneshot does nothing** — use `restart`.
   `systemctl is-active` reports the unit, not the gateway; `./deploy_igate.sh
   status` reports what is actually running.
@@ -50,6 +60,16 @@ The design doc separates **Specification** (what it must do) from **Findings**
   not reveal; check `/sys/block/zram0/backing_dev` instead. Both are written by
   `build_pi_image.sh`, so a rebuilt card inherits them and a hand-built one
   does not.
+- **Transmit deviation is measured with Carson's rule, not a meter.**
+  `dF = BW/2 - Fmax`, with `Fmax` 2200 Hz for APRS: 10 kHz occupied on a band
+  scope is 2.8 kHz deviation, which is where this station measured on
+  2026-10-03, good to about 50 Hz against 4 kHz gridlines. Target is 2.5-3.0 kHz.
+  `direwolf -x m` generates the tone, the gateway service has to be stopped
+  first, and it goes into a dummy load, never onto 144.390. The full procedure,
+  the Bessel-null alternative and the pre-emphasis caveat are in
+  `./deploy_igate.sh audio` and §14.8 of the design doc. A handheld transmitting
+  in the same room reads a meaningless bandwidth — that is front-end
+  compression, not its deviation.
 - **`bash -n deploy_igate.sh`** after any edit. It is 2,800 lines of bash and
   there is no test suite.
 
@@ -66,7 +86,7 @@ The design doc separates **Specification** (what it must do) from **Findings**
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
 
-## Where it stands (2026-09-30)
+## Where it stands (2026-10-04)
 
 All functional requirements met. Self-test runs every four hours unattended and
 is believed by default: three consecutive step-4 failures on 2026-09-30 were a
@@ -74,12 +94,12 @@ true alarm — the witness radio was switched off. Whitelist, measured over 30
 hours: APRS-IS offered 10,151 packets and 8 reached the air, all of them
 messages to a whitelisted call.
 
-Reach has been measured twice and moved: 42 of 112 (37%) on 09-27, then 41 of
-68 (60%) on 09-28. The difference is significant (z = 2.97, p = 0.003) and
-**unexplained** — a third measurement is wanted before anything is concluded
-from it. `TX_VIA` is `WIDE1-1,WIDE2-2` because the near digipeater (W3TM-10)
-hears this station far more often than the mountain-top one (W3YA-1), so a
-second slot is what reaches the mountain.
+Reach was measured twice from the porch position, on RG316: 42 of 112 (37%) on
+09-27, then 41 of 68 (60%) on 09-28. The difference is significant (z = 2.97,
+p = 0.003) and was never explained; see the 10-03/10-04 note below for why it
+can no longer be. `TX_VIA` is `WIDE1-1,WIDE2-2` because the near digipeater
+(W3TM-10) hears this station far more often than the mountain-top one (W3YA-1),
+so a second slot is what reaches the mountain.
 
 **The web monitor's long-standing stall is solved** (2026-09-30). A Latin-1
 degree sign in another station's APRS comment raised `UnicodeDecodeError` in a
@@ -97,6 +117,24 @@ output. `igate-ups.service` powers off 30 s after mains loss. It uses the
 deprecated sysfs GPIO interface **deliberately**: a libgpiod line is released
 when its process exits, which would drop GPIO18 and cut power to a healthy Pi
 whenever the service stopped. The HAT's DS3231 is set up via `PI_RTC = ds3231`.
+
+**The antenna moved on 2026-10-03**, from the porch roof to a telescoping mast
+about fifteen feet up in the yard, and the station moved to a side table in a
+spare room. **The feedline was replaced on 2026-10-04**, 50 feet of RG316 for
+RG-8X — roughly 5 dB of loss at 2 m down to under 2 dB, in both directions.
+
+Both reach measurements above were taken from the porch, on RG316. Nothing
+measured before 10-04 is comparable with anything measured after it: antenna
+height, station location and feedline have all changed since, on top of a
+37%-versus-60% difference that was never explained. The 37/60 question is now
+unanswerable and should be left alone. What is needed is two fresh `reach` runs
+on different days from the finished station, as a new baseline — not a
+comparison with the old numbers.
+
+Note that SWR read at the radio end will be **higher** on RG-8X than it was on
+RG316, and that is the masking going away rather than a fault: at 5 dB of line
+loss even a disconnected antenna reads about 1.9:1, while at 1.8 dB it reads
+about 5:1.
 
 **Untested:** delivery to a handheld genuinely outside the gateway's own
 footprint, and the UPS shutdown against a real power cut — simulated GPIO is

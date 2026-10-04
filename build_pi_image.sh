@@ -756,44 +756,119 @@ emit_ups_file() {  # script|service  install-dir  seconds
 # service would drop GPIO18 to Hi-Z and the HAT would cut power to a perfectly
 # healthy Pi. An exported sysfs pin keeps its value after the exporting process
 # dies, which is the behaviour wanted here.
+#
+# BCM numbers are not sysfs numbers. gpiolib used to put the Pi's main
+# controller at base 0, so BCM 17 was /sys/class/gpio/gpio17; since kernel 6.6
+# the base is allocated dynamically and is 512 on a Pi 3B+ running 6.18. A
+# hardcoded BCM number does not fail loudly — the export is simply refused and
+# the pin never appears, which this script originally reported as a missing
+# kernel feature. The base is therefore read from the controller at startup.
+# This cost 11,735 crash-restarts over one uptime before it was found, and the
+# test that was supposed to catch it built its own /sys/class/gpio tree, so it
+# could only ever confirm the arithmetic it was already using.
 set -u
 
 HOLD_SECS="${1:-30}"      # seconds on battery before powering off
-POLL_SECS=1
+POLL_SECS=0.2       # plus the ~0.7s the heartbeat sample takes
 STALE_LIMIT=3             # polls without a GPIO27 toggle before the HAT is
                           # treated as absent
 
 log() { echo "ups: $*"; }
 
+# Find the sysfs number of BCM GPIO 0, by asking the controller rather than
+# assuming. The SoC's own pin controller is the chip labelled pinctrl-* with 54
+# lines; the 8-line raspberrypi-exp-gpio expander sits above it and is not what
+# the HAT is wired to.
+GPIO_BASE=""
+find_gpio_base() {
+  local d label
+  for d in /sys/class/gpio/gpiochip*; do
+    [[ -r "$d/label" && -r "$d/base" ]] || continue
+    label="$(cat "$d/label")"
+    case "$label" in
+      pinctrl-*) GPIO_BASE="$(cat "$d/base")"; return 0 ;;
+    esac
+  done
+  for d in /sys/class/gpio/gpiochip*; do
+    [[ -r "$d/ngpio" && -r "$d/base" ]] || continue
+    if [[ "$(cat "$d/ngpio")" == 54 ]]; then
+      GPIO_BASE="$(cat "$d/base")"; return 0
+    fi
+  done
+  return 1
+}
+
+if ! find_gpio_base; then
+  log "no SoC GPIO controller under /sys/class/gpio — is the kernel built with GPIO_SYSFS?"
+  log "  found: $(echo /sys/class/gpio/gpiochip* 2>/dev/null)"
+  exit 1
+fi
+log "sysfs GPIO base is ${GPIO_BASE}; BCM 17/18/27 are $((GPIO_BASE+17))/$((GPIO_BASE+18))/$((GPIO_BASE+27))"
+
 # Exporting a pin that is already exported is an error, and the vendor's script
 # does not guard it — after any restart its direction writes fail silently and
 # it polls a pin it never configured. udev also needs a moment to create and
 # chown the attribute files, so wait for them rather than assuming.
-setup_pin() {  # pin direction
-  local pin="$1" dir="$2" i
+setup_pin() {  # bcm-pin direction
+  local pin=$(( GPIO_BASE + $1 )) dir="$2" i
   [[ -d "/sys/class/gpio/gpio${pin}" ]] || echo "$pin" > /sys/class/gpio/export 2>/dev/null || true
   for i in 1 2 3 4 5 6 7 8 9 10; do
     [[ -e "/sys/class/gpio/gpio${pin}/direction" ]] && break
     sleep 0.2
   done
   if [[ ! -e "/sys/class/gpio/gpio${pin}/direction" ]]; then
-    log "GPIO${pin} did not appear under /sys/class/gpio — is the kernel built with GPIO_SYSFS?"
+    log "BCM ${1} (sysfs ${pin}) did not appear under /sys/class/gpio after export"
     return 1
   fi
   echo "$dir" > "/sys/class/gpio/gpio${pin}/direction"
 }
 
-read_pin() { cat "/sys/class/gpio/gpio${1}/value" 2>/dev/null; }
+# Deliberately sets a global rather than echoing its answer. `v="$(read_pin 27)"`
+# forks a subshell for the substitution and `cat` forks again, and this loop
+# reads a pin several times a second forever: measured at 15% of a Pi 3B+ core,
+# on a machine whose real job is a software modem. `read` is a bash builtin and
+# a global assignment forks nothing.
+PIN=""
+read_pin() { PIN=""; read -r PIN < "$1" 2>/dev/null || PIN=""; }
 
 setup_pin 17 in  || exit 1
 setup_pin 27 in  || exit 1
 setup_pin 18 out || exit 1
 # "The Pi is alive." Deliberately never cleared: see the note above.
-echo 0 > /sys/class/gpio/gpio18/value
+echo 0 > "/sys/class/gpio/gpio$(( GPIO_BASE + 18 ))/value"
+
+# Resolved once, so the hot loop interpolates nothing.
+P17="/sys/class/gpio/gpio$(( GPIO_BASE + 17 ))/value"
+P27="/sys/class/gpio/gpio$(( GPIO_BASE + 27 ))/value"
 
 log "watching for mains loss; will power off after ${HOLD_SECS}s on battery"
 
-on_battery=0        # consecutive seconds GPIO17 has read 1
+# The HAT toggles GPIO27 about every 0.5s, so the sampling window has to be
+# longer than one half-period for a "no toggle" result to mean anything. Two
+# reads 0.1s apart — what this did originally — catch an edge roughly one time
+# in five, so three consecutive misses happen about half the time and the
+# warning fired spuriously on a perfectly healthy HAT. Worse, a spurious miss
+# zeroes the countdown, so a real mains loss could have been ignored.
+#
+# Five reads 0.2s apart spans 0.8s, which cannot miss a 0.5s half-period, and
+# returns as soon as it sees a change rather than always running the full
+# window. The sleeps are the only forks left in the loop.
+heartbeat_alive() {
+  local i first
+  read_pin "$P27"; first="$PIN"
+  for i in 1 2 3 4; do
+    sleep 0.2
+    read_pin "$P27"
+    [[ "$PIN" != "$first" ]] && return 0
+  done
+  return 1
+}
+
+# Epoch second at which mains was first seen missing; 0 means mains is present.
+# A timestamp rather than a count of polls: one pass of this loop takes about a
+# second but is not guaranteed to, and HOLD_SECS is a promise about seconds.
+on_battery_since=0
+last_note=0
 stale=0             # consecutive polls with no GPIO27 toggle
 warned_absent=0
 # The HAT is assumed ABSENT until a toggle proves otherwise, not present until
@@ -804,12 +879,7 @@ warned_absent=0
 heartbeat=0
 
 while true; do
-    # The HAT toggles GPIO27 continuously. Two reads a tenth of a second apart
-    # catch it. If it never moves, either the HAT is gone or it has failed —
-    # and then GPIO17 is a floating pin whose value means nothing, so counting
-    # down on it would be a shutdown caused by the monitor itself.
-    a="$(read_pin 27)"; sleep 0.1; b="$(read_pin 27)"
-    if [[ "$a" != "$b" ]]; then
+    if heartbeat_alive; then
         stale=0
         if (( ! heartbeat )); then
             heartbeat=1
@@ -828,21 +898,26 @@ while true; do
     fi
 
     if (( ! heartbeat )); then
-        on_battery=0
+        on_battery_since=0
         sleep "$POLL_SECS"
         continue
     fi
 
-    if [[ "$(read_pin 17)" == "1" ]]; then
-        if (( on_battery == 0 )); then
+    now="$(date +%s)"
+    read_pin "$P17"
+    if [[ "$PIN" == "1" ]]; then
+        if (( on_battery_since == 0 )); then
+            on_battery_since="$now"
+            last_note=0
             log "mains lost — on battery, powering off in ${HOLD_SECS}s unless it returns"
         fi
-        on_battery=$(( on_battery + 1 ))
-        if (( on_battery % 10 == 0 && on_battery < HOLD_SECS )); then
-            log "still on battery (${on_battery}s of ${HOLD_SECS}s)"
+        elapsed=$(( now - on_battery_since ))
+        if (( elapsed - last_note >= 10 && elapsed < HOLD_SECS )); then
+            log "still on battery (${elapsed}s of ${HOLD_SECS}s)"
+            last_note=$elapsed
         fi
-        if (( on_battery >= HOLD_SECS )); then
-            log "powering off after ${on_battery}s on battery"
+        if (( elapsed >= HOLD_SECS )); then
+            log "powering off after ${elapsed}s on battery"
             # The journal is persistent, so this line survives to explain the
             # outage to whoever looks in the morning.
             sync
@@ -850,10 +925,10 @@ while true; do
             exit 0
         fi
     else
-        if (( on_battery > 0 )); then
-            log "mains restored after ${on_battery}s — shutdown cancelled"
+        if (( on_battery_since != 0 )); then
+            log "mains restored after $(( now - on_battery_since ))s — shutdown cancelled"
         fi
-        on_battery=0
+        on_battery_since=0
     fi
 
     sleep "$POLL_SECS"
@@ -868,6 +943,16 @@ Description=Graceful shutdown on mains loss (UPS HAT)
 # is useful even if the gateway never starts.
 DefaultDependencies=yes
 ConditionPathExists=${dir}/ups-shutdown.sh
+# A fault that cannot be restarted out of must not be retried forever. A
+# misconfigured pin number once produced 11,735 restarts in a single uptime,
+# which filled the 32M persistent journal and evicted the history of the reboots
+# it was meant to explain. Five failures in two minutes stops the unit and
+# leaves the reason as the last thing in its log.
+#
+# These are [Unit] keys. Put in [Service] they are accepted at load time with
+# only "Unknown key ... ignoring" in the journal, and the storm continues.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
