@@ -55,10 +55,8 @@ If a DS3231 real-time clock is fitted, `PI_RTC = ds3231` in `pi.conf` sets it
 up. A card built without one is unharmed by leaving it set — the overlay simply
 finds nothing on the bus.
 
-`PI_UPS` drives a graceful shutdown on mains loss and is **off**. The script
-works; the UPS HAT it was written for cannot complete the job, and switching it
-on strands the station. The reasoning is documented inline in `pi.conf` and is
-worth reading before enabling it on any battery HAT.
+There is no UPS option. One was fitted for a week and removed, along with the
+shutdown service that drove it; `pi.conf` and §15 of the design doc say why.
 
 **[PI-SETUP.md](PI-SETUP.md) is the full walkthrough**, blank card to gateway on
 the air, written for someone who has never used a Raspberry Pi. It also covers

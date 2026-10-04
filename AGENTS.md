@@ -107,6 +107,15 @@ can no longer be. `TX_VIA` is `WIDE1-1,WIDE2-2` because the near digipeater
 (W3TM-10) hears this station far more often than the mountain-top one (W3YA-1),
 so a second slot is what reaches the mountain.
 
+**A new baseline window opened 2026-10-04 16:25 EDT**, on the final
+configuration: slim jim on the fifteen-foot mast, 50 ft of RG-8X, station in the
+spare room, no UPS. `run/` is tmpfs, so any reboot restarts the window — check
+`uptime -s` against that timestamp before trusting a sample. At ~48 beacons a
+day, a run on 10-05 and another on 10-06 gives samples comparable to the old 112
+and 68. **Two runs on different days is the baseline; one is an anecdote**, and
+this project has already produced a retraction from concluding a change from a
+small sample. Nothing from this window is comparable with the 37/60 pair.
+
 **The web monitor's long-standing stall is solved** (2026-09-30). A Latin-1
 degree sign in another station's APRS comment raised `UnicodeDecodeError` in a
 strictly-decoded pipeline; that is a `ValueError`, so the read loop caught it
@@ -116,11 +125,11 @@ killing the process group whenever the reader stops. If something like this
 recurs, note that `rc=None` means the pipeline is still running, and that
 `stderr` was being discarded — which is why it took four days.
 
-**Power and time — state as of 2026-10-04.** The UPS HAT is still on the header
-but its **cell is disconnected**, `PI_UPS = no`, and `igate-ups.service` is
-disabled on the running Pi. In that state the HAT is doing nothing but carrying
-its DS3231, which is the only part of it this station ever needed. Mains loss is
-an instant cut; mains return is an unattended boot.
+**Power and time — state as of 2026-10-04.** There is no UPS. The HAT is still
+physically on the header with its **cell disconnected**, pending the swap below,
+but every trace of it is gone from the software: no `PI_UPS` setting, no
+`igate-ups.service`, no shutdown script, nothing in `build_pi_image.sh`. Mains
+loss is an instant cut; mains return is an unattended boot.
 
 **Pending:** an **Adafruit PiRTC** (product 4282) with an **Energizer CR1220**
 has been ordered to replace it. The swap is physical only — same DS3231, same
@@ -142,13 +151,30 @@ three times in one afternoon.
 
 Driving GPIO18 **high** does start the HAT's disconnect timer; confirmed by
 doing it on battery with the Pi left running, which went dark within the minute.
-But the pin must stay high and only a running Pi can hold it there. All three
-ways of combining it with a shutdown failed: letting the pin go Hi-Z at
-power-off (what the vendor's own script relies on), driving it high then leaving
-an internal pull-up (~50k is too weak), and driving it high as a real output
-then halting — from the monitor loop and from a `/usr/lib/systemd/system-shutdown`
-hook running after every filesystem was unmounted. The halt releases the pad,
-the default pull-down wins, the timer is cancelled.
+But the pin must stay high and only a running Pi can hold it there. Four ways of
+combining it with a shutdown failed: letting the pin go Hi-Z at power-off (what
+the vendor's own script relies on), driving it high then leaving an internal
+pull-up (~50k is too weak), driving it high as a real output then halting — from
+the monitor loop and from a `/usr/lib/systemd/system-shutdown` hook running after
+every filesystem was unmounted — and **the vendor's own `ups-gpiod.sh` run
+unmodified**, which uses libgpiod rather than sysfs and failed identically.
+
+That last one rules out this project's implementation. sysfs looked like the
+culprit, because an exported pin survives process exit by design where libgpiod
+releases a line when its holder dies — so their method should have handed the
+line over early in shutdown while ours never let go. It does not. Do not
+re-derive that theory; it was tested and it is wrong. The momentary button was
+also ruled out — their script was run again with the button toggled and failed
+identically, and the HAT has been fully de-powered, cell disconnected, several
+times between attempts with no change in behaviour. Five attempts in total.
+
+**PiShop support was asked about this on 2026-10-04** — documentation wrong,
+usage error, or faulty board, and specifically whether GPIO18 is meant to be
+pulled up on the HAT. No reply yet; record it here if one comes.
+
+**If a Pi is ever stranded halted-on-battery, press the HAT's momentary button.**
+It cuts the output immediately; plug mains back in and the Pi boots. Far easier
+than unplugging the cell, which is how the first several recoveries were done.
 
 Also note mains reaches the Pi's own micro-USB jack and only gets to the HAT
 through the GPIO header, so the HAT never had to "restore" anything; and the

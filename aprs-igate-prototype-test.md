@@ -1385,8 +1385,9 @@ only configuration in which the path on aprs.fi reports what actually happened.
   on a fifo: **0.6%**.
 
   **The hardware cannot complete the shutdown, and the service is therefore
-  off.** `PI_UPS = no`, the cell is disconnected, and the HAT is kept on the
-  header for its DS3231 alone.
+  off.** The cell is disconnected and the service has been removed from the
+  repository entirely — no `PI_UPS` setting, no unit, no script. The HAT remains
+  physically on the header only until the replacement clock arrives.
 
   A Raspberry Pi starts only when its 5 V rail collapses. `poweroff` halts the
   SoC and leaves the rail up, and the HAT goes on back-feeding a halted Pi.
@@ -1398,7 +1399,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
 
   Driving GPIO18 **high** does start the HAT's disconnect timer — confirmed by
   doing it on battery with the Pi left running, which went dark within the
-  minute. The pin must be a push-pull output and must stay high. Three ways of
+  minute. The pin must be a push-pull output and must stay high. Four ways of
   combining that with a shutdown were tried and all failed:
 
   1. Letting the pin go high-impedance when the kernel releases it at
@@ -1408,11 +1409,47 @@ only configuration in which the path on aprs.fi reports what actually happened.
   3. Driving it high as a real push-pull output and then halting, both from the
      monitor loop and from a `/usr/lib/systemd/system-shutdown` hook running
      after every filesystem was unmounted and the root remounted read-only.
+  4. **The vendor's own script, unmodified** — `scripts/Bullseye/ups-gpiod.sh`
+     from `github.com/hipi-io/ups-hat`, run as root with this project's service
+     stopped and its sysfs exports removed. It printed `### Powering off...`,
+     shut the Pi down cleanly, and left it halted with the red PWR LED lit and
+     the HAT's green LED still flashing fast, discharging into a machine that
+     was not running.
 
   In every case the halt releases the pad, GPIO18 falls to its default
   pull-down, and the timer is cancelled before it expires. Only a running Pi can
   hold the pin high, and a running Pi is the one thing a shutdown cannot leave
   behind. **There is no sequence that works on this board.**
+
+  **The fourth test is the one that matters, and it was run to check an
+  explanation that turned out to be wrong.** The sysfs interface looked like the
+  likely culprit: this project exports the pin and holds it low, which survives
+  process exit by design, where libgpiod releases a line the moment its holder
+  dies — so the vendor's method would hand the line over early in shutdown while
+  ours never let go. That reasoning was sound and the conclusion was false. Their
+  script fails identically, which rules out the implementation and leaves the
+  board.
+
+  **The momentary button was ruled out two ways.** The HAT has been fully
+  de-powered — mains off and cell disconnected — several times between attempts,
+  which leaves its STM32 with no supply; and the vendor's script was then run a
+  second time after deliberately pressing the button to toggle whatever state it
+  holds. Identical failure. Five attempts in total.
+
+  **PiShop support was asked on 2026-10-04** whether the documentation is wrong,
+  whether this is a usage error, or whether the board is faulty — specifically
+  whether GPIO18 is meant to be pulled up on the HAT, which is the one fault
+  that would explain every observation: the disconnect works while a running Pi
+  drives the pin high, and fails the moment nothing is driving it. No reply yet.
+  If one arrives it belongs here.
+
+  **Recovery, which is worth knowing separately from any of this.** A Pi
+  stranded halted-on-battery is freed by pressing the HAT's momentary button:
+  the output cuts immediately, and plugging mains back in boots the Pi. That is
+  far less awkward than disconnecting the cell, which is how the first several
+  recoveries were done. The guide describes the button as turning the HAT on and
+  off, and that is exactly what it does — it is the one part of the
+  documentation that behaved as written.
 
   Two facts that shaped the search and are worth keeping: mains reaches the
   Pi's own micro-USB jack and only gets to the HAT through the GPIO header, so
