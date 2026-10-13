@@ -145,7 +145,7 @@ Most iGates are **receive only**: they listen on 144.390 and pass what they hear
 
 ![width:1040px](img/both-directions.svg)
 
-<span class="caption">Measured over thirty hours. From every other operator's point of view this station is receive-only, so its beacon says receive-only.</span>
+<span class="caption">Measured over eight days. From every other operator's point of view this station is receive-only, so its beacon says receive-only.</span>
 
 ---
 
@@ -190,7 +190,7 @@ IGTXLIMIT 6 10             at most 6 packets a minute, 10 in five
 
 A phone in the shack, watching a round trip as it happens. `IS GATED` in green is the one packet the whitelist let onto the air; five seconds later the handheld's acknowledgement comes back on RF.
 
-Over thirty hours the servers offered this station **10,151 packets. Eight reached the air** — every one a message to a whitelisted call. The other transmissions were its own beacons.
+Over eight days the servers offered this station **73,066 packets. Ninety-five reached the air** — every one addressed to a whitelisted call. The other 392 transmissions were its own beacons.
 
 Every line is labeled with the direction it went, which is how I found three separate faults.
 
@@ -212,12 +212,17 @@ Every line is labeled with the direction it went, which is how I found three sep
 step 1 OK: APRS-IS accepted it
 step 2 OK: the server routed it back to this gateway
 step 3 OK: the gateway transmitted it
-step 4 OK: KD3CCO-7 acknowledged it over RF
+step 4 OK: no repeat of this frame, but 6 repeats heard
+           over the last 16 transmissions
+           by W3YA-1(6)
 
-PASS — a message from the internet reached KD3CCO-7 and was acknowledged.
+PASS — a message from the internet was transmitted, and this
+       station is being repeated.
 ```
 
-A beacon proves the transmitter keys. **Only an acknowledged message proves delivery.** This station spent hours beaconing normally while delivering nothing.
+A beacon proves the transmitter keys. **It does not prove a message gets out.** This station spent hours beaconing normally while delivering nothing.
+
+The witness for that last step is **other people's digipeaters** — always on duty, no airtime of my own. Addressing it to a radio I own only worked while that radio was on, and mine lives in the car: 46 of 49 unattended runs failed on a radio being switched off.
 
 ---
 ![bg right:34%](img/n9tax-slim-jim-on-mast.jpg)
