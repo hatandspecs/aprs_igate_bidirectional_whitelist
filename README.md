@@ -102,12 +102,17 @@ is that part rather than another. Prices are approximate and from 2026.
 | **A DS3231 real-time clock** | An **Adafruit PiRTC** (product 4282) here, about \$12. It presses onto header pins 1-9 (odd row) with no wiring and no soldering. Without a clock this station came up with the wrong time after every outage and timestamped every packet it gated until NTP corrected it. Set `PI_RTC = ds3231` |
 | **A CR1220 cell** | Not included with the Adafruit board. An **Energizer CR1220** here. Non-rechargeable is correct — that board has no charging circuit, and the DS3231 draws microamps, so a cell lasts five years or more. Avoid the cheap `DS3231 For Pi` modules unless you check what sits next to the holder: some carry a charge path meant for a rechargeable LIR cell, which will slowly cook a CR |
 
-**Not a UPS HAT.** One was fitted here for a week and taken out again. The
-battery backup works, but the combination this station needed — shut down
-cleanly on mains loss, then come back by itself when power returns — is not
-something that board can do, and the failure mode is that the gateway stays
-dark until somebody unplugs the battery by hand. See §15 of the design doc for
-the three approaches tried and why each failed.
+**Optionally a UPS HAT instead of the bare clock.** A
+[PiShop UPS HAT](https://www.pishop.us/product/raspberry-pi-ups-hat/) carries
+the same DS3231 and adds a clean shutdown on mains loss with an unattended boot
+on mains return. It needs one line of `config.txt` to cut power at the end of
+the shutdown — `dtoverlay=gpio-poweroff,gpiopin=18,timeout_ms=60000` — because
+the board arms while GPIO18 is held low and cuts shortly after the pin goes
+high, and only the kernel can assert a pin that late in a shutdown. Set
+`PI_UPS = yes` and follow "The UPS HAT" in `PI-SETUP.md`, which has the checks
+that confirm it before you pull the plug. Without that overlay the Pi halts
+with its rail still up and stays dark until somebody intervenes, so do not
+enable the service without it.
 
 **A UPS cannot keep the station on the air anyway.** A cell that size runs a Pi
 for half an hour and cannot touch a mobile radio, which is where nearly all the

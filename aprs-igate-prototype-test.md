@@ -204,7 +204,7 @@ with no alternative.
 
 | | Requirement | Status |
 |---|---|---|
-| NFR-1 | The whitelist has no exceptions. Any feature that transmits something not on it is a defect, however well-intentioned. | met, and measured — over 30 hours to 2026-09-28 the servers offered **10,151** packets and **8** reached the air, all of them self-test messages to a whitelisted call (the other 60 of 68 transmissions were this station's own beacons). `IGMSP 0` disables Dire Wolf's courtesy position report, which was observed transmitting the SMS gateway's own beacon |
+| NFR-1 | The whitelist has no exceptions. Any feature that transmits something not on it is a defect, however well-intentioned. | met, and measured — over the eight days to 2026-10-12 the servers offered **73,066** packets and **95 messages** reached the air, every one addressed to a whitelisted call (85 to KD3CCO-7, 7 to KD3CCO-10, 3 to KD3CCO-1), alongside 392 of this station's own beacons. `IGMSP 0` disables Dire Wolf's courtesy position report, which was observed transmitting the SMS gateway's own beacon. **Measure this on the `::ADDRESSEE` field, never on the whole log line:** Dire Wolf gates IS→RF in third-party format re-originated under `MYCALL`, so the station's own callsign appears in every transmitted line by construction and a `grep -v` against the whitelist can never match — a test that cannot fail, which an earlier count of this used and reported as proof |
 | NFR-2 | Never transmit under another operator's callsign, in testing or otherwise. | met — all test traffic uses this station's own SSIDs |
 | NFR-3 | No unauthenticated control port. Anything that can reach a KISS port can transmit arbitrary packets under this callsign. | met — `AGW_PORT = 0`, `KISS_PORT = 0`; Dire Wolf offers no bind address, so off is the only safe value |
 | NFR-4 | The container reaches DNS and APRS-IS and nothing else. | met — `RESTRICT_EGRESS`, DOCKER-USER chain |
@@ -218,7 +218,7 @@ with no alternative.
 | NFR-12 | Reproducible: a card is built from `pi.conf`, `igate.conf` and the secrets files. | met — `build_pi_image.sh` |
 | NFR-13 | Record what was verified against what was assumed, and correct the record when an assumption turns out wrong. | met — §14; the W3YA-1 alias claim and the `netdev` claim were both wrong and are both corrected in place |
 | NFR-14 | Survive its own transmissions. | met after rework — RF on the feedline was resetting the interface once every other transmission; fixed at full power by choking the coax and moving the antenna outside |
-| NFR-15 | Survive loss of power without corrupting the card. | met in software, untested in anger (2026-10-02) — `run/` and the journal in RAM, swap zram-only with no writeback file, `rootflags=data=journal`, and a UPS HAT fitted with `igate-ups.service` powering off 30 s after mains loss. What remains is the only evidence that counts: pulling the plug five or six times. See §15 |
+| NFR-15 | Survive loss of power without corrupting the card. | **met and tested (2026-10-12)** — four software layers (`run/` and the journal in RAM, swap zram-only with no writeback file, `rootflags=data=journal`), and a UPS HAT giving a clean unmount before the power goes: `igate-ups.service` powers off after `PI_UPS_SHUTDOWN_SECS` on battery, and `dtoverlay=gpio-poweroff,gpiopin=18` cuts the HAT's output at the end of the shutdown so mains return boots the station unattended. Measured end to end: unplug to dark in 1 min 14 s, then an unattended boot. The software layers alone also meet this requirement and are the right answer for a build with no UPS. See §15 |
 | NFR-16 | Come up with the right time, with no network. | met — a DS3231 on the UPS HAT, `PI_RTC = ds3231`, verified reading correctly 2026-10-02. Every packet this station gates is timestamped, and before this it was wrong until NTP corrected it |
 
 ---
@@ -1336,7 +1336,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
   consistent with any antenna. Through RG-8X at about 1.8 dB, a disconnected
   cable reads about 5:1, and the reading becomes diagnostic.
 
-* **NFR-15, surviving power loss — partly met; hardware fitted, untested against a real power cut.**
+* **NFR-15, surviving power loss — met, and tested against real power cuts (2026-10-12).**
   Four software layers are in place and verified on the running gateway: `run/`
   and the journal in RAM, swap as zram with no `/var/swap` writeback file, and —
   added 2026-10-02 — the root filesystem mounted `rootflags=data=journal`, so
@@ -1384,10 +1384,11 @@ only configuration in which the path on aprs.fi reports what actually happened.
   are now bash builtins, the clock is `EPOCHSECONDS`, and the waits are `read -t`
   on a fifo: **0.6%**.
 
-  **The hardware cannot complete the shutdown, and the service is therefore
-  off.** The cell is disconnected and the service has been removed from the
-  repository entirely — no `PI_UPS` setting, no unit, no script. The HAT remains
-  physically on the header only until the replacement clock arrives.
+  **The shutdown had no power cut at the end of it, and the service was
+  therefore off for a week.** The cell was disconnected and `PI_UPS` taken out
+  of the repository while the cause was unknown. It is back, and the cause is
+  recorded below: the HAT arms on GPIO18 held LOW and cuts on the rising edge,
+  which the kernel's `gpio-poweroff` driver does and nothing in userspace can.
 
   A Raspberry Pi starts only when its 5 V rail collapses. `poweroff` halts the
   SoC and leaves the rail up, and the HAT goes on back-feeding a halted Pi.
@@ -1417,9 +1418,21 @@ only configuration in which the path on aprs.fi reports what actually happened.
      was not running.
 
   In every case the halt releases the pad, GPIO18 falls to its default
-  pull-down, and the timer is cancelled before it expires. Only a running Pi can
-  hold the pin high, and a running Pi is the one thing a shutdown cannot leave
-  behind. **There is no sequence that works on this board.**
+  pull-down, and the timer is cancelled before it expires.
+
+  **That is the whole fault, and it is on the HIGH side rather than the low
+  one.** The arming worked: this project's sysfs monitor held GPIO18 low
+  throughout normal running, which is the state the board waits for. What none
+  of the four could do is keep the pin high for the HAT's cut delay — measured
+  afterwards at about fourteen seconds — because every one of them depended on
+  something in userspace that the halt had already killed. The pad is released,
+  BCM18's pull-down takes the line low, and the board reads a live Pi again and
+  cancels.
+
+  A userspace holder cannot close that gap by construction. The kernel's
+  `gpio-poweroff` driver can: it holds the line low from boot and then drives it
+  high and *keeps* driving it, for `timeout_ms`, as the last thing that happens.
+  See the resolution below.
 
   **The fourth test is the one that matters, and it was run to check an
   explanation that turned out to be wrong.** The sysfs interface looked like the
@@ -1440,8 +1453,73 @@ only configuration in which the path on aprs.fi reports what actually happened.
   whether this is a usage error, or whether the board is faulty — specifically
   whether GPIO18 is meant to be pulled up on the HAT, which is the one fault
   that would explain every observation: the disconnect works while a running Pi
-  drives the pin high, and fails the moment nothing is driving it. No reply yet.
-  If one arrives it belongs here.
+  drives the pin high, and fails the moment nothing is driving it.
+
+  **Martin at PiShop replied on 2026-10-06, and that hypothesis was right.**
+  His words: *"check that GPIO pin goes LOW once the Pi/script starts — the hat
+  needs this to get in the proper mode"*, and *"once GPIO18 goes back high, the
+  UPS hat waits a moment before cutting out power to the Pi's GPIO power pins.
+  The delay is normal."*
+
+  The HAT arms while GPIO18 is held **low** and cuts power a moment after the
+  **rising edge**. Every one of the five attempts tried to hold the pin high
+  through shutdown, which is not the half that needs holding — and with BCM18
+  defaulting to pull-down, a holder killed during shutdown let the pin fall
+  low again, so the HAT read "still alive". That is the same single fault the
+  question above guessed at, stated from the other side.
+
+  The answer is therefore not a userspace holder at all but the kernel's
+  `gpio-poweroff` driver:
+
+      dtoverlay=gpio-poweroff,gpiopin=18,timeout_ms=15000
+
+  It holds GPIO18 low from boot, arming the HAT, and asserts it high as the
+  final act of the power-off path — after every filesystem is unmounted,
+  holding it for fifteen seconds. Nothing in userspace has to survive, which
+  is precisely what nothing in userspace could.
+
+  Martin assumed Trixie and Step 1 option A of the newer guide at
+  pishop.us/raspberry-pi-ups-hat-guide/; this Pi runs Bullseye and used the
+  GitHub `ups-gpiod.sh`. He also said the RTC half of that guide is out of date
+  and pointed at Adafruit's DS3231 instructions instead.
+
+  **It works. Confirmed on hardware 2026-10-12, at the sixth attempt.**
+
+  The overlay claims the pin and holds it low from boot, which is the armed
+  state none of the five earlier attempts ever established:
+
+      $ sudo grep -E "gpio-18 " /sys/kernel/debug/gpio
+       gpio-18  (GPIO18   |power_ctrl   ) out lo
+
+  Two tests, in that order. First by hand, to isolate the overlay from any
+  monitor service: mains unplugged, the cell carried the Pi, `sudo poweroff`
+  on battery, and the red PWR LED went dark in about fifteen seconds.
+
+  Then fully unattended, with `igate-ups.service` deployed and nobody typing.
+  The journal accounts for the whole of it:
+
+      20:33:16  mains lost — on battery, powering off in 60s
+      20:34:16  powering off after 60s on battery
+      ~20:34:30 LED dark
+      20:34:52  booted, unattended
+      20:35:07  armed again, out lo
+
+  Unplug to dark was 1 min 14 s: detection essentially instant, the 60 s
+  ride-through from `PI_UPS_SHUTDOWN_SECS`, then about fourteen seconds for the
+  shutdown and the HAT's own cut delay.
+
+  **`timeout_ms` is 60000, not the 15000 that was tested.** Fourteen seconds
+  of observed cut delay against a 15 s ceiling is no margin at all, and the
+  failure mode of running out is the worst one available: the driver gives up,
+  the kernel halts, GPIO18 stops being driven, BCM18's pull-DOWN takes it low,
+  the HAT re-arms and never cuts — stranded halted-on-battery, which is what
+  cost three recoveries in one afternoon. The timeout costs nothing when power
+  is cut before it expires.
+
+  **The division of labour is the point.** `ups-shutdown.sh` reads GPIO17
+  (mains/battery) and GPIO27 (heartbeat) and calls `systemctl poweroff`. It
+  never touches GPIO18. That line belongs to the kernel, because the one thing
+  userspace cannot do is still be running after userspace has been shut down.
 
   **Recovery, which is worth knowing separately from any of this.** A Pi
   stranded halted-on-battery is freed by pressing the HAT's momentary button:
@@ -1457,30 +1535,25 @@ only configuration in which the path on aprs.fi reports what actually happened.
   on a BCM2837, so no pin state here can be verified by reading it back. The
   only instrument available was the Pi's red PWR LED.
 
-  **What the station does instead.** The HAT comes off and an **Adafruit PiRTC**
-  (product 4282) with an **Energizer CR1220** goes in — same DS3231, same I2C
-  address `0x68`, same `i2c-rtc` overlay, so `PI_RTC = ds3231` needs no change.
-  The cell is not supplied with the board, and non-rechargeable is correct: that
-  board has no charging circuit and the DS3231 draws microamps, so one cell runs
-  for five years or more. Cheap `DS3231 For Pi` modules were considered and
-  passed over — several carry a charge path intended for a rechargeable LIR
-  cell, which will slowly destroy a CR, and in a sealed enclosure that is not a
-  risk worth five dollars.
+  **What the station ran for the week in between.** The HAT stayed on the header
+  with **its cell disconnected** and the service disabled, which is functionally
+  a DS3231 and nothing else: mains loss an instant cut, mains return an
+  unattended boot, every time, with the card protections above carrying the
+  risk. A bare **Adafruit PiRTC** (product 4282) with an **Energizer CR1220**
+  was ordered as a replacement and is not needed — noted here because the choice
+  is still the right one for a station that wants a clock and no battery. Same
+  DS3231, same I2C address `0x68`, same `i2c-rtc` overlay, so `PI_RTC = ds3231`
+  needs no change. The cell is not supplied, and non-rechargeable is correct:
+  that board has no charging circuit and the DS3231 draws microamps, so one cell
+  runs for five years or more. Cheap `DS3231 For Pi` modules were passed over —
+  several carry a charge path intended for a rechargeable LIR cell, which will
+  slowly destroy a CR, and in a sealed enclosure that is not a risk worth five
+  dollars.
 
-  Until the module arrives the HAT stays on the header with **its cell
-  disconnected** and the service disabled, which is functionally the same thing:
-  a DS3231 and nothing else. With the battery gone, mains loss is an
-  instant cut and mains return is an unattended boot, every time. The radio runs
-  from its own supply, so the gateway is off the air from the first second of
-  any outage regardless, and riding one out bought nothing. The card
-  protections above are independent of all this and are what were always doing
-  the real work.
-
-  NFR-15 is therefore **met by the card protections alone**, which is where it
-  stood before the HAT was bought. What the week produced is not a feature but
-  a documented negative: this class of board cannot give an unattended station
-  both a clean shutdown and an unattended restart, and the attempt leaves it in
-  a worse state than no UPS at all.
+  NFR-15 was **met by the card protections alone** for that week, which is where
+  it stood before the HAT was bought — and is still the right answer for a
+  station that does not want another board in the enclosure. With the overlay in
+  place it is met twice over: an outage now gets an unmount first.
 
   **The hardware as fitted (2026-10-02).** A PiShop UPS HAT with a LiPo cell
   marked 750 mAh / 2.775 Wh and a DS3231, verified supplying clean power under

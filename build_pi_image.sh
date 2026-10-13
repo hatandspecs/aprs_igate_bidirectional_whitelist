@@ -731,6 +731,257 @@ EOF
 # Writes those three files, plus the udev rule, into a directory for copying to a
 # running Pi — the alternative to rebuilding a card for the sake of the watchdog.
 # PI-SETUP.md, "Updating a running pi-gate over SSH", has the copy commands.
+emit_ups_file() {  # script|service  install-dir  seconds
+  local which="$1" dir="$2" secs="$3"
+  case "$which" in
+    script)
+      # Quoted heredoc: everything below is the generated script's own shell.
+      cat <<'UPSEOF'
+#!/bin/bash
+# Graceful shutdown on mains loss, for the UPS HAT on the GPIO header.
+#
+# This watches two pins and calls poweroff. It deliberately does NOT touch
+# GPIO18, the "the Pi is alive" line. That belongs to the kernel's gpio-poweroff
+# driver, enabled by dtoverlay=gpio-poweroff in config.txt.
+#
+# Why the split. Per the vendor, the HAT arms while GPIO18 is held LOW and cuts
+# its output about ten seconds after it goes HIGH. Holding that pin from
+# userspace does not work: whatever holds it is killed during shutdown, the pin
+# reverts to an input with BCM18's default pull-DOWN, the HAT reads "still
+# alive", and it back-feeds a halted Pi indefinitely. Five attempts failed that
+# way on 2026-10-04 — sysfs, an internal pull-up, pinctrl from the monitor loop,
+# a /usr/lib/systemd/system-shutdown hook, and the vendor's own libgpiod script.
+#
+# gpio-poweroff holds the line deasserted (low) from boot, and asserts it as the
+# final act of the kernel's own power-off path — after every filesystem is
+# unmounted — then holds it for timeout_ms while waiting for the power to go.
+# That is both halves of what the HAT wants, and nothing in userspace has to
+# survive the halt.
+#
+#   GPIO17  in   0 = mains present, 1 = running on battery
+#   GPIO27  in   the HAT toggles this about every 0.5s while it is alive
+#   GPIO18  --   owned by gpio-poweroff; never exported or driven here
+set -u
+
+HOLD_SECS="${1:-60}"      # seconds on battery before powering off
+POLL_SECS=0.2             # plus the ~0.5s the heartbeat sample takes
+STALE_LIMIT=3             # polls without a GPIO27 toggle before the HAT is
+                          # treated as absent
+
+log() { echo "ups: $*"; }
+
+# bash has no builtin sleep, and forking /bin/sleep several times a second was
+# 15% of a Pi 3B+ core when this loop was first written. `read -t` on a
+# descriptor that never delivers is a builtin wait: open a fifo read-write so
+# the open does not block, then unlink it. Falls back to /bin/sleep, because a
+# watchdog must not fail to start over a performance trick.
+_nap_fifo="$(mktemp -u /tmp/ups-nap.XXXXXX 2>/dev/null)"
+if [[ -n "$_nap_fifo" ]] && mkfifo "$_nap_fifo" 2>/dev/null && exec 9<>"$_nap_fifo" 2>/dev/null; then
+  rm -f "$_nap_fifo"
+  nap() { read -rt "$1" -u 9 _ 2>/dev/null || :; }
+else
+  rm -f "$_nap_fifo" 2>/dev/null
+  nap() { sleep "$1"; }
+fi
+
+# Likewise the clock. EPOCHSECONDS is a bash 5.0 builtin; printf's %(fmt)T
+# covers 4.2 and later. Both set `now` without forking.
+if [[ -n "${EPOCHSECONDS:-}" ]]; then
+  now_secs() { now=$EPOCHSECONDS; }
+else
+  now_secs() { printf -v now '%(%s)T' -1; }
+fi
+now=0
+
+# BCM numbers are not sysfs numbers. gpiolib used to put the Pi's controller at
+# base 0; since kernel 6.6 the base is allocated dynamically and is 512 on a
+# 3B+ running 6.18. A hardcoded BCM number does not fail loudly — the export is
+# simply refused and the pin never appears. Ask the controller instead. The
+# SoC's own pin controller is the chip labelled pinctrl-* with 54 lines; the
+# 8-line raspberrypi-exp-gpio expander above it is not what the HAT is wired to.
+GPIO_BASE=""
+find_gpio_base() {
+  local d label
+  for d in /sys/class/gpio/gpiochip*; do
+    [[ -r "$d/label" && -r "$d/base" ]] || continue
+    label="$(cat "$d/label")"
+    case "$label" in
+      pinctrl-*) GPIO_BASE="$(cat "$d/base")"; return 0 ;;
+    esac
+  done
+  for d in /sys/class/gpio/gpiochip*; do
+    [[ -r "$d/ngpio" && -r "$d/base" ]] || continue
+    if [[ "$(cat "$d/ngpio")" == 54 ]]; then
+      GPIO_BASE="$(cat "$d/base")"; return 0
+    fi
+  done
+  return 1
+}
+
+if ! find_gpio_base; then
+  log "no SoC GPIO controller under /sys/class/gpio — is the kernel built with GPIO_SYSFS?"
+  log "  found: $(echo /sys/class/gpio/gpiochip* 2>/dev/null)"
+  exit 1
+fi
+log "sysfs GPIO base is ${GPIO_BASE}; BCM 17/27 are $((GPIO_BASE+17))/$((GPIO_BASE+27))"
+
+# Exporting a pin that is already exported is an error, and udev needs a moment
+# to create and chown the attribute files, so wait for them rather than assume.
+setup_pin() {  # bcm-pin direction
+  local pin=$(( GPIO_BASE + $1 )) dir="$2" i
+  [[ -d "/sys/class/gpio/gpio${pin}" ]] || echo "$pin" > /sys/class/gpio/export 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -e "/sys/class/gpio/gpio${pin}/direction" ]] && break
+    sleep 0.2
+  done
+  if [[ ! -e "/sys/class/gpio/gpio${pin}/direction" ]]; then
+    log "BCM ${1} (sysfs ${pin}) did not appear under /sys/class/gpio after export"
+    return 1
+  fi
+  echo "$dir" > "/sys/class/gpio/gpio${pin}/direction"
+}
+
+# Sets a global rather than echoing: `v="$(read_pin)"` forks a subshell for the
+# substitution and `cat` forks again, several times a second, forever.
+PIN=""
+read_pin() { PIN=""; read -r PIN < "$1" 2>/dev/null || PIN=""; }
+
+setup_pin 17 in || exit 1
+setup_pin 27 in || exit 1
+P17="/sys/class/gpio/gpio$(( GPIO_BASE + 17 ))/value"
+P27="/sys/class/gpio/gpio$(( GPIO_BASE + 27 ))/value"
+
+# Confirm the kernel is holding GPIO18 for us. Without the overlay this script
+# shuts the Pi down cleanly and the HAT never cuts power, which is the exact
+# failure this design exists to avoid — so say so loudly rather than discover it
+# during an outage.
+if [[ -r /proc/device-tree/gpio-poweroff/compatible ]] \
+   || grep -qs gpio-poweroff /proc/device-tree/*/compatible 2>/dev/null; then
+  log "gpio-poweroff is present; GPIO18 is the kernel's"
+else
+  log "WARNING: no gpio-poweroff node found. Without dtoverlay=gpio-poweroff,"
+  log "WARNING: gpiopin=18 in config.txt the HAT will not cut power after this"
+  log "WARNING: script shuts the Pi down, and the station will stay dark."
+fi
+
+log "watching for mains loss; will power off after ${HOLD_SECS}s on battery"
+
+# The HAT toggles GPIO27 about every 0.5s, so the sampling window has to be
+# longer than one half-period for a "no toggle" result to mean anything. Two
+# reads 0.1s apart caught an edge about one time in five — 19 misses in 25
+# measured — and a miss zeroes the countdown, so a real mains loss could be
+# ignored. Five reads 0.2s apart spans 0.8s and cannot miss an edge; measured 0
+# misses in 30, and still correct on a dead pin.
+heartbeat_alive() {
+  local i first
+  read_pin "$P27"; first="$PIN"
+  for i in 1 2 3 4; do
+    nap 0.2
+    read_pin "$P27"
+    [[ "$PIN" != "$first" ]] && return 0
+  done
+  return 1
+}
+
+# Epoch second at which mains was first seen missing; 0 means mains present. A
+# timestamp rather than a count of polls: one pass takes about a second but is
+# not guaranteed to, and HOLD_SECS is a promise about seconds.
+on_battery_since=0
+last_note=0
+stale=0
+warned_absent=0
+# The HAT is assumed ABSENT until a toggle proves otherwise. An unconnected
+# GPIO17 is a floating pin; counting down on it would make this script the cause
+# of the outage it exists to handle.
+heartbeat=0
+
+while true; do
+    if heartbeat_alive; then
+        stale=0
+        if (( ! heartbeat )); then
+            heartbeat=1
+            (( warned_absent )) && log "UPS heartbeat is back"
+            warned_absent=0
+        fi
+    else
+        stale=$(( stale + 1 ))
+        if (( stale >= STALE_LIMIT )); then
+            heartbeat=0
+            if (( ! warned_absent )); then
+                log "no UPS heartbeat on GPIO27 — not acting on GPIO17 until it returns"
+                warned_absent=1
+            fi
+        fi
+    fi
+
+    if (( ! heartbeat )); then
+        on_battery_since=0
+        nap "$POLL_SECS"
+        continue
+    fi
+
+    now_secs
+    read_pin "$P17"
+    if [[ "$PIN" == "1" ]]; then
+        if (( on_battery_since == 0 )); then
+            on_battery_since="$now"
+            last_note=0
+            log "mains lost — on battery, powering off in ${HOLD_SECS}s unless it returns"
+        fi
+        elapsed=$(( now - on_battery_since ))
+        if (( elapsed - last_note >= 10 && elapsed < HOLD_SECS )); then
+            log "still on battery (${elapsed}s of ${HOLD_SECS}s)"
+            last_note=$elapsed
+        fi
+        if (( elapsed >= HOLD_SECS )); then
+            log "powering off after ${elapsed}s on battery"
+            # The journal is persistent, so this line survives to explain the
+            # outage. gpio-poweroff drives GPIO18 high after the unmount and the
+            # HAT cuts power about ten seconds later.
+            sync
+            systemctl poweroff
+            exit 0
+        fi
+    else
+        if (( on_battery_since != 0 )); then
+            log "mains restored after $(( now - on_battery_since ))s — shutdown cancelled"
+        fi
+        on_battery_since=0
+    fi
+
+    nap "$POLL_SECS"
+done
+UPSEOF
+      ;;
+    service)
+      cat <<EOF
+[Unit]
+Description=Graceful shutdown on mains loss (UPS HAT)
+DefaultDependencies=yes
+ConditionPathExists=${dir}/ups-shutdown.sh
+# A fault that cannot be restarted out of must not be retried forever: a
+# misconfigured pin number once produced 11,735 restarts in one uptime, which
+# filled the 32M persistent journal and evicted the history of the reboots it
+# was meant to explain. These are [Unit] keys — in [Service] they load with only
+# "Unknown key ... ignoring" in the journal and the storm continues.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Root: it exports GPIO pins and calls systemctl poweroff.
+ExecStart=${dir}/ups-shutdown.sh ${secs}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      ;;
+    *) die "emit_ups_file: unknown file '${which}'" ;;
+  esac
+}
+
 cmd_watchdog_files() {
   local out="${1:-pi-build/watchdog}"
   local user="${CFG[PI_USER]:-igate}"
@@ -740,21 +991,27 @@ cmd_watchdog_files() {
   # a redirect cannot reopen it: remove the previous run's files before writing.
   rm -f "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
         "${out}/010-igate-watchdog" "${out}/99-igate-watchdog.rules" \
-        "${out}/igate-selftest.service" "${out}/igate-selftest.timer"
+        "${out}/igate-selftest.service" "${out}/igate-selftest.timer" \
+        "${out}/igate-ups.service" "${out}/ups-shutdown.sh"
   emit_watchdog_file service "$user" "$dir" > "${out}/igate-watchdog.service"
   emit_watchdog_file timer   "$user" "$dir" > "${out}/igate-watchdog.timer"
   emit_watchdog_file sudoers "$user" "$dir" > "${out}/010-igate-watchdog"
   emit_selftest_file service "$user" "$dir" > "${out}/igate-selftest.service"
   emit_selftest_file timer   "$user" "$dir" > "${out}/igate-selftest.timer"
+  local ups_secs="${CFG[PI_UPS_SHUTDOWN_SECS]:-60}"
+  emit_ups_file script  "$dir" "$ups_secs" > "${out}/ups-shutdown.sh"
+  emit_ups_file service "$dir" "$ups_secs" > "${out}/igate-ups.service"
   cp "${SCRIPT_DIR}/udev/99-igate-watchdog.rules" "${out}/"
   chmod 644 "${out}/igate-watchdog.service" "${out}/igate-watchdog.timer" \
             "${out}/igate-selftest.service" "${out}/igate-selftest.timer" \
-            "${out}/99-igate-watchdog.rules"
+            "${out}/99-igate-watchdog.rules" "${out}/igate-ups.service"
+  chmod 755 "${out}/ups-shutdown.sh"
   chmod 440 "${out}/010-igate-watchdog"
   note "wrote ${out}/ for user ${user}, install dir ${dir}:"
   note "  igate-watchdog.service  igate-watchdog.timer"
   note "  igate-selftest.service  igate-selftest.timer"
   note "  010-igate-watchdog (sudoers)  99-igate-watchdog.rules (udev)"
+  note "  igate-ups.service  ups-shutdown.sh (UPS HAT, ${ups_secs}s on battery)"
 }
 
 install_services() {
@@ -911,6 +1168,18 @@ EOF
   emit_selftest_file timer "$user" "$dir" > "$tmp"
   sudo cp "$tmp" "${sysd}/igate-selftest.timer"
   sudo chmod 644 "${sysd}/igate-selftest.timer"
+
+  # UPS HAT. Installed unconditionally — the unit's ConditionPathExists means a
+  # card without one simply does not start it, and the script refuses to act on
+  # GPIO17 without a heartbeat on GPIO27 rather than counting down on a floating
+  # pin. GPIO18 is the kernel's, via the gpio-poweroff overlay in config.txt.
+  local ups_secs="${CFG[PI_UPS_SHUTDOWN_SECS]:-60}"
+  emit_ups_file script "$dir" "$ups_secs" > "$tmp"
+  sudo install -D -m 755 "$tmp" "${ROOT_MNT}${dir}/ups-shutdown.sh"
+  emit_ups_file service "$dir" "$ups_secs" > "$tmp"
+  sudo cp "$tmp" "${sysd}/igate-ups.service"
+  sudo chmod 644 "${sysd}/igate-ups.service"
+  note "UPS shutdown installed (${ups_secs}s on battery, then poweroff)"
 
   emit_watchdog_file sudoers "$user" "$dir" > "$tmp"
   sudo install -D -m 440 "$tmp" "${ROOT_MNT}/etc/sudoers.d/010-igate-watchdog"
@@ -1105,6 +1374,16 @@ EOF
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-watchdog.timer"
   sudo ln -sf /etc/systemd/system/igate-selftest.timer \
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-selftest.timer"
+
+  # UPS HAT. Off unless asked for, because switching it on without
+  # dtoverlay=gpio-poweroff in config.txt gives a clean shutdown and a station
+  # that never powers back up — the exact failure this is meant to prevent.
+  if [[ "${CFG[PI_UPS]:-no}" == yes ]]; then
+    sudo ln -sf /etc/systemd/system/igate-ups.service "${wants}/igate-ups.service"
+    note "igate-ups.service enabled (graceful poweroff on mains loss)"
+  else
+    note "igate-ups.service installed but not enabled (PI_UPS is not yes)"
+  fi
   note "igate-logrotate.timer enabled"
   note "igate-firstboot.timer enabled (retries setup every 10 min until it succeeds)"
   note "igate-watchdog.timer enabled (checks the radio every minute)"
@@ -1165,6 +1444,26 @@ configure_boot_config() {
   # config.txt is divided into conditional sections ([cm4], [pi5], [all]...)
   # and a bare append inherits whichever happens to be last in the stock file.
   # Open [all] explicitly rather than trusting the ordering.
+  # The half of the UPS that cannot live in userspace. gpio-poweroff holds
+  # GPIO18 low from boot — which is what arms the HAT — and asserts it high as
+  # the final act of the kernel's power-off path, after every filesystem is
+  # unmounted, holding it for timeout_ms while it waits for the power to go. The
+  # HAT cuts its output about ten seconds after seeing that high.
+  #
+  # Nothing in userspace can do this. Five attempts failed on 2026-10-04,
+  # including the vendor's own script: whatever holds the pin is killed during
+  # shutdown, it reverts to an input with BCM18's default pull-DOWN, and the HAT
+  # reads "still alive" and back-feeds a halted Pi forever.
+  if [[ "${CFG[PI_UPS]:-no}" == yes ]]; then
+    if sudo grep -qE '^dtoverlay=gpio-poweroff' "$cfg"; then
+      note "gpio-poweroff overlay already present in config.txt"
+    else
+      printf '\n[all]\n# UPS HAT: hold GPIO18 low while running, drive it high at poweroff.\ndtoverlay=gpio-poweroff,gpiopin=18,timeout_ms=15000\n' \
+        | sudo tee -a "$cfg" >/dev/null
+      note "dtoverlay=gpio-poweroff,gpiopin=18,timeout_ms=15000 (under [all])"
+    fi
+  fi
+
   if [[ -n "${CFG[PI_RTC]:-}" ]]; then
     if sudo grep -qE '^dtoverlay=i2c-rtc' "$cfg"; then
       note "i2c-rtc overlay already present in config.txt"

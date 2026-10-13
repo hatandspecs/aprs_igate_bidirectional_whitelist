@@ -2696,36 +2696,110 @@ cmd_selftest() {
 
   # --- watch the gateway's own log for the rest -------------------------
   local deadline=$(( SECONDS + timeout ))
-  local saw_igtx=0 saw_tx=0 saw_ack=0 log
+  # Once the echo has satisfied step 4 there is nothing left to wait the full
+  # timeout for. An acknowledgement is still worth a few more seconds — a
+  # handheld that is awake answers in about that — but with the addressee off,
+  # which is the normal case here, waiting out the whole 120 s bought nothing
+  # and made every unattended run look like it had hung.
+  local grace=15 echo_deadline=0
+  # SELFTEST_TIMEOUT stays the hard ceiling, but once the frame has gone out
+  # there is only one thing left that can arrive late, and it arrives fast.
+  # Measured here: the echo lands 1.5-3 s behind the transmission, and the two
+  # acknowledgements in the October log came 9 s and 6 s after step 3. Sitting
+  # out the remaining two minutes for a radio that is switched off is what made
+  # an unattended run look hung.
+  local ack_wait="${CFG[SELFTEST_ACK_SECS]:-30}" tx_deadline=0
+  local saw_igtx=0 saw_tx=0 saw_ack=0 saw_echo=0 echo_by="" log
   while (( SECONDS < deadline )); do
+    if (( saw_echo && SECONDS >= echo_deadline )); then
+      break
+    fi
+    if (( saw_tx && tx_deadline && SECONDS >= tx_deadline )); then
+      break
+    fi
     log="$(_selftest_log 600)"
     if (( ! saw_igtx )) && grep -qF "[ig>tx]" <<<"$log" && grep -qF "$text" <<<"$log"; then
       saw_igtx=1; echo "  step 2 OK: the server routed it back to this gateway"
     fi
     if (( ! saw_tx )) && grep -E "^\[0L\]" <<<"$log" | grep -qF "$text"; then
-      saw_tx=1; echo "  step 3 OK: the gateway transmitted it"
+      saw_tx=1; tx_deadline=$(( SECONDS + ack_wait ))
+      echo "  step 3 OK: the gateway transmitted it"
+    fi
+    # This station's own transmission, heard back off a digipeater. It can
+    # only have reached our receiver by being repeated, so it proves the
+    # frame was radiated — not merely handed to the modem, which is all
+    # `[0L]` proves. A digipeated copy arrives 1.5-3 s behind the original.
+    if (( ! saw_echo )); then
+      local echoed
+      echoed="$(grep -E "^\[0\.[0-9]+\]" <<<"$log" | grep -F "$text" \
+                | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' | head -1 || true)"
+      if [[ -n "$echoed" ]]; then
+        saw_echo=1; echo_by="$echoed"
+        echo_deadline=$(( SECONDS + grace ))
+        echo "  step 4 OK: ${echoed} repeated it — the frame was radiated"
+      fi
     fi
     # The addressee acknowledges to the sender, over RF, and this station
-    # hears it: that is the only evidence of delivery.
+    # hears it. Stronger than the echo, because it proves delivery to a
+    # particular radio rather than only that the transmission went out — so
+    # it is still looked for, and still reported when it happens.
     if (( ! saw_ack )) && grep -qiE "${target}>.*ack${msgid}" <<<"$log"; then
-      saw_ack=1; echo "  step 4 OK: ${target} acknowledged it over RF"
+      saw_ack=1; echo "  step 5 OK: ${target} acknowledged it over RF"
       break
     fi
     sleep 3
   done
+
+  # Neither the ack nor an echo of this particular frame. That is the normal
+  # case rather than a fault: at the measured 40% repeat rate, three frames in
+  # five are heard by nobody who repeats them. So fall back to the question
+  # that actually has a useful answer — has ANYTHING of ours been repeated
+  # lately? A transmitter that has stopped radiating fails that; one unlucky
+  # frame does not.
+  local look_back rep_rx rep_tx rep_who=""
+  look_back="${CFG[SELFTEST_REPEAT_FRAMES]:-16}"
+  if (( saw_tx && ! saw_ack && ! saw_echo )); then
+    _selftest_repeats "$look_back"
+    rep_rx="$SELFTEST_RX"; rep_tx="$SELFTEST_TX"
+    if (( rep_rx > 0 )); then
+      rep_who="$SELFTEST_REPEATERS"
+      echo "  step 4 OK: no repeat of this frame, but ${rep_rx} repeats heard" \
+           "over the last ${rep_tx} transmissions"
+      [[ -n "$rep_who" ]] && echo "             by ${rep_who}"
+    fi
+  fi
 
   echo
   if (( saw_ack )); then
     echo "PASS — a message from the internet reached ${target} and was acknowledged."
     return 0
   fi
+  if (( saw_echo )); then
+    echo "PASS — a message from the internet was transmitted and ${echo_by}"
+    echo "       repeated it. Delivery to ${target} is unproven: that needs an"
+    echo "       acknowledgement, and ${target} was not heard from."
+    return 0
+  fi
+  if (( saw_tx )) && [[ -n "${rep_rx:-}" ]] && (( rep_rx > 0 )); then
+    echo "PASS — a message from the internet was transmitted, and this station"
+    echo "       is being repeated: ${rep_rx} repeats heard over its last"
+    echo "       ${rep_tx} transmissions. This frame was not among them, which"
+    echo "       is the commoner outcome — most transmissions are repeated by"
+    echo "       nobody."
+    return 0
+  fi
   if (( saw_tx )); then
-    echo "FAIL at step 4: transmitted, never acknowledged."
-    echo "  The gateway did its part. Either ${target} did not hear the"
-    echo "  transmission, or its acknowledgement did not get back. Check that the"
-    echo "  radio is on, on 144.390, and in range; then check TX_VIA, since a"
-    echo "  single WIDE1-1 hop can be consumed by a nearby fill-in digipeater"
-    echo "  before it travels."
+    echo "FAIL at step 4: transmitted, and nothing is repeating this station."
+    echo "  The gateway did its part — APRS-IS took the message, routed it back,"
+    echo "  and the modem was given the frame. What is missing is any evidence"
+    echo "  it reached the air: none of the last ${rep_tx:-0} transmissions came"
+    echo "  back off a digipeater, and ${target} did not acknowledge."
+    echo
+    echo "  Check in this order: the radio is powered and on 144.390; the"
+    echo "  Digirig cable and PTT (a stuck PTT transmits silence); the antenna"
+    echo "  and feedline; then TX_VIA, since a single WIDE1-1 hop can be"
+    echo "  consumed by a nearby fill-in digipeater before it travels."
+    echo "  ./deploy_igate.sh reach shows the longer history."
   elif (( saw_igtx )); then
     echo "FAIL at step 3: the gateway had the message and did not transmit it."
     echo "  Check the whitelist (${CFG[WHITELIST_CALLS]:-unset}) covers ${target},"
@@ -2743,6 +2817,96 @@ cmd_selftest() {
   echo "  ./deploy_igate.sh monitor shows the same events as they happen."
   return 1
 }
+
+# Every generation of the log that is still on the card, oldest first. The
+# rotated ones are included deliberately: a repeat rate wants more beacons
+# than a 30-minute interval produces in the couple of hours the live file
+# holds on a busy gateway.
+_full_log() {
+  if [[ "$MODE" == docker ]]; then
+    docker logs "$CONTAINER_NAME" 2>&1 || true
+  else
+    { [[ -f "${BARE_LOG}.2.gz" ]] && zcat "${BARE_LOG}.2.gz"
+      [[ -f "${BARE_LOG}.1.gz" ]] && zcat "${BARE_LOG}.1.gz"
+      [[ -f "${BARE_LOG}.1" ]] && cat "${BARE_LOG}.1"
+      [[ -f "$BARE_LOG" ]] && cat "$BARE_LOG"; } 2>/dev/null || true
+  fi
+}
+
+# Did anybody repeat this station recently? Prints "<repeats> <transmissions>".
+#
+# Counted over this station's last N TRANSMISSIONS, not over the last N hours.
+# The log carries no per-line timestamps, and a window in hours would anyway
+# hold a different number of beacons depending on how busy the channel was.
+# N transmissions is also the number the arithmetic wants: at the measured
+# repeat rate p, the chance that none of N came back is (1-p)^N, which is what
+# sets the false-alarm rate.
+#
+# At p = 0.40, measured over 482 transmissions in October 2026:
+#   N = 8   1.7%    about 36 false alarms a year at six checks a day
+#   N = 16  0.028%  about one every three years
+#
+# A digipeated copy of our own frame can only have reached our receiver by
+# being repeated, and it carries the repeater's call with a `*` marking the hop
+# used. That is why other people's digipeaters make a witness that is always on
+# duty and costs no airtime: the beacons were going out anyway.
+# Sets SELFTEST_RX, SELFTEST_TX and SELFTEST_REPEATERS. Call it as a plain
+# command, NOT inside $(...): a command substitution is a subshell, so every
+# global it assigns is discarded when that subshell exits. It used to print
+# the counts and set the repeater list as a global, and the counts arrived
+# while the list silently did not.
+_selftest_repeats() {  # frames-back
+  local want="${1:-16}" mine="${CFG[MYCALL]:-}" log start window
+  SELFTEST_RX=0; SELFTEST_TX=0; SELFTEST_REPEATERS=""
+SELFTEST_RX=0
+SELFTEST_TX=0
+  [[ -z "$mine" ]] && return
+  log="$(_full_log)"
+  [[ -z "$log" ]] && return
+  # Where our Nth-from-last transmission is, so the window holds exactly that
+  # many of them however much other traffic is interleaved.
+  start="$(grep -nE "^\[0L\] ${mine}>" <<<"$log" | tail -n "$want" \
+           | head -1 | cut -d: -f1)"
+  [[ -z "$start" ]] && return
+  window="$(tail -n +"$start" <<<"$log")"
+  SELFTEST_TX="$(grep -cE "^\[0L\] ${mine}>" <<<"$window" || true)"
+  SELFTEST_RX="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$window" | grep -c '\*' || true)"
+  # Attribution skips routing aliases, the same way cmd_reach does. A
+  # digipeater that consumes a WIDE1-1 hop may insert its own callsign and mark
+  # the ALIAS used, so the asterisk is on `WIDE1` and the station is elsewhere
+  # in the path. The first version of this printed "by WIDE1(7)" — naming a
+  # routing alias as though it were a station, which is the identical mistake
+  # cmd_reach documents having made and fixed.
+  #
+  # A frame whose path carries no real callsign at all was still repeated by
+  # somebody; it is counted as unattributed rather than dropped, because
+  # dropping it would under-report repeats that did happen.
+  SELFTEST_REPEATERS="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$window" \
+    | grep '\*' | python3 -c '
+import re, sys, collections
+ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
+seen = collections.Counter()
+for line in sys.stdin:
+    head = line.split("]", 1)[-1].strip().split(":", 1)[0]
+    for hop in head.split(",")[1:]:
+        call = hop.strip().rstrip("*")
+        if call and not ALIAS.match(call):
+            seen[call] += 1
+            break
+    else:
+        seen["unattributed"] += 1
+print(" ".join("%s(%d)" % kv for kv in seen.most_common()))
+' 2>/dev/null)"
+}
+
+# Which digipeaters appear in the repeats, most frequent first. Naming them is
+# what makes the result checkable.
+#
+# Set by _selftest_repeats rather than read again: reading every generation of
+# the log means zcat over a couple of megabytes, and on a 512 MB Pi doing that
+# twice for one verdict is seconds of a self-test spent re-reading a file it
+# had already read.
+SELFTEST_REPEATERS=""
 
 cmd_reach() {
   load_and_resolve "${1:-}"
@@ -2767,14 +2931,7 @@ cmd_reach() {
   # generations are on disk (8M, two kept, compressed), so read those too and
   # measure over as much history as the card holds.
   local log tx rx
-  if [[ "$MODE" == docker ]]; then
-    log="$(docker logs "$CONTAINER_NAME" 2>&1 || true)"
-  else
-    log="$( { [[ -f "${BARE_LOG}.2.gz" ]] && zcat "${BARE_LOG}.2.gz"
-              [[ -f "${BARE_LOG}.1.gz" ]] && zcat "${BARE_LOG}.1.gz"
-              [[ -f "${BARE_LOG}.1" ]] && cat "${BARE_LOG}.1"
-              [[ -f "$BARE_LOG" ]] && cat "$BARE_LOG"; } 2>/dev/null || true)"
-  fi
+  log="$(_full_log)"
   if [[ -z "$log" ]]; then
     echo "No log to read yet." >&2
     exit 1
@@ -2786,13 +2943,41 @@ cmd_reach() {
   # arriving on the radio can only have got there by being repeated.
   rx="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$log" | grep -c '\*' || true)"
 
+  # Repeats are LINES, and one frame repeated by two digipeaters is two of
+  # them. So the total is a ceiling on how many distinct transmissions came
+  # back, never the count itself.
+  #
+  # The floor is the busiest single path element — callsign OR routing alias.
+  # Any one element can appear at most once in a given frame's path, so an
+  # element seen in N returning frames means at least N distinct transmissions
+  # came back. The busiest is often `WIDE1` rather than a station, because a
+  # digipeater that consumes a WIDE1-1 hop may mark the alias used instead of
+  # substituting its own call; that makes it useless for attribution and
+  # perfectly good for counting, which is all it is used for here.
+  #
+  # The beacons are byte-identical and APRS carries no sequence number, so the
+  # log cannot narrow the range further.
+  #
+  # Reporting the ratio alone invited reading it as "this fraction of
+  # transmissions was repeated", which is the upper bound rather than the
+  # measurement.
+  local floor
+  floor="$(grep -E "^\\[0\\.[0-9]+\\] ${mine}>" <<<"$log" \
+           | grep -oE ',[A-Z0-9-]+\\*' | tr -d ',*' | sort | uniq -c \
+           | sort -rn | head -1 | awk '{print $1+0}')"
+  floor="${floor:-0}"
+
   local span; span="$(grep -cE "^\\[0" <<<"$log" || true)"
   echo "Reach, from this station's own receiver (${span} frames of log):"
   echo
   echo "  transmitted by ${mine}:       ${tx}"
-  echo "  heard back, digipeated:       ${rx}"
+  echo "  repeats heard:                ${rx}"
   if (( tx > 0 )); then
-    echo "  repeat rate:                  $(( rx * 100 / tx ))%"
+    echo "  repeats per transmission:     $(( rx * 100 / tx ))%"
+    # The share of transmissions that came back at all, which is the number a
+    # reader assumes the line above means. Bounded, not measured.
+    echo "  transmissions repeated:       $(( floor * 100 / tx ))% to $(( rx * 100 / tx ))%"
+    echo "                                (${floor} to ${rx} of ${tx})"
   fi
   echo
 

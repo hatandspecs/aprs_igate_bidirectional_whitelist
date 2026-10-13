@@ -69,7 +69,7 @@ can override what.
 | The radio's USB connection | **FTX-1:** a USB-A to USB-C cable. **VX-6R:** a Digirig Lite, a USB cable for it, and Digirig's VX-6R audio/PTT cable. On a **Pi 3A+** also a powered USB hub (with its own supply) between the Pi and the Digirig; a **Pi 3B+** takes the Digirig directly |
 | The radio, antenna, and a real ground/counterpoise | Per the RFI notes in the main README. A VX-6R left running needs DC power (Yaesu E-DC-5B or E-DC-6); the battery does not last. **Not** from the hub or a USB boost cable — see Troubleshooting |
 | *Optional:* a DS3231 real-time clock | An **Adafruit PiRTC** (product 4282) with an **Energizer CR1220** here — the cell is not included with the board. It presses onto header pins 1-9 (odd row), no wiring and no soldering, and nothing conflicts: this build's only GPIO use is a pin inside the USB sound card, not on the Pi. Without a clock the station comes up with the wrong time after every outage and timestamps every packet it gates until NTP corrects it. Set `PI_RTC = ds3231` in `pi.conf` |
-| *Not recommended:* a UPS HAT | One was fitted here for a week and removed, and the shutdown service that drove it has been taken out of the image builder with it. A battery cannot keep the gateway on the air — the radio has its own supply and is dark the moment mains goes — so all it can offer is a clean shutdown, and on that board a clean shutdown leaves the Pi halted with its rail still up and the station dark until somebody intervenes. §15 of the design doc has the five failed attempts |
+| *Optional:* a [PiShop UPS HAT](https://www.pishop.us/product/raspberry-pi-ups-hat/) | Carries a DS3231, so it replaces the clock above rather than adding to it. Gives a clean shutdown on mains loss and an unattended boot on mains return. **It needs `dtoverlay=gpio-poweroff` to cut power at the end of the shutdown** — set `PI_UPS = yes`, and see "The UPS HAT" below for the one line that makes it work and the two checks that confirm it. A battery cannot keep the *gateway* on the air, because the radio has its own mains supply and is dark from the first second regardless; what it buys is an unmount before the power goes |
 
 The full parts list, with the reasoning behind each choice, is
 ["What it takes to build one" in README.md](README.md#what-it-takes-to-build-one).
@@ -966,6 +966,123 @@ in `/etc/sudoers.d/` breaks `sudo` for every user on the machine, and on a headl
 Pi that is a reflash. The chain stops there if it does not parse — which is why it
 is `&&` throughout and why the file is installed from a generated copy rather than
 typed.
+
+## The UPS HAT
+
+Skip this unless a PiShop UPS HAT is fitted. It is not required: without one,
+mains loss cuts the Pi instantly, mains return boots it, and the card
+protections make that survivable.
+
+With one, an outage gets a clean unmount first. Two pieces have to be in place,
+and they own different pins.
+
+### 1. The overlay — the kernel cuts the power
+
+The HAT arms while **GPIO18 is held low** and cuts its output a moment after the
+pin goes **high**. Nothing in userspace can assert a pin at the end of a
+shutdown, because userspace is gone by then. The kernel can:
+
+```bash
+# /boot/firmware/config.txt — NOT /boot/config.txt, which is a stub
+dtoverlay=gpio-poweroff,gpiopin=18,timeout_ms=60000
+```
+
+`gpio-poweroff` holds GPIO18 low from boot, which is the armed state, and drives
+it high as the final act of the power-off path, after every filesystem is
+unmounted.
+
+`build_pi_image.sh` writes this line when `PI_UPS = yes`, but **only into a card
+it is building**. On a Pi that is already running, add it by hand and leave it
+there — removing it disarms the HAT.
+
+**`timeout_ms` must comfortably exceed the HAT's cut delay.** Measured here:
+about fifteen seconds from the pin going high to the power dropping. If the
+timeout expires first the kernel halts, the pin stops being driven, BCM18's
+pull-down takes it low, the HAT re-arms and never cuts — and the Pi is stranded
+halted on battery until somebody presses the HAT's button. 60000 costs nothing,
+because power is cut long before it.
+
+### 2. The monitor — userspace decides when
+
+`PI_UPS = yes` also generates `ups-shutdown.sh` and `igate-ups.service`. The
+script reads **GPIO17** (0 = mains present, 1 = on battery) and **GPIO27** (a
+heartbeat), and calls `systemctl poweroff` after `PI_UPS_SHUTDOWN_SECS` on
+battery. It never touches GPIO18.
+
+It refuses to act on GPIO17 unless GPIO27 is alive, because an unconnected input
+is a floating pin whose value means nothing — without that guard, enabling the
+setting with no HAT fitted would power the station down.
+
+Install it with the other system files (step 2 above), plus:
+
+```bash
+ssh -t igate@aprs-igate.local '
+  sudo install -m 755 -o root -g root /tmp/wd/ups-shutdown.sh   /opt/aprs-igate/ &&
+  sudo install -m 644 -o root -g root /tmp/wd/igate-ups.service /etc/systemd/system/ &&
+  sudo systemctl daemon-reload &&
+  sudo systemctl enable --now igate-ups.service'
+```
+
+### 3. Confirm it, before trusting it
+
+After a reboot:
+
+```bash
+sudo grep -E "gpio-18 " /sys/kernel/debug/gpio
+```
+
+```
+ gpio-18  (GPIO18   |power_ctrl   ) out lo
+```
+
+That `out lo` is the HAT armed. An **unclaimed** `gpio-18` — no `|label` — means
+the overlay did not load, and there is no point testing the power cut.
+
+Note the two kernel GPIO interfaces number lines differently and both appear in
+this build: `/sys/class/gpio` uses a global base (512 on this kernel, so BCM18
+is 530, and `ups-shutdown.sh` computes it at runtime), while
+`/sys/kernel/debug/gpio` prints chip-relative, so the same pin is `gpio-18`.
+Checking the wrong namespace makes a working overlay look broken.
+
+Then the service:
+
+```bash
+journalctl -u igate-ups -n 5 --no-pager
+```
+
+```
+ups: sysfs GPIO base is 512; BCM 17/27 are 529/539
+ups: gpio-poweroff is present; GPIO18 is the kernel's
+ups: watching for mains loss; will power off after 60s on battery
+```
+
+`WARNING: no gpio-poweroff node found` instead of the middle line means the
+overlay is missing and a shutdown will leave the station dark. Fix that before
+going further.
+
+### 4. The test
+
+Unplug mains and watch the red PWR LED. Expect the station to stay up for
+`PI_UPS_SHUTDOWN_SECS`, shut down on its own, and the LED to go dark a few
+seconds later. Measured here: **1 min 14 s** from unplug to dark, with a 60 s
+ride-through. Plug mains back in and it boots unattended.
+
+The journal survives the cut and is the evidence:
+
+```bash
+journalctl -u igate-ups -n 30 --no-pager
+```
+
+```
+mains lost — on battery, powering off in 60s unless it returns
+powering off after 60s on battery
+```
+
+If the LED stays solid, press the HAT's momentary button to free the Pi, restore
+mains, and check the overlay from step 3 — a clean shutdown with no power cut is
+the one outcome worse than having no UPS at all.
+
+---
 
 **3. Check, on the Pi:**
 
