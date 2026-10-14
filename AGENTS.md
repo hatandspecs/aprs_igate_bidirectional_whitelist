@@ -129,6 +129,14 @@ reached the air and every one was addressed to a whitelisted call** — 85 to
 KD3CCO-7, 7 to KD3CCO-10, 3 to KD3CCO-1. Plus 392 beacons, which is 47.8 a day
 and confirms the 30-minute interval. Nothing else was transmitted.
 
+  **95 is not operator traffic and should not be quoted as though it were.**
+  Roughly 49 of it is the self-test, which fired 49 times in that window and
+  transmits one message per run; 3 are acknowledgements that went up to APRS-IS
+  and came back down addressed to the self-test's own sender, which matches
+  `KD3CCO*` and so was legitimately re-transmitted; 7 are the same round trip
+  aimed at the gateway. The balance is hand-sent phone-to-radio testing. What
+  the figure measures is the *gate*, not demand on it.
+
   Measure it on the addressee, never on the whole line. Dire Wolf gates IS→RF
   in APRS third-party format, re-originated under this station's own callsign,
   so `KD3CCO-10` appears in every transmitted line by construction and
@@ -219,13 +227,49 @@ window, so the digipeaters were awake and the result is interpretable.
   third-party frame is roughly 30% longer, and at 1200 baud longer frames fail
   more). Do not write up any one of them as the cause.
 
-  **The experiment that separates them** changes one variable using traffic
-  already being sent: set `BEACON_VIA = WIDE1-1,WIDE2-2` so beacons request the
-  same path, leave it a few days, and compare the beacon repeat rate against
-  23%. A drop toward the gated rate means it is the path; no change means
-  filtering or length, and a long beacon on a short path isolates length next.
-  48 beacons a day gives a usable sample in two or three days, against six
-  gated messages a day needing a fortnight.
+  **The experiment is RUNNING as of 2026-10-13 22:00 EDT.** `BEACON_VIA` was set
+  to `WIDE1-1,WIDE2-2` in `igate.conf` so beacons request the same path as gated
+  messages, which changes exactly one of the three candidates. `PBEACON ... via=
+  "WIDE1-1,WIDE2-2"` and `IGTXVIA 0 WIDE1-1,WIDE2-2` are both confirmed in the
+  rendered `run/direwolf.conf` — note both are comma-separated, so neither hits
+  the whitespace-splitting trap at the top of this file.
+
+  **Put `BEACON_VIA` back to `WIDE1-1` when it is read.** At ~1,400 beacons a
+  month the second hop is a real cost to a shared national channel, and the
+  reason for keeping the beacon at one hop has not changed.
+
+  **Do not read it with plain `reach`.** The restart appended to the log rather
+  than truncating it, so `reach` blends one-hop beacons from before the change
+  with two-hop ones after, into a single meaningless rate. Discriminate on the
+  frames themselves, which record the configuration that produced them and so
+  survive log rotation: a two-hop beacon is sent as `APDW17,WIDE1-1,WIDE2-2:!`
+  and its repeat still carries `WIDE2` somewhere in the path, while a one-hop
+  beacon's repeat cannot.
+
+      cd ~/aprs-igate
+      ALL=$( { [ -f run/direwolf.log.2.gz ] && zcat run/direwolf.log.2.gz
+               [ -f run/direwolf.log.1.gz ] && zcat run/direwolf.log.1.gz
+               [ -f run/direwolf.log.1 ] && cat run/direwolf.log.1
+               cat run/direwolf.log; } 2>/dev/null )
+      R='^\[0\.[0-9]+\] KD3CCO-10>[^:]*\*[^:]*:!'
+      echo "ONE-HOP beacons (before the change)"
+      echo "  sent:    $(grep -cE '^\[0L\] KD3CCO-10>APDW17,WIDE1-1:!' <<<"$ALL")"
+      echo "  repeats: $(grep -E "$R" <<<"$ALL" | sed 's/:.*//' | grep -vc WIDE2)"
+      echo "TWO-HOP beacons (the experiment)"
+      echo "  sent:    $(grep -cE '^\[0L\] KD3CCO-10>APDW17,WIDE1-1,WIDE2-2:!' <<<"$ALL")"
+      echo "  repeats: $(grep -E "$R" <<<"$ALL" | sed 's/:.*//' | grep -c WIDE2)"
+      echo "GATED messages (unchanged, the comparison)"
+      echo "  sent:    $(grep -cE '^\[0L\] KD3CCO-10>[^:]*:\}' <<<"$ALL")"
+      echo "  repeats: $(grep -cE '^\[0\.[0-9]+\] KD3CCO-10>[^:]*\*[^:]*:\}' <<<"$ALL")"
+
+  Needs ~50 two-hop beacons to be worth computing, which is about a day; two is
+  better. Reading it: the two-hop beacon rate **falling toward the gated 2%**
+  means the hop count explains the gap and third-party format is innocent;
+  **staying near the one-hop 23%** means filtering or frame length, and the next
+  test is a long beacon on a short path to isolate length.
+
+  Record the outcome here and revert `BEACON_VIA` either way. A negative result
+  is as worth writing down as a positive one.
 
 **The web monitor's long-standing stall is solved** (2026-09-30). A Latin-1
 degree sign in another station's APRS comment raised `UnicodeDecodeError` in a

@@ -192,6 +192,8 @@ A phone in the shack, watching a round trip as it happens. `IS GATED` in green i
 
 Over eight days the servers offered this station **73,066 packets. Ninety-five reached the air** — every one addressed to a whitelisted call. The other 392 transmissions were its own beacons.
 
+Those ninety-five are mostly the station testing itself: the self-test transmits one message every four hours. The gate is what is being measured, not demand on it.
+
 Every line is labeled with the direction it went, which is how I found three separate faults.
 
 ---
