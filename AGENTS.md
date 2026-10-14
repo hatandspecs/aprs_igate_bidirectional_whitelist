@@ -165,22 +165,67 @@ times a day is how a real alarm gets missed.
 Steps 1-3 were never the problem — they passed 49 times out of 49. Step 4 now
 takes evidence in three tiers: an acknowledgement from `SELFTEST_TO` if one
 comes, else a digipeated copy of the test frame itself, else any repeat of this
-station within the last `SELFTEST_REPEAT_FRAMES` transmissions. The fallback is
+station within the last `SELFTEST_REPEAT_FRAMES` **beacons**. The fallback is
 what makes it work unattended: at a 29-40% repeat rate a single test frame goes
 unrepeated most of the time, so a bare "was this frame repeated" check would
 fail more often than the acknowledgement test it replaced.
 
-  Frames, not hours, because the log has no per-line timestamps and a time
+  **Beacons, not transmissions, and the difference is a false-alarm mode.**
+  Beacons are the instrument -- fixed interval, short, repeated about a quarter
+  of the time. Gated messages are what is being measured and come back far less
+  often (below). Counting them as evidence dilutes it: twenty self-tests in
+  forty minutes on 2026-10-13 pushed the beacons out of a
+  sixteen-TRANSMISSION window and walked the repeat count down 3, 3, 2, 1. It
+  bottomed out at 1, so nothing failed; at 0 the self-test would have reported
+  "nothing is repeating this station" during a run where the transmitter was
+  demonstrably fine.
+
+  Beacons, not hours, because the log has no per-line timestamps and a time
   window holds a different number of beacons depending on traffic. At p = 0.40,
   P(none of 16 came back) = 0.028%, about one false alarm every three years at
-  six checks a day. Verified on the Pi 2026-10-12: PASS in 43 s with the
-  addressee switched off, attributed `by W3YA-1(6)`.
+  six checks a day. Verified on the Pi: PASS in 43 s with the addressee off
+  (2026-10-12), and after the beacon-window fix `5 repeats heard over the last
+  16 beacons / by W3YA-1(4) W3TM-10(1)` (2026-10-13).
 
-  Attribution must skip routing aliases. A digipeater consuming a WIDE1-1 hop
-  may insert its own callsign and mark the ALIAS used, so the asterisk sits on
-  `WIDE1` and the station is elsewhere in the path. Both `reach` and the
+  **A used hop is an asterisk in the PATH, which is everything before the first
+  colon.** A third-party frame's payload contains `TCPIP,KD3CCO-10*`, which a
+  whole-line search cannot tell from a used hop — so the gateway's own callsign
+  appeared in a list of digipeaters that had repeated it. The patterns are
+  `^\[0\.N\] MYCALL>[^:]*\*[^:]*:` and extraction strips at the first colon.
+  `reach` and the self-test both shipped the whole-line version; it never showed
+  until gated frames were counted separately, because beacons have no decoy in
+  their payload.
+
+  Attribution must also skip routing aliases. A digipeater consuming a WIDE1-1
+  hop may insert its own callsign and mark the ALIAS used, so the asterisk sits
+  on `WIDE1` and the station is elsewhere in the path. Both `reach` and the
   self-test have shipped a version that printed `WIDE1` as though it were a
-  station.
+  station. The `floor` in `reach` is the deliberate exception: it counts every
+  used path element, aliases included, because any one element appears at most
+  once per frame and that makes a tighter bound.
+
+**Gated messages are repeated far less often than beacons, and the cause is not
+established (2026-10-13).** Measured on this station: beacons 12 of 52 (23%),
+gated messages 1 of 36 (2.8%), z = 2.64, p = 0.008. A deliberate run of twenty
+self-tests produced 0 of 20 while W3YA-1 was repeating beacons in the same
+window, so the digipeaters were awake and the result is interpretable.
+
+  **Three explanations fit it equally and the experiment cannot separate them.**
+  Third-party filtering (digipeaters dropping `}` frames, which is a reasonable
+  thing for an operator to configure, since internet-sourced frames put back on
+  RF are how APRS loops form); path length (`TX_VIA = WIDE1-1,WIDE2-2` asks for
+  three hops where `BEACON_VIA = WIDE1-1` asks for one, and plenty of
+  digipeaters refuse a path above a hop budget); and frame length (a gated
+  third-party frame is roughly 30% longer, and at 1200 baud longer frames fail
+  more). Do not write up any one of them as the cause.
+
+  **The experiment that separates them** changes one variable using traffic
+  already being sent: set `BEACON_VIA = WIDE1-1,WIDE2-2` so beacons request the
+  same path, leave it a few days, and compare the beacon repeat rate against
+  23%. A drop toward the gated rate means it is the path; no change means
+  filtering or length, and a long beacon on a short path isolates length next.
+  48 beacons a day gives a usable sample in two or three days, against six
+  gated messages a day needing a fortnight.
 
 **The web monitor's long-standing stall is solved** (2026-09-30). A Latin-1
 degree sign in another station's APRS comment raised `UnicodeDecodeError` in a
@@ -333,8 +378,35 @@ through the GPIO header, so the HAT never had to "restore" anything; and the
 pull registers are write-only on a BCM2837, so none of these pin states can be
 verified by reading them back. The only instrument is the red PWR LED.
 
-**Untested:** delivery to a handheld genuinely outside the gateway's own
-footprint.
+**Mobile delivery, tested 2026-10-12 — in the footprint, not beyond it.** Phone
+to radio and radio to phone, from a vehicle, at the corner of Atherton and
+College Ave, the South Atherton Sheetz, and South Hills Business School. Four
+messages acknowledged, both directions confirmed.
+
+Every frame the gateway heard from KD3CCO-7 arrived **three times** by three
+routes — direct, via W3YA-1, and via W3YA-1 then WO3T-1 — and **the direct copy
+carried no asterisk in its path**, which is what settles it: the gateway and the
+mobile hear each other without help at those distances (3-4 mi, the same range
+as W3TM-10 and W3SWL-2). So this does not test the one thing still untested.
+
+**Still untested:** delivery to a handheld genuinely outside the gateway's own
+footprint — somewhere it cannot hear the radio directly. The same logs show a
+two-hop return path exists (W3YA-1 then WO3T-1), so there is a plausible route
+for it when it is tried.
+
+**One message failed, and not for the reason it looked like.** Message 19905 was
+transmitted three times — the SMS gateway retried, and this station relayed each
+retry, all three confirmed on the air with `[0L]`. No acknowledgement came. It
+is tempting to read that as a coverage hole, and the log says otherwise: the
+gateway heard **nothing at all** from KD3CCO-7 between the frame before those
+attempts and the frame after. Radio off, indoors, or in a dead spot. The
+transmissions were fine.
+
+  The check that distinguishes the two is whether `KD3CCO-7>` frames appear in
+  the log either side of the failure or only outside it. A delivery failure with
+  the radio demonstrably on the air is a coverage finding; one with silence
+  around it is not evidence about the gateway at all. Evidence preserved at
+  `~/evidence/mobile-2026-10-12.txt` on the Pi, because `run/` is tmpfs.
 
 ## How I work — standing preferences
 

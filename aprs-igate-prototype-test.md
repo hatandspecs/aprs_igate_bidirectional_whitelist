@@ -2105,8 +2105,10 @@ one of its own unanswered transmissions.
 
 #### Ruled out by the evidence
 
-- **A configuration or whitelist fault.** The filter compiles to
-  `g/KD3CCO*/KD3CCP*/W3EDP*` and is visible in the rendered `direwolf.conf`. The
+- **A configuration or whitelist fault.** The filter compiled to
+  `g/KD3CCO*/KD3CCP*/W3EDP*` at the time, and was visible in the rendered
+  `direwolf.conf` (`W3TM*` was added 2026-10-13; the list is whatever
+  `WHITELIST_CALLS` says). The
   whitelist governs only APRS-IS → RF; the uplink it cannot affect was working
   throughout.
 - **Antenna mismatch.** 0.37 dB.

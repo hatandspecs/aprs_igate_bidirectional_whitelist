@@ -2764,7 +2764,7 @@ cmd_selftest() {
     if (( rep_rx > 0 )); then
       rep_who="$SELFTEST_REPEATERS"
       echo "  step 4 OK: no repeat of this frame, but ${rep_rx} repeats heard" \
-           "over the last ${rep_tx} transmissions"
+           "over the last ${rep_tx} beacons"
       [[ -n "$rep_who" ]] && echo "             by ${rep_who}"
     fi
   fi
@@ -2783,7 +2783,7 @@ cmd_selftest() {
   if (( saw_tx )) && [[ -n "${rep_rx:-}" ]] && (( rep_rx > 0 )); then
     echo "PASS — a message from the internet was transmitted, and this station"
     echo "       is being repeated: ${rep_rx} repeats heard over its last"
-    echo "       ${rep_tx} transmissions. This frame was not among them, which"
+    echo "       ${rep_tx} beacons. This frame was not among them, which"
     echo "       is the commoner outcome — most transmissions are repeated by"
     echo "       nobody."
     return 0
@@ -2792,7 +2792,7 @@ cmd_selftest() {
     echo "FAIL at step 4: transmitted, and nothing is repeating this station."
     echo "  The gateway did its part — APRS-IS took the message, routed it back,"
     echo "  and the modem was given the frame. What is missing is any evidence"
-    echo "  it reached the air: none of the last ${rep_tx:-0} transmissions came"
+    echo "  it reached the air: none of the last ${rep_tx:-0} beacons came"
     echo "  back off a digipeater, and ${target} did not acknowledge."
     echo
     echo "  Check in this order: the radio is powered and on 144.390; the"
@@ -2833,6 +2833,34 @@ _full_log() {
   fi
 }
 
+# A used hop is an asterisk IN THE PATH, which is everything before the first
+# colon. Anything after it is payload, and a third-party frame's payload
+# contains `TCPIP,KD3CCO-10*` — which matches a naive whole-line search for a
+# used hop exactly. That produced the gateway's own callsign in a list of
+# digipeaters that had repeated it.
+#
+#   ^\[0\.N\] MYCALL>[^:]*\*[^:]*:    the asterisk is before the first colon
+#
+# Frame type is the first payload character: `!` a position report (this
+# station's beacon), `}` a third-party frame (anything gated from APRS-IS).
+# Those are the two that matter here, because the downlink this project exists
+# for is the second one and the beacons are what `reach` has always measured.
+_RX_REPEAT='^\[0\.[0-9]+\] %s>[^:]*\*[^:]*:'
+_RX_BEACON='^\[0\.[0-9]+\] %s>[^:]*\*[^:]*:!'
+_RX_GATED='^\[0\.[0-9]+\] %s>[^:]*\*[^:]*:\}'
+_TX_ANY='^\[0L\] %s>'
+_TX_BEACON='^\[0L\] %s>[^:]*:!'
+_TX_GATED='^\[0L\] %s>[^:]*:\}'
+
+# Which digipeaters appear in a set of received frames, most frequent first.
+# Reads stdin; skips routing aliases, the same way the rest of this script
+# does, and looks only at the path.
+_digis_from() {
+  sed 's/:.*//' | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' \
+    | grep -vE '^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$' \
+    | sort | uniq -c | sort -rn
+}
+
 # Did anybody repeat this station recently? Prints "<repeats> <transmissions>".
 #
 # Counted over this station's last N TRANSMISSIONS, not over the last N hours.
@@ -2855,22 +2883,33 @@ _full_log() {
 # global it assigns is discarded when that subshell exits. It used to print
 # the counts and set the repeater list as a global, and the counts arrived
 # while the list silently did not.
-_selftest_repeats() {  # frames-back
+_selftest_repeats() {  # beacons-back
+  # Counted over the last N BEACONS, not the last N transmissions. Beacons are
+  # the instrument -- fixed interval, short, repeated about a quarter of the
+  # time. Gated messages are the thing being measured and come back far less
+  # often (23% against 2.8% on this station, p = 0.008), so counting them as
+  # evidence dilutes it.
+  #
+  # Measured the hard way 2026-10-13: twenty self-tests in forty minutes
+  # pushed the beacons out of a sixteen-TRANSMISSION window and the repeat
+  # count fell 3, 3, 2, 1 as the window filled with gated frames nobody had
+  # repeated. It bottomed out at 1, so nothing failed; at 0 this would have
+  # reported "nothing is repeating this station" during a run where the
+  # transmitter was demonstrably fine. A burst of gated traffic must not be
+  # able to starve the window of the only frames that reliably come back.
   local want="${1:-16}" mine="${CFG[MYCALL]:-}" log start window
   SELFTEST_RX=0; SELFTEST_TX=0; SELFTEST_REPEATERS=""
-SELFTEST_RX=0
-SELFTEST_TX=0
   [[ -z "$mine" ]] && return
   log="$(_full_log)"
   [[ -z "$log" ]] && return
   # Where our Nth-from-last transmission is, so the window holds exactly that
   # many of them however much other traffic is interleaved.
-  start="$(grep -nE "^\[0L\] ${mine}>" <<<"$log" | tail -n "$want" \
+  start="$(grep -nE "$(printf "$_TX_BEACON" "$mine")" <<<"$log" | tail -n "$want" \
            | head -1 | cut -d: -f1)"
   [[ -z "$start" ]] && return
   window="$(tail -n +"$start" <<<"$log")"
-  SELFTEST_TX="$(grep -cE "^\[0L\] ${mine}>" <<<"$window" || true)"
-  SELFTEST_RX="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$window" | grep -c '\*' || true)"
+  SELFTEST_TX="$(grep -cE "$(printf "$_TX_BEACON" "$mine")" <<<"$window" || true)"
+  SELFTEST_RX="$(grep -cE "$(printf "$_RX_BEACON" "$mine")" <<<"$window" || true)"
   # Attribution skips routing aliases, the same way cmd_reach does. A
   # digipeater that consumes a WIDE1-1 hop may insert its own callsign and mark
   # the ALIAS used, so the asterisk is on `WIDE1` and the station is elsewhere
@@ -2881,8 +2920,8 @@ SELFTEST_TX=0
   # A frame whose path carries no real callsign at all was still repeated by
   # somebody; it is counted as unattributed rather than dropped, because
   # dropping it would under-report repeats that did happen.
-  SELFTEST_REPEATERS="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$window" \
-    | grep '\*' | python3 -c '
+  SELFTEST_REPEATERS="$(grep -E "$(printf "$_RX_BEACON" "$mine")" <<<"$window" \
+    | sed 's/:.*//' | python3 -c '
 import re, sys, collections
 ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
 seen = collections.Counter()
@@ -2907,6 +2946,8 @@ print(" ".join("%s(%d)" % kv for kv in seen.most_common()))
 # twice for one verdict is seconds of a self-test spent re-reading a file it
 # had already read.
 SELFTEST_REPEATERS=""
+SELFTEST_RX=0
+SELFTEST_TX=0
 
 cmd_reach() {
   load_and_resolve "${1:-}"
@@ -2938,10 +2979,21 @@ cmd_reach() {
   fi
 
   # Transmitted by this station: Direwolf's own transmit line.
-  tx="$(grep -cE "^\[0L\] ${mine}>" <<<"$log" || true)"
-  # Heard back, with a digipeater's call marked used. A frame from MYCALL
-  # arriving on the radio can only have got there by being repeated.
-  rx="$(grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$log" | grep -c '\*' || true)"
+  tx="$(grep -cE "$(printf "$_TX_ANY" "$mine")" <<<"$log" || true)"
+  # Heard back, with a digipeater's call marked used IN THE PATH. A frame from
+  # MYCALL arriving on the radio can only have got there by being repeated.
+  rx="$(grep -cE "$(printf "$_RX_REPEAT" "$mine")" <<<"$log" || true)"
+
+  # Split by frame type. The beacons are what this has always measured; the
+  # gated messages are the downlink the project exists for, and they are a
+  # separate question — a digipeater may be configured to drop third-party
+  # traffic, since internet-sourced frames put back on RF are how APRS loops
+  # form.
+  local tx_b tx_g rx_b rx_g
+  tx_b="$(grep -cE "$(printf "$_TX_BEACON" "$mine")" <<<"$log" || true)"
+  tx_g="$(grep -cE "$(printf "$_TX_GATED" "$mine")" <<<"$log" || true)"
+  rx_b="$(grep -cE "$(printf "$_RX_BEACON" "$mine")" <<<"$log" || true)"
+  rx_g="$(grep -cE "$(printf "$_RX_GATED" "$mine")" <<<"$log" || true)"
 
   # Repeats are LINES, and one frame repeated by two digipeaters is two of
   # them. So the total is a ceiling on how many distinct transmissions came
@@ -2961,10 +3013,18 @@ cmd_reach() {
   # Reporting the ratio alone invited reading it as "this fraction of
   # transmissions was repeated", which is the upper bound rather than the
   # measurement.
+  # The floor counts EVERY used path element, routing aliases included, and
+  # deliberately not through _digis_from. Any one element appears at most once
+  # in a given frame's path, so an element seen in N returning frames means at
+  # least N distinct transmissions came back — and the busiest is often `WIDE1`
+  # rather than a station, because a digipeater consuming a WIDE1-1 hop may
+  # mark the alias used instead of substituting its own call. That makes an
+  # alias useless for attribution and perfectly good for counting. Excluding
+  # aliases here would loosen the bound for no reason.
   local floor
-  floor="$(grep -E "^\\[0\\.[0-9]+\\] ${mine}>" <<<"$log" \
-           | grep -oE ',[A-Z0-9-]+\\*' | tr -d ',*' | sort | uniq -c \
-           | sort -rn | head -1 | awk '{print $1+0}')"
+  floor="$(grep -E "$(printf "$_RX_REPEAT" "$mine")" <<<"$log" \
+           | sed 's/:.*//' | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' \
+           | sort | uniq -c | sort -rn | head -1 | awk '{print $1+0}')"
   floor="${floor:-0}"
 
   local span; span="$(grep -cE "^\\[0" <<<"$log" || true)"
@@ -2978,6 +3038,33 @@ cmd_reach() {
     # reader assumes the line above means. Bounded, not measured.
     echo "  transmissions repeated:       $(( floor * 100 / tx ))% to $(( rx * 100 / tx ))%"
     echo "                                (${floor} to ${rx} of ${tx})"
+  fi
+
+  # The split, counts first and the rate second — the rate is the part that
+  # misleads when the sample is small, and the gated sample is always small:
+  # one self-test every four hours is six a day against the beacon's
+  # forty-eight.
+  echo
+  echo "  By frame type — the downlink is the gated messages, not the beacons:"
+  local _rb _rg
+  _rb="repeat"; (( rx_b == 1 )) || _rb="repeats"
+  _rg="repeat"; (( rx_g == 1 )) || _rg="repeats"
+  printf '    %-16s %4s sent  %4s %-8s' "beacons" "$tx_b" "$rx_b" "$_rb"
+  (( tx_b > 0 )) && printf '%3d%%' $(( rx_b * 100 / tx_b ))
+  echo
+  printf '    %-16s %4s sent  %4s %-8s' "gated messages" "$tx_g" "$rx_g" "$_rg"
+  (( tx_g > 0 )) && printf '%3d%%' $(( rx_g * 100 / tx_g ))
+  echo
+  # Refuse to invite a comparison the sample cannot support. Thirty is roughly
+  # where 25%-against-near-zero becomes separable; below it the interval on the
+  # gated rate covers most of the beacon rate and the two numbers say nothing
+  # about each other. This project has already published one retraction from
+  # concluding a change from a small sample.
+  if (( tx_g < 30 )); then
+    echo
+    echo "    Too few gated messages (${tx_g}) to compare those two rates."
+    echo "    At six self-tests a day, about a week gives a sample that can"
+    echo "    separate 'third-party frames get filtered' from ordinary luck."
   fi
   echo
 
