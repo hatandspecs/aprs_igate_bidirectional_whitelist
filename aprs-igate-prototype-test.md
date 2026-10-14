@@ -133,7 +133,7 @@ demonstrated rather than what is intended.
 | FR-14 | Run in a container on a workstation and bare-metal on a Pi, from the same configuration. | met — `DEPLOY_MODE` |
 | FR-15 | Build a bootable Pi card in one command. | met — `build_pi_image.sh` |
 | FR-16 | Help set audio levels, and say what the levels mean. | met — `./deploy_igate.sh audio` |
-| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | met — measured twice: 42 of 112 beacons repeated (37%) on 2026-09-27, and 41 of 68 (60%) on 2026-09-28. The difference is significant (z = 2.97, p = 0.003) and unexplained. `TX_VIA` is `WIDE1-1,WIDE2-2` so a gated message can reach the mountain digipeater by way of the near one; `BEACON_VIA` keeps the beacon at one hop |
+| FR-17 | Reach a digipeater reliably enough to be useful beyond the house. | met — **483 transmissions over the eight days to 2026-10-12, 194 repeats heard, and between 141 and 194 of those transmissions repeated: 29% to 40%.** A range rather than a figure because repeats are log lines and one frame repeated twice is two of them; the busiest single path element is a floor and the total a ceiling (§14.9). Supersedes the 37%/60% pair of 2026-09-27/28, which was a different antenna and position. `TX_VIA` is `WIDE1-1,WIDE2-2`; `BEACON_VIA` keeps the beacon at one hop — note that the documented reason for the second slot no longer holds, since W3YA-1 on the mountain now hears this station more than twice as often as the near W3TM-10 (123 against 53), and the reason has not been re-established |
 | FR-18 | **Local whitelisted messaging is highly probable, and failure is fast and visible.** See below for what that resolves to. | met — all five criteria |
 
 ### FR-18 in detail

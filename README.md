@@ -710,20 +710,36 @@ Counts the station's own transmissions against its own receiver hearing them
 come back digipeated, and names what repeated them.
 
 ```
-  transmitted by KD3CCO-10:       112
-  heard back, digipeated:       42
-  repeat rate:                  37%
+  transmitted by KD3CCO-10:       89
+  repeats heard:                13
+  repeats per transmission:     14%
+  transmissions repeated:       8% to 14%
+                                (8 to 13 of 89)
+
+  By frame type — the downlink is the gated messages, not the beacons:
+    beacons            53 sent    12 repeats  22%
+    gated messages     36 sent     1 repeat    2%
 
 Heard directly by:
-  W3TM-10      28
-  W3YA-1       14
+  W3YA-1       8
+  W3TM-10      4
+  K3DNA        1
 
 Relayed onward by, on a second hop:
-  W3YA-1       9
+  WO3T-1       1
 
 Chains:
-  W3TM-10 then W3YA-1   9
+  K3DNA then WO3T-1   1
 ```
+
+**Two numbers, because the obvious one overstates.** Repeats are counted as log
+lines, and a frame repeated by two digipeaters is two of them — so the ratio is
+*repeats per transmission* and can exceed 100%. The share of transmissions that
+came back at all is bounded rather than measured: the busiest single path
+element is a floor, since any one element appears at most once in a frame's
+path, and the total is a ceiling. The beacons are byte-identical and APRS
+carries no sequence number, so nothing in the log narrows it further. Quoting
+the ratio alone as "the fraction repeated" gives the ceiling.
 
 **"Heard directly by" is the first real callsign in the path**, which is the
 station that heard this one off the air. A digipeater consuming a `WIDE1-1`
@@ -735,9 +751,18 @@ station, and is counted separately.
 **The onward sections stay empty with a single-hop path**, because one slot can
 only ever be taken by one digipeater. They are the instrument for a multi-hop
 `TX_VIA`: whether the second hop is reaching a digipeater the first one could
-not, or buying another transmission of the same footprint. Note that `reach`
-counts *beacons*, so it measures `BEACON_VIA`, not `TX_VIA` — to measure a
-message path, set `BEACON_VIA` to match it for as long as the measurement takes.
+not, or buying another transmission of the same footprint.
+
+**The frame-type split is why the two paths are worth separating.** Beacons go
+out on `BEACON_VIA` and gated messages on `TX_VIA`, so the two lines measure
+two different paths as well as two different kinds of frame. On this station the
+gap is large — 22% against 2% — and the cause is not established: it could be
+digipeaters declining third-party (`}`) frames, it could be `TX_VIA` asking
+three hops where `BEACON_VIA` asks one, or it could be that a gated frame is
+about 30% longer and longer frames fail more at 1200 baud. To separate them, set
+`BEACON_VIA` to match `TX_VIA` for a few days and watch whether the beacon rate
+falls: beacons are frequent enough to give a sample in days, where gated
+messages need weeks.
 
 **It transmits nothing.** Every beacon already sent was a measurement; this
 reads them out of the log.
