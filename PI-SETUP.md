@@ -612,12 +612,34 @@ http://192.168.1.42:8080/        <- the Pi's address; find it with: hostname -I
 Worth reserving that address in your router's DHCP settings, since the name is
 not an option from every device.
 
+**On a phone, check the browser's local-network permission first.** Recent
+Android gates access to local network devices behind a permission of its own,
+separate from internet access: until the browser holds it, every address on
+the LAN fails while the rest of the web loads normally. That is the most
+misleading failure this page has, because nothing on the Pi looks wrong and
+nothing is. Android also has no general-purpose mDNS resolver, so
+`aprs-igate.local` may not resolve there even once the permission is granted —
+a reserved IP address is what makes the phone reliable, and the phone is the
+device most likely to be in your hand at the radio.
+
 Check it's up:
 
 ```bash
 systemctl status igate-web --no-pager
 ss -tln | grep 8080
 ```
+
+`active (running)` plus a listener on 8080 is the whole server-side check, and
+it is usually where the trouble is not. If the browser shows nothing, prove the
+server first:
+
+```bash
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:8080/
+```
+
+`HTTP 200` means the fault is past the Pi. The page is plain HTTP, so a browser
+with HTTPS-Only Mode or *Always use secure connections* turned on will fail
+silently — see "When the page will not load at all" in README.md.
 
 Turn it off per-build with `PI_WEB_MONITOR = no` in `pi.conf`, or right now with
 `sudo systemctl disable --now igate-web`.

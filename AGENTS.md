@@ -31,6 +31,20 @@ The design doc separates **Specification** (what it must do) from **Findings**
   frame reached the modem, not that the radio keyed. Only an acknowledgement
   proves delivery, which is what `selftest` measures.
 - **`reach` counts beacons**, so it measures `BEACON_VIA`, not `TX_VIA`.
+- **"The web monitor is down" is usually the client, not the Pi** (2026-10-14).
+  The service was `active (running)`, listening on 8080, one `tail -F`, `/`
+  returning 200 with 10 KB of HTML, `/api/status` valid JSON and `/events`
+  streaming live packets — and the page still would not load, on an Android
+  phone, until the browser was granted Android's **local network devices**
+  permission. Recent Android gates that separately from internet access, so the
+  browser reaches the whole web while every LAN address fails. Check the client
+  before the gateway: `curl -sS -o /dev/null -w '%{http_code}\n'
+  http://127.0.0.1:8080/` on the Pi settles the server side in one command, and
+  it must then be retested **from the device that is actually failing** — a
+  laptop answering 200 by name proves nothing about a phone. Nothing is logged
+  per request, so a journal holding only the startup lines is not evidence that
+  requests are arriving. Full list of client-side causes in README.md, "When the
+  page will not load at all".
 - **A digipeater missing from a path on aprs.fi proves nothing.** APRS-IS
   deduplicates on source, destination and payload over ~30 s and ignores the
   path, and a digipeated copy arrives 1.5-3 s late, so it loses to any iGate that
@@ -270,6 +284,25 @@ window, so the digipeaters were awake and the result is interpretable.
 
   Record the outcome here and revert `BEACON_VIA` either way. A negative result
   is as worth writing down as a positive one.
+
+**Wanted later: a blacklist, starting with CX2JO-10** (noted 2026-10-14).
+Nothing is to be built or configured for this yet — it is recorded so the next
+session does not have to rediscover the idea, and **no setting was changed when
+it was written down.** The gateway today has only a whitelist, `WHITELIST_CALLS`,
+which decides what may be transmitted from APRS-IS to RF. A blacklist is the
+other direction and a different mechanism: suppressing a station that is noisy
+on the *receive* side, which the whitelist cannot express because it is not
+about transmitting.
+
+CX2JO-10 is the station that prompted it. It appears in third-party messages
+relayed through other digipeaters — `CX2JO-10>APV209,TCPIP,N3DXC*::KC3ZLD-10:`
+and the like — which arrive repeatedly and fill the monitor. Worth knowing
+before designing anything: those are already dropped rather than transmitted
+(Direwolf logs `Rx IGate: Do not relay with TCPIP in path`), so this is about
+noise in what gets *shown and gated up*, not about a transmit hazard. Decide
+deliberately whether the blacklist applies to what is gated up to APRS-IS, what
+the monitor displays, or both — they are three different features and only one
+of them touches the air.
 
 **The web monitor's long-standing stall is solved** (2026-09-30). A Latin-1
 degree sign in another station's APRS comment raised `UnicodeDecodeError` in a

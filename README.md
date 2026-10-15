@@ -917,6 +917,55 @@ away from home, a VPN (WireGuard or Tailscale) makes a remote device look local
 and needs no change to the page — that is much safer than forwarding a port to a
 hand-written HTTP server.
 
+### When the page will not load at all
+
+The monitor serves **plain HTTP on a private address**, because it is an
+unauthenticated read-only page for a LAN. Several things on the client break
+that, and every one of them looks exactly like a dead service.
+
+**The browser needs permission to reach the local network.** This is the one
+that actually happened here, on an Android phone, and it is the first thing to
+check on any phone. Recent Android gates an app's access to local network
+devices behind its own permission, separate from internet access — so the
+browser loads anything on the public internet while every request to a LAN
+address fails. Granting the browser that permission is the whole fix; the
+gateway and the monitor are untouched and were never at fault. It lives under
+Settings → Apps → the browser → Permissions, and the browser may also prompt
+for it in the page.
+
+Three more, in the order worth trying:
+
+- **`.local` may not resolve on a phone.** Android has no general-purpose mDNS
+  resolver, so `aprs-igate.local` can fail there while resolving perfectly from
+  a Linux or macOS browser on the same network. Use the Pi's IP address from a
+  phone — `http://<pi-address>:8080/` — and reserve that address in the router's
+  DHCP so it does not move. Android's *Private DNS* setting breaks local names
+  the same way when it is on.
+- **Automatic HTTPS upgrade.** Firefox's *HTTPS-Only Mode* and Chrome's *Always
+  use secure connections* rewrite `http://` to `https://`. There is no TLS
+  listener and no certificate, so the request fails with no clue why. Turn the
+  setting off, or add an exception for the host.
+- **A URL with no scheme.** `aprs-igate.local:8080` typed into an address bar is
+  treated as a search query by both browsers. Type `http://aprs-igate.local:8080/`
+  in full.
+
+Localize it before chasing it, because the failure is almost never the gateway.
+On the Pi:
+
+```
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:8080/
+```
+
+Then the same from the machine with the browser, substituting the Pi's address or
+`<host>.local`. `HTTP 200` from both means the server, the network path and name
+resolution are all fine and the problem is in the browser. Test from the device
+that is actually failing: a laptop answering 200 by name proves nothing about a
+phone, which resolves `.local` differently or not at all. A 500 from the Pi
+names its own fault — `web/index.html is missing` is the only one `/` can report.
+Nothing on `/`, `/api/status` or `/events` is logged per request, so a journal
+with nothing but the startup lines in it is not evidence that requests are
+arriving.
+
 ### When the page stops updating
 
 The feed can stall while the gateway is perfectly healthy: `monitor` is a
