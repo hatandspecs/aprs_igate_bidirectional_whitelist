@@ -485,6 +485,52 @@ transmissions were fine.
   around it is not evidence about the gateway at all. Evidence preserved at
   `~/evidence/mobile-2026-10-12.txt` on the Pi, because `run/` is tmpfs.
 
+## What to do next (written 2026-10-15)
+
+In rough order of what is blocking what. Nothing here is started.
+
+**1. Read the `BEACON_VIA` experiment and revert it.** This is the only thing
+on the station that is deliberately not in its normal configuration, and it has
+been that way since 2026-10-13 22:00 EDT — long enough. `BEACON_VIA` is
+`WIDE1-1,WIDE2-2` in `igate.conf`; the question is whether the two-hop beacon
+repeat rate falls toward the gated 2% (so hop count explains the gap and
+third-party format is innocent) or stays near the one-hop 23% (so it is
+filtering or frame length, and the next test is a long beacon on a short path).
+
+  **Do not read it with plain `reach`.** It counts all beacons together and the
+  window now holds both one-hop and two-hop ones, so the blended figure answers
+  nothing. The split readout is recorded under "Commands" above.
+
+  **Put `BEACON_VIA` back to `WIDE1-1` either way**, and write the outcome into
+  "Where it stands" — a negative result is worth as much as a positive one and
+  costs the same to record. At ~1,400 beacons a month this is not a setting to
+  leave on an experiment.
+
+**2. The open coverage question, unchanged.** Whether a message gated by this
+station reaches a handheld genuinely outside its own footprint is still
+untested. The four mobile locations on 2026-10-12 were all 3–4 mi out with
+direct copies in the log, so they measured the radio and not the digipeaters.
+What is needed is a location where `KD3CCO-7>` frames do NOT appear direct in
+the gateway's log, with a message sent to it and the result noted. Until then
+the honest claim is the 29–40% repeat rate, which is about beacons.
+
+**3. A blacklist, if it still seems worth it.** Recorded above under "Wanted
+later" with the three different features it could mean. Nothing to build yet.
+
+**4. Rebuild `slides/igate-talk.pdf`.** The markdown is one edit ahead of the
+PDF — the whitelist statistics slide was updated and the PDF was not. Build
+instructions are in `slides/README.md`.
+
+**5. A UPS cell, when one is ordered.** The power-cut path is confirmed working
+on hardware (2026-10-12) with the `gpio-poweroff` overlay, but the HAT's cell
+is still disconnected, so the running station has no UPS and no clock across a
+power cut. Nothing to debug — the fix is a battery.
+
+**Not a bug, and do not go looking for one:** "the web monitor is down" on
+2026-10-14 was Android withholding the browser's local-network permission. The
+service, the port, the page, the status endpoint and the event stream were all
+healthy. The gotcha and the one-command server-side check are above.
+
 ## How I work — standing preferences
 
 These are the same in every repository of mine. They are restated in each one
