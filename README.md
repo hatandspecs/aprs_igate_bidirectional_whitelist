@@ -710,23 +710,26 @@ Counts the station's own transmissions against its own receiver hearing them
 come back digipeated, and names what repeated them.
 
 ```
-  transmitted by KD3CCO-10:       89
-  repeats heard:                13
-  repeats per transmission:     14%
-  transmissions repeated:       8% to 14%
-                                (8 to 13 of 89)
+  transmitted by KD3CCO-10:       356
+  repeats heard:                171
+  repeats per transmission:     48%
+  transmissions repeated:       26% to 48%
+                                (94 to 171 of 356)
 
   By frame type — the downlink is the gated messages, not the beacons:
-    beacons            53 sent    12 repeats  22%
-    gated messages     36 sent     1 repeat    2%
+    beacons           278 sent   163 repeats  58%
+    gated messages     78 sent     8 repeats  10%
 
 Heard directly by:
-  W3YA-1       8
-  W3TM-10      4
-  K3DNA        1
+  W3TM-10      114
+  K3DNA        35
+  W3YA-1       11
+  N3SNN-3      11
 
 Relayed onward by, on a second hop:
-  WO3T-1       1
+  W3YA-1       47
+  WO3T-1       40
+  W3TM-10      20
 
 Chains:
   K3DNA then WO3T-1   1
@@ -755,14 +758,21 @@ not, or buying another transmission of the same footprint.
 
 **The frame-type split is why the two paths are worth separating.** Beacons go
 out on `BEACON_VIA` and gated messages on `TX_VIA`, so the two lines measure
-two different paths as well as two different kinds of frame. On this station the
-gap is large — 22% against 2% — and the cause is not established: it could be
-digipeaters declining third-party (`}`) frames, it could be `TX_VIA` asking
-three hops where `BEACON_VIA` asks one, or it could be that a gated frame is
-about 30% longer and longer frames fail more at 1200 baud. To separate them, set
-`BEACON_VIA` to match `TX_VIA` for a few days and watch whether the beacon rate
-falls: beacons are frequent enough to give a sample in days, where gated
-messages need weeks.
+two different paths as well as two different kinds of frame. On this station
+the gap is large — **58% against 10%** — and **path length is not the cause**.
+Running the beacon on the same two-hop path as the messages for five days left
+the beacon rate at 58% while the gated rate stayed at 10%, so the hop count is
+eliminated. Two explanations remain and this measurement cannot separate them:
+digipeaters declining third-party (`}`) frames, or a gated frame being about
+30% longer and longer frames failing more at 1200 baud. The experiment that
+separates those is a long beacon on a short path.
+
+**The second hop is useless for beacons and load bearing for messages.** The
+same run showed two-hop beacons repeated 131 of 223 against one-hop 32 of 53 —
+no difference worth the channel time, so `BEACON_VIA` is one hop. But the
+gated messages that got through were mostly carried by `WO3T-1`, which never
+hears this station directly and appears only as a second-hop relay. `TX_VIA`
+stays at two hops for that reason.
 
 **It transmits nothing.** Every beacon already sent was a measurement; this
 reads them out of the log.

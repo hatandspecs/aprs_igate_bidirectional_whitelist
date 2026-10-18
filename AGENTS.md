@@ -226,39 +226,73 @@ fail more often than the acknowledgement test it replaced.
   used path element, aliases included, because any one element appears at most
   once per frame and that makes a tighter bound.
 
-**Gated messages are repeated far less often than beacons, and the cause is not
-established (2026-10-13).** Measured on this station: beacons 12 of 52 (23%),
-gated messages 1 of 36 (2.8%), z = 2.64, p = 0.008. A deliberate run of twenty
-self-tests produced 0 of 20 while W3YA-1 was repeating beacons in the same
-window, so the digipeaters were awake and the result is interpretable.
+**Gated messages are repeated far less often than beacons, and PATH LENGTH IS
+NOT THE CAUSE (settled 2026-10-18).** Measured on this station over 22,587
+frames of log, with beacons and messages requesting the SAME two-hop path:
 
-  **Three explanations fit it equally and the experiment cannot separate them.**
-  Third-party filtering (digipeaters dropping `}` frames, which is a reasonable
-  thing for an operator to configure, since internet-sourced frames put back on
-  RF are how APRS loops form); path length (`TX_VIA = WIDE1-1,WIDE2-2` asks for
-  three hops where `BEACON_VIA = WIDE1-1` asks for one, and plenty of
-  digipeaters refuse a path above a hop budget); and frame length (a gated
-  third-party frame is roughly 30% longer, and at 1200 baud longer frames fail
-  more). Do not write up any one of them as the cause.
+| frame type | sent | repeats heard | rate |
+|---|---|---|---|
+| beacons (`!`) | 278 | 163 | 58% |
+| gated messages (`}`) | 78 | 8 | 10% |
 
-  **The experiment is RUNNING as of 2026-10-13 22:00 EDT.** `BEACON_VIA` was set
-  to `WIDE1-1,WIDE2-2` in `igate.conf` so beacons request the same path as gated
-  messages, which changes exactly one of the three candidates. `PBEACON ... via=
-  "WIDE1-1,WIDE2-2"` and `IGTXVIA 0 WIDE1-1,WIDE2-2` are both confirmed in the
-  rendered `run/direwolf.conf` — note both are comma-separated, so neither hits
-  the whitespace-splitting trap at the top of this file.
+A 48-point gap at 10.8 standard errors. The experiment below matched the
+paths so the two differ in nothing but frame type and length; the beacon
+rate did not fall toward the gated rate, so **the hop count is eliminated**
+and third-party format is not innocent.
 
-  **Put `BEACON_VIA` back to `WIDE1-1` when it is read.** At ~1,400 beacons a
-  month the second hop is a real cost to a shared national channel, and the
-  reason for keeping the beacon at one hop has not changed.
+  **The experiment is CLOSED and `BEACON_VIA` is back to `WIDE1-1`
+  (2026-10-18).** It ran 2026-10-13 22:00 to 2026-10-18, and separately
+  answered its own secondary question: two-hop beacons were repeated 131 of
+  223 (58.7%) against one-hop 32 of 53 (60.4%) -- a difference of 1.6 points
+  with a standard error of 7.5, which is nothing. **The second hop does not
+  help beacons**, and at ~1,400 beacons a month it is a real cost to a
+  shared channel.
 
-  **Do not read it with plain `reach`.** The restart appended to the log rather
-  than truncating it, so `reach` blends one-hop beacons from before the change
-  with two-hop ones after, into a single meaningless rate. Discriminate on the
-  frames themselves, which record the configuration that produced them and so
-  survive log rotation: a two-hop beacon is sent as `APDW17,WIDE1-1,WIDE2-2:!`
-  and its repeat still carries `WIDE2` somewhere in the path, while a one-hop
-  beacon's repeat cannot.
+  **But the second hop IS what delivers messages, and `TX_VIA` must stay at
+  two hops.** Of the 8 gated messages repeated, 5 were carried by `WO3T-1` --
+  which never hears this station directly. `reach` places it only under
+  "relayed onward on a second hop", 40 times, dominated by the chain
+  `K3DNA then WO3T-1` (25). The downlink that works is a second-hop
+  delivery. This asymmetry -- the second hop useless for beacons and load
+  bearing for messages -- is the most useful thing the experiment produced.
+
+  **Two explanations remain and the data cannot separate them**: third-party
+  filtering (digipeaters dropping `}` frames, which is a reasonable thing for
+  an operator to configure, since internet-sourced frames put back on RF are
+  how APRS loops form) and frame length (a gated frame is ~30% longer, and at
+  1200 baud longer frames fail more). Do not write up either as the cause.
+
+  **`W3TM-10` is not the lever it looks like.** It is this station's best
+  direct listener by a distance -- 114 direct receptions -- and it repeated 0
+  of 78 gated messages, which reads as filtering. **It runs about 1 watt.**
+  At that power it would not deliver a message to a mobile HT several miles
+  out whether it repeated one or not, so persuading its operator to carry
+  third-party frames would raise the repeat count and might not move
+  delivery at all. Its zero is also equally consistent with failing to
+  decode the longer frames, which its power says nothing about either way.
+
+  **What the downlink actually rests on is the direct path.** On 2026-10-17 a
+  message reached `KD3CCO-7` at Rural King on Benner Pike and was
+  acknowledged -- `KD3CCO-7>APY05D,WIDE1-1,WIDE2-1::SMS :ack20550`, the path
+  unused, so the gateway heard the HT direct with no digipeater involved.
+
+  **The next experiment is designed and NOT running: a long beacon on a short
+  path.** Pad the `PBEACON` comment until the frame matches a gated frame's
+  length, leave `BEACON_VIA = WIDE1-1`, and read it after a few days. A long
+  beacon still near 58% means length is innocent and it is filtering; a long
+  beacon falling toward 10% means it is length and nobody is filtering. It
+  carries the same cost to the channel as the last one, so it wants the same
+  `TEMPORARY, set <date>` comment and revert instruction. **Let the reverted
+  one-hop beacon build a better baseline first** -- the one-hop sample is
+  only 53 beacons.
+
+  **Reading it: `reach` is fine now, per type.** The warning that applied
+  while the experiment ran -- that `reach` blends one-hop and two-hop beacons
+  from either side of the change into a meaningless rate -- expires once the
+  log no longer spans the switch. Its per-type rows are plain ratios; the
+  floor/ceiling range it prints applies to the AGGREGATE line only, and
+  quoting that ratio alone as "the fraction of transmissions repeated" is
+  still wrong.
 
       cd ~/aprs-igate
       ALL=$( { [ -f run/direwolf.log.2.gz ] && zcat run/direwolf.log.2.gz
