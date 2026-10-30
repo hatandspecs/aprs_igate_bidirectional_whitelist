@@ -603,6 +603,13 @@ for you. Without it, `up` refuses to start and prints the commands.
 | `watchdog` | Check the radio and the gateway, and restart if something broke. Silent when all is well; run from a timer — see [Recovering by itself](#recovering-by-itself) |
 | `uninstall` | Tear down to a zero state |
 
+**`./igate-archive.sh`** is a separate script rather than a subcommand, run
+daily by `igate-archive.timer`. It copies each rotated generation of the packet
+log onto the card (named by content hash, so a chunk is never stored twice),
+appends one row to `archive/daily-summary.tsv`, and prunes both to
+`ARCHIVE_KEEP_DAYS`. Nothing it does transmits or restarts anything, so it is
+safe to run by hand at any time.
+
 All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
 
 ### Recovering by itself
@@ -847,8 +854,9 @@ state, whitelist, and resolved filter. Open with `xdg-open run/status.html`.
 
 ## Web monitor (LAN)
 
-`igate_web.py` serves one page on the local network showing live packet flow and
-the resolved whitelist. Python standard library only — nothing to install.
+`igate_web.py` serves one page on the local network showing live packet flow,
+the resolved whitelist, and the state of the dated log and the daily archive.
+Python standard library only — nothing to install.
 
 ```
 http://aprs-igate.local:8080/        # or http://<pi-ip>:8080/
@@ -861,6 +869,31 @@ It works in **both deployment modes**, because it asks `deploy_igate.sh` rather
 than inspecting the gateway itself: `monitor` for the packet stream and
 `is-running` for liveness, each of which already knows whether it is looking at a
 container or at pidfiles.
+
+### The logging panel
+
+A second collapsible section, **Logging and archive**, answers the morning
+question without an ssh session: whether today's dated log is filling, when the
+archive timer last fired and when it fires next, how many chunks are held, and
+the last three rows of `daily-summary.tsv`. The line beside the title carries
+the headline unopened — `· 14 kB today`, or `· no log today`, or `· stale 3 h
+ago`.
+
+**It is bounded on purpose.** This page has been brought down before by work
+that was cheap when it was written and grew with the data, so: the dated CSV is
+line-counted only below 2 MB and reported by size above that, the summary is
+read from the end of the file in a fixed 8 KB, the archive directory is walked
+with `scandir` and a hard stop, and the whole collection is cached for 60 s.
+Against a deliberately oversized station — a 40 MB daily log, three years of
+summary rows, four thousand chunks — it collects in 0.022 s and produces under
+a kilobyte of JSON. `test_web_logging.py` asserts all of that.
+
+The one highlighted field is `chunks` in the summary table when it exceeds one:
+one captured chunk a day is routine, two means the log rotated twice between
+runs, and at two generations kept a third rotation inside a day loses one. That
+is the number to raise the timer frequency on. The rotated-generation count is
+shown but **not** highlighted — `logrotate` keeps two permanently, so a warning
+there would be lit every day and read by nobody.
 
 **On the Pi (bare-metal)** it runs as `igate-web.service`, enabled by
 `PI_WEB_MONITOR` in `pi.conf`. That unit restarts it on failure and caps its
@@ -1706,22 +1739,33 @@ customised offline, and what the first-boot units do is in §16 of the
 | `dtoverlay=vc4-kms-v3d,noaudio` in `config.txt` | No HDMI audio, so the radio's USB sound card is ALSA card 1 whether it is attached at boot or plugged in later |
 | `/etc/rpi/swap.conf.d/50-igate.conf` | `Mechanism=zram`: swap stays in compressed RAM, with no `/var/swap` writeback file on the card |
 | `igate-firstboot.service` | Installs `direwolf libhamlib-utils alsa-utils avahi-daemon`, adds the user to `dialout` and `audio` |
+| `igate-archive.timer` / `.service` | Runs `./igate-archive.sh` daily at 00:20 UTC, `Persistent=true` so a run missed to a power cut is caught at the next boot. Archives rotated packet-log generations by content hash and appends a summary row |
 | `aprs-igate.service` | `deploy_igate.sh up` at boot, if `PI_AUTOSTART = yes`. `up` waits up to 60 s for the radio (`DEVICE_WAIT = 60` in the Pi's `igate.local.conf`), and the unit retries every 30 s after a failed start, so a radio that appears late still brings the gateway up |
 
 ### Built to be unplugged
 
-A pi-gate gets pulled from the wall, not shut down, so the image removes
-everything that routinely writes to the SD card: `run/` is a 32 MB tmpfs (all of
+A pi-gate gets pulled from the wall, not shut down, so the image removes the
+things that write to the SD card *continuously*: `run/` is a 32 MB tmpfs (all of
 it is regenerated on each start), the packet log is rotated hourly so it cannot
 fill that tmpfs, and the systemd journal is volatile. Swap stays in RAM: any
 `dphys-swapfile` swap file is removed at first boot, and Raspberry Pi OS Trixie's
 zram swap is set to `Mechanism=zram`, because its default (`zram+file`) also
 writes idle pages out to a `/var/swap` file on the card. zram itself stays; on
-512 MB it is worth having. What is left is a card written only when you
-deliberately change something.
+512 MB it is worth having.
 
-The trade is that nothing in `run/` survives a reboot — the packet log starts
-empty and `journalctl` cannot show a previous boot. The remaining risk is the
+**One deliberate exception, added 2026-10-30.** `LOG_DIR` puts Dire Wolf's
+dated packet log on the card — one CSV per UTC day, roughly a megabyte a day —
+and `igate-archive.sh` adds a daily archive of a few hundred KB. Both are
+appends rather than the continuous small random writes the measures above
+remove, and both are pruned to `ARCHIVE_KEEP_DAYS`. Set `LOG_DIR` empty to get
+the original behavior back. Note that a UPS does not bear on this: it removes
+the risk of an unclean shutdown, not the question of write endurance.
+
+The trade is that nothing in `run/` survives a reboot — the console packet log
+starts empty and `journalctl` cannot show a previous boot. That log also holds
+only about **eight days** at a busy station's traffic whatever `uptime` says,
+which is the real limit on any question asked of it later and the reason the
+daily archive exists. The remaining risk is the
 radio rather than the card: with the FTX-1, PTT is a CAT command over USB, so
 power lost mid-transmission leaves the radio keyed with only its time-out timer to
 end it.

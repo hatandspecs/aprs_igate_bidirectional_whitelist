@@ -690,10 +690,18 @@ class LoggingStatus:
 
     def _collect(self):
         here = self.script_dir
-        log_dir = os.path.expanduser(
-            self._conf("LOG_DIR", os.path.join(here, "logs")))
-        arch_dir = os.path.expanduser(
-            self._conf("ARCHIVE_DIR", os.path.join(here, "archive")))
+        # A relative path in the config is resolved against the install
+        # directory. That is the only form that works from here: on the Pi
+        # `~/aprs-igate` is a symlink to `/opt/aprs-igate`, this unit runs
+        # from /opt with ProtectHome=yes, and an absolute /home/... path in
+        # the config is simply not visible. Found 2026-10-30, when every
+        # count read zero while the station was writing normally.
+        def resolve(key, default):
+            val = os.path.expanduser(self._conf(key, default))
+            return val if os.path.isabs(val) else os.path.join(here, val)
+
+        log_dir = resolve("LOG_DIR", "logs")
+        arch_dir = resolve("ARCHIVE_DIR", "archive")
 
         today = time.strftime("%Y-%m-%d", time.gmtime())
         yday = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))

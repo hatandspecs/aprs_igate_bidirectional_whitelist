@@ -846,10 +846,27 @@ EOF
 # journal, a swap file -- and this is a once-per-packet append of a few
 # hundred bytes, on the order of a megabyte a day. `igate-archive.sh` prunes
 # it. Set LOG_DIR empty to turn it off.
+# How `config` reports it. Resolved the same way as the flag, so what the
+# report prints is the directory direwolf is actually handed.
+logdir_desc() {
+  local d="${CFG[LOG_DIR]:-}"
+  if [[ -z "$d" ]]; then
+    printf 'off (no dated packet log)'
+    return 0
+  fi
+  d="${d/#\~/$HOME}"
+  [[ "$d" != /* ]] && d="${SCRIPT_DIR}/${d}"
+  printf '%s (one CSV per UTC day, written to the card)' "$d"
+}
+
 build_logdir_flag() {   # -> "-l /path" or nothing, for the command line
   local d="${CFG[LOG_DIR]:-}"
   [[ -z "$d" ]] && return 0
   d="${d/#\~/$HOME}"
+  # Relative is resolved against the install directory. See igate.conf: an
+  # absolute /home/... path is readable by this script and invisible to
+  # igate-web.service, which runs from /opt under ProtectHome=yes.
+  [[ "$d" != /* ]] && d="${SCRIPT_DIR}/${d}"
   mkdir -p "$d" 2>/dev/null || true
   printf -- '-l\n%s\n' "$d"
 }

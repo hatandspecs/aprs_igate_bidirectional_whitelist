@@ -121,7 +121,24 @@ The design doc separates **Specification** (what it must do) from **Findings**
 ./deploy_igate.sh selftest    # end-to-end: inject, gate, transmit, acknowledge
 ./deploy_igate.sh reach       # which digipeaters repeat this station, from logs
 ./deploy_igate.sh monitor     # live packet flow
+
+./igate-archive.sh            # daily archive + summary row; safe to run by hand
+./test_archive.sh             # 29 checks, incl. replay against archive-2026-10/
+./test_web_logging.py         # 21 checks: the monitor panel's bounds
 ```
+
+**`igate-archive.sh` is a separate script, not a subcommand**, run by
+`igate-archive.timer` at 00:20 UTC. It copies each rotated generation of the
+packet log onto the card by content hash, appends one row to
+`archive/daily-summary.tsv`, and prunes both to `ARCHIVE_KEEP_DAYS`. It
+transmits nothing and restarts nothing, so unlike `selftest` and `reach` it is
+safe for an assistant to run.
+
+  **Receive columns are exact for the named day; transmit columns are a
+  ROLLING WINDOW** over whatever the console log still holds, because that log
+  has no per-line timestamp. Difference consecutive rows for a rate. The
+  `chunks_saved` column is the health signal: above 1 on a routine day means
+  rotation is outpacing the timer.
 
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
@@ -204,6 +221,30 @@ KF0JZM-7 22, W3AKU-7 16, the rest in single figures.
 
 **394 beacons over 8.2 days is 48 a day**, which is the 30-minute interval
 exactly, so the window has no outage in it.
+
+### An absolute path in igate.conf is readable by the station and invisible to its monitor
+
+`~/aprs-igate` is a **symlink to `/opt/aprs-igate`**. `deploy_igate.sh` run
+from the symlink resolves `SCRIPT_DIR` to the `/home` path, so anything it
+writes down is a `/home/...` path. `igate-web.service` runs with
+`WorkingDirectory=/opt/aprs-igate` and **`ProtectHome=yes`**, so `/home` does
+not exist for it at all.
+
+An absolute `/home/igate/aprs-igate/logs` in `igate.conf` is therefore written
+to correctly by the station and read as *absent* by its own web monitor. Found
+2026-10-30: every logging count on the panel read zero while the dated log was
+filling normally, and only `live_log_bytes` was right -- because that one
+derives from the script's own directory rather than from the config.
+
+  **`LOG_DIR` and `ARCHIVE_DIR` are RELATIVE** (`logs`, `archive`) and each
+  program resolves them against its own install directory, which is the same
+  directory from either side of the symlink. An absolute path still works and
+  is still a trap; prefer relative for anything both the station and the
+  monitor must read.
+
+  The same applies to any future setting naming a path. The test for it is not
+  "can I read this at a shell" -- it is "can a unit with `ProtectHome=yes`
+  read it".
 
 ### Direwolf 1.7 ignores unknown config keywords in silence
 

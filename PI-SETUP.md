@@ -1115,7 +1115,7 @@ grep -n '^ADEVICE' igate.local.conf     # nothing? good. See below if there is
 ./deploy_igate.sh config | grep -E 'ADEVICE|USB_ID|CM108_DEVICE'
 sudo systemctl restart aprs-igate
 ./deploy_igate.sh status
-systemctl list-timers igate-watchdog.timer --no-pager
+systemctl list-timers igate-watchdog.timer igate-archive.timer --no-pager
 journalctl -u igate-watchdog -n 20 --no-pager
 ```
 
@@ -1240,13 +1240,23 @@ the routine writers:
 | The systemd journal | `Storage=volatile` — kept in `/run`, capped at 16 MB |
 | Swap | A `dphys-swapfile` swap **file on the card** is removed at first boot. Trixie's **zram** (compressed swap in RAM) is kept, but set to `Mechanism=zram`: its default also writes idle pages out to a `/var/swap` file on the card. `swapon --show` reporting `/dev/zram0` is expected |
 
+| The dated packet log (`LOG_DIR`) | **Writes to the card**, one CSV per UTC day, on the order of a megabyte a day. This is a deliberate exception, added 2026-10-30: the writers removed above are the continuous small random ones, and this is a once-per-packet append. `igate-archive.sh` prunes it to `ARCHIVE_KEEP_DAYS`. Set `LOG_DIR` empty to turn it off |
+| The daily archive (`ARCHIVE_DIR`) | Writes to the card once a day: each rotated packet-log generation, named by content hash, plus one summary row. A few hundred KB a day |
+
 What remains is a card that is written when you deliberately change something,
-and essentially never otherwise.
+about a megabyte a day of appended log, and essentially nothing otherwise.
 
 **Two consequences to know about.** Nothing in `run/` survives a reboot, so the
-packet log starts empty each time and `journalctl` cannot show you a previous
-boot. For an appliance that is the right trade, but it does mean a post-mortem
-after an unexpected power cut has little to work with.
+console packet log starts empty each time and `journalctl` cannot show you a
+previous boot. For an appliance that is the right trade, but it does mean a
+post-mortem after an unexpected power cut has little to work with.
+
+  **The dated log and the archive DO survive**, which is why they exist. The
+  console log in `run/` also holds only about eight days at a busy station's
+  traffic whatever `uptime` says -- it rotates hourly at 8 MB with two
+  generations, and that is the real limit on any question asked of it later.
+  `igate-archive.sh` copies each rotated generation onto the card once a day,
+  by content hash, so the history is not a rolling window.
 
 **The remaining risk is the radio, not the card.** With the FTX-1, PTT is a CAT
 command over USB, so if the Pi loses power mid-transmission the unkey command is
@@ -1527,8 +1537,15 @@ is immediately followed by the assignment that saves it.
 Anything else is worth reading. The directive that matters most is `IGMSP 0` —
 it disables Direwolf's courtesy position report for message senders, which
 bypasses the whitelist entirely and *will* transmit a station you never
-authorised if it is not honoured. No complaint about `IGMSP`, `IGFILTER`,
-`IGTXVIA` or `IGTXLIMIT` means the version you have parsed all of them.
+authorized if it is not honored.
+
+  **Silence is NOT confirmation.** Dire Wolf 1.7 ignores unknown config
+  keywords without a word -- verified on this station 2026-10-30 by feeding it
+  `NOTAREALSETTING 42`, which drew no warning, no line number and no error. So
+  "no complaint about `IGMSP`" does not mean the version parsed it; it means
+  nothing at all. These four are trusted here because their EFFECTS have been
+  watched on the air, not because the parser stayed quiet. Anything new added
+  to the config file has to be confirmed the same way.
 
 **Gateway transmits but nobody decodes it.** This is the radio, not the Pi. On the
 FTX-1, plain FM modulates from the microphone input rather than the USB codec,

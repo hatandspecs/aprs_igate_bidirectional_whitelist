@@ -54,10 +54,15 @@ ARCHIVE_DIR="$(conf_get ARCHIVE_DIR "${SCRIPT_DIR}/archive")"
 KEEP_DAYS="$(conf_get ARCHIVE_KEEP_DAYS 400)"
 MYCALL="$(conf_get MYCALL KD3CCO-10)"
 
-# Expand a leading ~ the way a shell would; these come from a config file and
-# are not word-split.
+# Expand a leading ~ the way a shell would, then resolve a RELATIVE path
+# against the install directory. Relative is the only form that works on both
+# sides of the Pi's `~/aprs-igate` -> `/opt/aprs-igate` symlink: the station
+# resolves through /home and igate-web.service runs from /opt under
+# ProtectHome=yes, where /home is not visible. Found 2026-10-30.
 LOG_DIR="${LOG_DIR/#\~/$HOME}"
 ARCHIVE_DIR="${ARCHIVE_DIR/#\~/$HOME}"
+[[ "$LOG_DIR"     != /* ]] && LOG_DIR="${SCRIPT_DIR}/${LOG_DIR}"
+[[ "$ARCHIVE_DIR" != /* ]] && ARCHIVE_DIR="${SCRIPT_DIR}/${ARCHIVE_DIR}"
 
 FRAMES_DIR="${ARCHIVE_DIR}/frames"
 SUMMARY="${ARCHIVE_DIR}/daily-summary.tsv"

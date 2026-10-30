@@ -317,13 +317,22 @@
        + " · " + bytes(L.chunk_bytes)
        + (L.newest_chunk_age_s !== null ? " · newest " + since(L.newest_chunk_age_s) : ""));
 
-    // If more than one rotated generation is sitting unarchived, rotation is
-    // running ahead of the timer and a chunk will eventually be lost.
+    // NOT marked on the generation count: logrotate keeps .1 and .2
+    // permanently, so that number sits at 2 in normal operation and a warning
+    // that is always on is one nobody reads. The real signal for "rotation is
+    // outpacing the archiver" is chunks_saved going above 1 on a routine day,
+    // marked in the table below.
     var gens = (L.rotations_held || []);
     kv(grid, "Live packet log",
        bytes(L.live_log_bytes) + " · " + gens.length + " rotated generation"
-       + (gens.length === 1 ? "" : "s") + " held",
-       gens.length >= 2 ? "mark" : "");
+       + (gens.length === 1 ? "" : "s") + " held");
+
+    // A stale newest chunk means the timer has not captured anything for over
+    // a day, which IS worth the eye.
+    if (L.newest_chunk_age_s !== null && L.newest_chunk_age_s > 93600) {
+      kv(grid, "Archive", "no new chunk in " + since(L.newest_chunk_age_s),
+         "mark");
+    }
 
     var rows = L.summary_rows || [];
     var hdr = L.summary_header || [];
@@ -354,7 +363,12 @@
       WANT.forEach(function (k, i) {
         if (idx[i] < 0) { return; }
         var td = document.createElement("td");
-        td.textContent = r[idx[i]] === undefined ? "—" : r[idx[i]];
+        var v = r[idx[i]];
+        td.textContent = v === undefined ? "—" : v;
+        // More than one chunk captured in a day means the log rotated twice
+        // between runs; at two generations kept, a third rotation would lose
+        // one. This is the number to raise the timer frequency on.
+        if (k === "chunks_saved" && Number(v) > 1) { td.className = "mark"; }
         tr.appendChild(td);
       });
       table.appendChild(tr);
