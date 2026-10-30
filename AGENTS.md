@@ -126,17 +126,130 @@ The design doc separates **Specification** (what it must do) from **Findings**
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
 
-## Where it stands (2026-10-04)
+## Where it stands (2026-10-30)
 
 All functional requirements met.
 
 **The baseline window ran unbroken from 2026-10-04 16:25 EDT to 2026-10-12,
-eight days and three hours**, on the final configuration: slim jim on the
-fifteen-foot mast, 50 ft of RG-8X, station in the spare room, no UPS. `run/` is
-tmpfs, so any reboot restarts it — check `uptime -s` against that timestamp
-before trusting a sample. Everything below was measured in that one window and
+eight days and three hours**, on the configuration of the time: slim jim on the
+**fifteen-foot** mast, 50 ft of RG-8X, station in the spare room, no UPS. The
+mast is about twenty-eight feet as of 2026-10-30 (below), so every figure here
+is a fifteen-foot measurement and is not comparable to anything taken after
+that date. `run/` is tmpfs, so any reboot restarts it — check `uptime -s`
+against that timestamp before trusting a sample. Everything below was measured in that one window and
 supersedes the 09-27/09-28 pair, which was a different antenna and position and
 was never comparable.
+
+**The mast is about twenty-eight feet as of 2026-10-30**, up from fifteen. A
+33 ft Spiderbeam telescoping mast with the thinnest top segments left out --
+so the figure is the erected height, not the catalogue one, and it is
+approximate. Nothing else changed: same N9TAX monoband 2 m slim jim, same
+coax, same configuration. By the two-ray model 15 -> 28 ft is worth about
+**+5.4 dB**, and the radio horizon goes from 5.5 to about 7.5 miles -- but the
+ridges here set the limit more often than the horizon does, so the gain should
+show on marginal paths rather than on stations already solid.
+
+  **Do not write "doubled" or "thirty feet".** Both were said in passing on
+  10-30 before the segments were counted, and both are in this file's history.
+
+  **November 2026 is the first clean twenty-eight-foot month**, and aprs.fi resets
+  its per-station statistics on the 1st. October is therefore the fifteen-foot
+  baseline, with two caveats to carry into any comparison:
+
+  * **Oct 30-31 are already at twenty-eight feet** -- two of thirty-one.
+  * **Oct 13-18 ran the `BEACON_VIA` two-hop experiment**, about 15% of the
+    month's ~1,490 beacons. Two-hop beacons are digipeated further, so more
+    stations heard and gated them, which inflates October's "stations which
+    heard KD3CCO-10" list and its TX-side packet counts specifically. **This
+    biases the aprs.fi month-to-month comparison AGAINST November**: the list
+    can shrink while transmit genuinely improved. The window cannot be sliced
+    out of the aprs.fi page, and the frame log does not reach back that far
+    (see "The log holds about eight days"), so it cannot be corrected for
+    either -- **use the measured baseline below instead of the monthly page**
+    for anything about reach.
+
+  **Change nothing in the configuration during November.** A change made
+  mid-month confounds the only clean twenty-eight-foot month there will be. If
+  something is worth changing, change it before 11-01 or wait for 12-01.
+  `igate-selftest.timer` was confirmed active on 2026-10-30, so `BEACON_TO`
+  stays `RF` -- the condition under which this file calls for `BOTH` does not
+  hold.
+
+### The fifteen-foot baseline: 2026-10-22 to 10-30, measured not estimated
+
+Archived off the Pi on 2026-10-30 before the mast went up:
+`archive-2026-10/` (gitignored -- it is large and every position in it is a
+real station's coordinates). 378,997 lines, 30,247 frames.
+
+**Transmit**, from `./deploy_igate.sh reach`:
+
+| frame type | sent | repeats heard | rate |
+|---|---|---|---|
+| beacons (`!`) | 394 | 306 | 77% |
+| gated messages (`}`) | 50 | 13 | 26% |
+
+  Heard directly by W3TM-10 (182), W3YA-1 (113), K3DNA (15), WO3T-1 (9).
+  Relayed on a second hop by WO3T-1 (9), all via the chain `K3DNA then
+  WO3T-1` -- the same asymmetry the 10-18 experiment found, on a clean window.
+
+**Receive**, computed from the archived frames: **22 distinct stations heard
+directly**, 4,731 direct packets, and 448 distinct stations heard via
+somebody's digipeater. Direct, by packet count: WO3T-1 2918, W3YA-1 691,
+K3DNA 403, W3TM-10 300, N3DXC-2 113, KB3EWY-9 85, W3TM-9 83, N3SE-9 43,
+KF0JZM-7 22, W3AKU-7 16, the rest in single figures.
+
+  **"Direct" means no USED hop before `qAR`** -- no `*` anywhere in the path.
+  Testing for a bare `SOURCE>DEST,qAR` path instead counts 6 stations, because
+  it throws away everything heard direct that happened to request `WIDE1-1`.
+
+**394 beacons over 8.2 days is 48 a day**, which is the 30-minute interval
+exactly, so the window has no outage in it.
+
+### Direwolf 1.7 ignores unknown config keywords in silence
+
+**Verified on the station 2026-10-30.** A config file containing
+`NOTAREALSETTING 42` drew no complaint of any kind -- not a warning, not a
+line number, nothing. Direwolf read the file, reported "Reading config file",
+and carried on.
+
+So **a directive appearing in `run/direwolf.conf` is not evidence that Direwolf
+honors it.** Anything added to that file has to be confirmed by its effect, not
+by the absence of an error. This nearly shipped a `LOGDIR` line that might have
+been discarded every day until the day the data was wanted, which is the one
+day it could not be recovered.
+
+  **The dated packet log is passed as `-l`**, the documented command-line flag
+  (`direwolf -h`: `-l logdir   Directory name for log files.`), built by
+  `build_logdir_flag` and spliced into the launch in `cmd_up`. The rendered
+  conf is unchanged by the feature -- byte-identical to the one that ran
+  before it -- which is also what makes it safe to deploy mid-experiment.
+
+  The same caution applies to `IGMSP`, `IGFILTER`, `IGTXVIA` and `IGTXLIMIT`:
+  `PI-SETUP.md` says no complaint about them means the version parsed them.
+  That reasoning is wrong for 1.7. They are believed because their EFFECTS
+  have been observed, not because the parser stayed quiet.
+
+### The log holds about eight days, not the uptime
+
+`uptime -s` was 2026-10-12 and the log reached back only to 10-22. `run/` is a
+32 MB tmpfs rotated hourly at 8 MB with two generations, so **at this
+station's traffic the readable history is roughly eight days** however long
+the station has been up. `reach` and any retrospective question are bounded by
+that, not by the uptime.
+
+  **This makes the November comparison easy rather than hard.** Run `reach`,
+  `config` and the frame-log archive again on 2026-11-30 and compare against
+  the table above: Nov 22-30 against Oct 22-30 is the same days of the month,
+  the same ~8-day length, the same one-hop `BEACON_VIA`, and the same
+  everything else. **Only the mast differs.** Commands are in "Commands";
+  the archive one-liner is in the 10-30 session.
+
+  **The Oct 13-18 two-hop experiment is NOT in this window** -- zero two-hop
+  beacons in the archived log -- so none of the figures above need correcting
+  for it. The caveat still applies to **aprs.fi's monthly page**, which covers
+  all of October and cannot be sliced by date; its October TX-side figures are
+  inflated by five days of two-hop beacons. Prefer the table above to the
+  monthly page for anything about reach.
 
 **The whitelist, over eight days: APRS-IS offered 73,066 packets. 95 messages
 reached the air and every one was addressed to a whitelisted call** — 85 to
@@ -521,10 +634,18 @@ transmissions were fine.
 
 ## What to do next (written 2026-10-15)
 
-In rough order of what is blocking what. Nothing here is started.
+In rough order of what is blocking what.
 
-**1. Read the `BEACON_VIA` experiment and revert it.** This is the only thing
-on the station that is deliberately not in its normal configuration, and it has
+**1. ~~Read the `BEACON_VIA` experiment and revert it.~~ DONE 2026-10-18.**
+The experiment ran 2026-10-13 22:22 to 2026-10-18 15:56, `BEACON_VIA` is back
+to `WIDE1-1`, and the result is written up under "Where it stands": the hop
+count is eliminated, the second hop does not help beacons, and `TX_VIA` must
+stay at two hops because the second hop is what delivers messages. The
+original text follows for the reasoning only.
+
+**1a. (closed) Read the `BEACON_VIA` experiment and revert it.** Written
+2026-10-15 while it was still running; kept for the reasoning. It was the only
+thing on the station deliberately not in its normal configuration, and it had
 been that way since 2026-10-13 22:00 EDT — long enough. `BEACON_VIA` is
 `WIDE1-1,WIDE2-2` in `igate.conf`; the question is whether the two-hop beacon
 repeat rate falls toward the gated 2% (so hop count explains the gap and

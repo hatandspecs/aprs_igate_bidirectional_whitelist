@@ -47,6 +47,14 @@
   .chip.bad { color:var(--drop); border-color:color-mix(in srgb,var(--drop) 45%,transparent); }
   .chip.live { color:var(--accent); border-color:color-mix(in srgb,var(--accent) 45%,transparent); }
 
+  #summary { overflow-x:auto; margin-top:.5rem; }
+  #summary table { border-collapse:collapse; font-size:.78rem; width:100%; }
+  #summary th, #summary td {
+    padding:.2rem .45rem; text-align:right; white-space:nowrap;
+    border-bottom:1px solid color-mix(in srgb,var(--fg) 12%,transparent);
+  }
+  #summary th { color:var(--muted); font-weight:500; }
+  #summary td:first-child, #summary th:first-child { text-align:left; }
   details.info {
     background:var(--panel); border-bottom:1px solid var(--line);
   }
@@ -134,6 +142,12 @@
   <div class="grid" id="settings"></div>
 </details>
 
+<details class="info" id="logpanel">
+  <summary>Logging and archive <small id="logchip"></small></summary>
+  <div class="grid" id="logging"></div>
+  <div id="summary"></div>
+</details>
+
 <div id="log" aria-live="polite">
   <div class="empty">Waiting for packets… 144.390 is not continuously busy, so this
   can be quiet for a minute or two.</div>
@@ -214,6 +228,8 @@
       dl2.appendChild(dt2); dl2.appendChild(dd2); grid.appendChild(dl2);
     }
 
+    renderLogging(s.logging);
+
     // Whatever "is-running" reported: container status in docker mode, pids in
     // bare-metal. The page does not need to know which mode it is looking at.
     if (s.detail) {
@@ -225,6 +241,125 @@
       dd3.textContent = s.detail;
       dl3.appendChild(dt3); dl3.appendChild(dd3); grid.appendChild(dl3);
     }
+  }
+
+  function bytes(n) {
+    if (n === null || n === undefined) { return "—"; }
+    if (n < 1024) { return n + " B"; }
+    if (n < 1048576) { return (n / 1024).toFixed(0) + " kB"; }
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+
+  function since(sec) {
+    if (sec === null || sec === undefined) { return "—"; }
+    if (sec < 90) { return sec + "s ago"; }
+    if (sec < 5400) { return Math.round(sec / 60) + " min ago"; }
+    return Math.round(sec / 3600) + " h ago";
+  }
+
+  function kv(grid, label, value, cls) {
+    var dl = document.createElement("dl");
+    dl.className = "kv";
+    var dt = document.createElement("dt");
+    dt.textContent = label;
+    var dd = document.createElement("dd");
+    dd.textContent = value;
+    if (cls) { dd.className = cls; }
+    dl.appendChild(dt); dl.appendChild(dd); grid.appendChild(dl);
+    return dd;
+  }
+
+  // The morning check, without an ssh session: is today's dated log filling,
+  // did the timer fire, and is rotation outpacing the archiver.
+  function renderLogging(L) {
+    var grid = document.getElementById("logging");
+    var sumEl = document.getElementById("summary");
+    grid.textContent = ""; sumEl.textContent = "";
+    if (!L || L.error) {
+      kv(grid, "Status", L ? "unavailable" : "not reported");
+      chip("logchip", "", "");
+      document.getElementById("logchip").textContent = "";
+      return;
+    }
+
+    var t = L.today || {};
+    var head = document.getElementById("logchip");
+
+    // One word in the summary line, so the panel does not have to be opened
+    // to know whether anything is wrong.
+    if (!t.present) {
+      head.textContent = "· no log today";
+    } else if (t.age_s !== null && t.age_s > 3600) {
+      head.textContent = "· stale " + since(t.age_s);
+    } else {
+      head.textContent = "· " + bytes(t.bytes) + " today";
+    }
+
+    kv(grid, "Today (UTC)",
+       t.present ? bytes(t.bytes) + (t.rows !== null ? " · " + t.rows + " rows" : "")
+                 + " · written " + since(t.age_s)
+                 : "not created yet",
+       t.present ? "" : "mark");
+
+    var y = L.yesterday || {};
+    kv(grid, "Yesterday",
+       y.present ? bytes(y.bytes) + (y.rows !== null ? " · " + y.rows + " rows" : "")
+                 : "absent");
+
+    var timer = L.timer || {};
+    kv(grid, "Archive timer",
+       (timer.state || "unknown") + (timer.next ? " · next " + timer.next : ""),
+       timer.state === "active" ? "" : "mark");
+    if (timer.last) { kv(grid, "Last run", timer.last); }
+
+    kv(grid, "Archived chunks",
+       L.chunks + (L.chunks_truncated ? "+ (scan limit)" : "")
+       + " · " + bytes(L.chunk_bytes)
+       + (L.newest_chunk_age_s !== null ? " · newest " + since(L.newest_chunk_age_s) : ""));
+
+    // If more than one rotated generation is sitting unarchived, rotation is
+    // running ahead of the timer and a chunk will eventually be lost.
+    var gens = (L.rotations_held || []);
+    kv(grid, "Live packet log",
+       bytes(L.live_log_bytes) + " · " + gens.length + " rotated generation"
+       + (gens.length === 1 ? "" : "s") + " held",
+       gens.length >= 2 ? "mark" : "");
+
+    var rows = L.summary_rows || [];
+    var hdr = L.summary_header || [];
+    if (!rows.length || !hdr.length) {
+      kv(grid, "Daily summary", "no rows yet");
+      return;
+    }
+    // Only the columns worth reading on a phone.
+    var WANT = ["date", "rx_packets", "rx_direct", "rx_stations",
+                "rx_stations_direct", "win_beacons", "win_beacon_repeats",
+                "chunks_saved"];
+    var SHORT = { date: "day", rx_packets: "rx", rx_direct: "direct",
+                  rx_stations: "stns", rx_stations_direct: "direct stns",
+                  win_beacons: "beacons", win_beacon_repeats: "repeats",
+                  chunks_saved: "chunks" };
+    var idx = WANT.map(function (k) { return hdr.indexOf(k); });
+    var table = document.createElement("table");
+    var thead = document.createElement("tr");
+    WANT.forEach(function (k, i) {
+      if (idx[i] < 0) { return; }
+      var th = document.createElement("th");
+      th.textContent = SHORT[k] || k;
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+    rows.slice().reverse().forEach(function (r) {
+      var tr = document.createElement("tr");
+      WANT.forEach(function (k, i) {
+        if (idx[i] < 0) { return; }
+        var td = document.createElement("td");
+        td.textContent = r[idx[i]] === undefined ? "—" : r[idx[i]];
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    sumEl.appendChild(table);
   }
 
   function pollStatus() {

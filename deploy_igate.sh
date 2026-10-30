@@ -809,12 +809,49 @@ BEACON           = $(beacon_desc)
 AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
 KISS_PORT        = $(port_desc "${CFG[KISS_PORT]:-0}")
 WEB_MONITOR      = $(web_desc)
-IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}${rf_quiet_line}${device_wait_line}
+IGTXLIMIT        = ${CFG[IGTXLIMIT]:-6 10}
+LOG_DIR          = $(logdir_desc)${rf_quiet_line}${device_wait_line}
 
 Resolved Direwolf FILTER: IG 0 ${filter}
 
 $(print_layers)
 EOF
+}
+
+# Direwolf's own dated packet log: one CSV per UTC day, `YYYY-MM-DD.log`, with
+# an ISO timestamp column and the fields already parsed out.
+#
+# Passed as the documented command-line flag `-l`, NOT as a `LOGDIR` line in
+# the config file. **Direwolf 1.7 ignores unknown config keywords silently** --
+# verified on this station 2026-10-30 by feeding it `NOTAREALSETTING 42`, which
+# drew no complaint of any kind. A directive the parser may be discarding is
+# indistinguishable from one it honors until the day the data is wanted, and
+# that day is the one day it cannot be recovered. `direwolf -h` documents
+# `-l logdir   Directory name for log files.`
+#
+# This is the only timestamped record the station keeps. The console log in
+# `run/` has no per-line clock, which on 2026-10-30 meant the measurement
+# window had to be inferred from OTHER stations' `DDHHMMz` fields -- and those
+# put phantom packets on 10-01 and 10-31 from stations whose clocks are wrong.
+#
+# `heard` is its own column: the station actually copied, which is the last
+# USED digipeater or the source itself on a direct copy. `heard == source` is
+# therefore the direct test, computed by Direwolf. Doing that by hand against
+# the console log is how a too-strict pattern reported 6 stations directly
+# heard on 10-30 where the right one reported 22.
+#
+# **This writes to the card**, unlike everything in `run/`. That is a
+# departure from the image's durability design and a deliberate one: the
+# writers that design removes are the continuous small random ones -- the
+# journal, a swap file -- and this is a once-per-packet append of a few
+# hundred bytes, on the order of a megabyte a day. `igate-archive.sh` prunes
+# it. Set LOG_DIR empty to turn it off.
+build_logdir_flag() {   # -> "-l /path" or nothing, for the command line
+  local d="${CFG[LOG_DIR]:-}"
+  [[ -z "$d" ]] && return 0
+  d="${d/#\~/$HOME}"
+  mkdir -p "$d" 2>/dev/null || true
+  printf -- '-l\n%s\n' "$d"
 }
 
 # Direwolf's PTT line for PTT_METHOD. rts and dtr are refused by
@@ -1802,7 +1839,10 @@ _bare_up() {
   # -d i and stdbuf for the same reasons as the container path: without -d i the
   # RF->APRS-IS direction is invisible in the log, and without stdbuf the log is
   # block-buffered so `monitor` lags behind reality.
-  nohup stdbuf -oL -eL direwolf -c "$RENDERED_CONF" -t 0 -d i >> "$BARE_LOG" 2>&1 &
+  # `-l` is read into an array so an unset LOG_DIR contributes no argument at
+  # all rather than an empty string, which direwolf would take as a directory.
+  local -a logflag=(); mapfile -t logflag < <(build_logdir_flag)
+  nohup stdbuf -oL -eL direwolf -c "$RENDERED_CONF" -t 0 -d i "${logflag[@]}" >> "$BARE_LOG" 2>&1 &
   echo $! > "$BARE_DIREWOLF_PID"
   sleep 1
 

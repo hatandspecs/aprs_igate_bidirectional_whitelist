@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily archive and summary of the APRS iGate packet log
+After=aprs-igate.service
+
+[Service]
+Type=oneshot
+User=igate
+ExecStart=/home/igate/aprs-igate/igate-archive.sh
+Nice=10
+IOSchedulingClass=idle

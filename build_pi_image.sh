@@ -546,6 +546,47 @@ EOF
   sudo cp "$tmp" "${ROOT_MNT}/etc/systemd/system/igate-logrotate.timer"
   sudo chmod 644 "${ROOT_MNT}/etc/systemd/system/igate-logrotate.timer"
 
+  # 2b. The daily archive. Rotation keeps the tmpfs from filling; it does not
+  #     keep anything. At this station's traffic the log holds about eight
+  #     days whatever the uptime says -- measured 2026-10-30, when `uptime -s`
+  #     reported 10-12 and the log reached back only to 10-22. This copies
+  #     each rotated chunk to the card once, by content hash, and appends a
+  #     one-line daily summary. It writes a few hundred KB a day and never
+  #     touches the live log.
+  cat > "$tmp" <<'EOF'
+[Unit]
+Description=Daily archive and summary of the APRS iGate packet log
+After=aprs-igate.service
+
+[Service]
+Type=oneshot
+User=igate
+ExecStart=/home/igate/aprs-igate/igate-archive.sh
+Nice=10
+IOSchedulingClass=idle
+EOF
+  sudo cp "$tmp" "${ROOT_MNT}/etc/systemd/system/igate-archive.service"
+  sudo chmod 644 "${ROOT_MNT}/etc/systemd/system/igate-archive.service"
+
+  cat > "$tmp" <<'EOF'
+[Unit]
+Description=Daily archive of the APRS iGate packet log
+
+[Timer]
+# 00:20 UTC: after the day it summarizes has closed, and off the hour so it
+# does not land with the hourly rotation. Persistent so a day missed to a
+# power cut is caught at the next boot rather than lost -- which is the whole
+# point of the exercise.
+OnCalendar=*-*-* 00:20:00 UTC
+Persistent=true
+RandomizedDelaySec=3min
+
+[Install]
+WantedBy=timers.target
+EOF
+  sudo cp "$tmp" "${ROOT_MNT}/etc/systemd/system/igate-archive.timer"
+  sudo chmod 644 "${ROOT_MNT}/etc/systemd/system/igate-archive.timer"
+
   # 3. The journal.
   #
   #    Volatile keeps it in /run and writes nothing to the card, which is the
@@ -1368,6 +1409,8 @@ EOF
   sudo mkdir -p "${ROOT_MNT}/etc/systemd/system/timers.target.wants"
   sudo ln -sf /etc/systemd/system/igate-logrotate.timer \
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-logrotate.timer"
+  sudo ln -sf /etc/systemd/system/igate-archive.timer \
+    "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-archive.timer"
   sudo ln -sf /etc/systemd/system/igate-firstboot.timer \
     "${ROOT_MNT}/etc/systemd/system/timers.target.wants/igate-firstboot.timer"
   sudo ln -sf /etc/systemd/system/igate-watchdog.timer \

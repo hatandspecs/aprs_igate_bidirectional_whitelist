@@ -518,6 +518,221 @@ class Settings:
             return self.cache
 
 
+class LoggingStatus:
+    """What the dated logs and the daily archive are doing, read from disk.
+
+    Exists so the morning check -- did last night's timer run, is today's
+    dated log filling, is rotation outpacing the archiver -- does not need an
+    ssh session.
+
+    **Everything here is bounded, because this is polled forever and the files
+    it reads only grow.** The monitor has been brought down before by work
+    that was cheap on day one. The rules this follows:
+
+      * No full-file scan whose size is unbounded. The dated CSV grows all
+        day; it is line-counted only below ROW_COUNT_LIMIT and reported by
+        size above it.
+      * The summary is read from the END, a fixed TAIL_BYTES, so a file with
+        four hundred rows in it costs the same as one with four.
+      * The frames directory is walked with a hard stop at SCAN_LIMIT
+        entries, using scandir so the size comes without a second syscall.
+      * Nothing is recomputed that igate-archive.sh already wrote down.
+        Counting beacons out of the 20 MB packet log takes seconds; the
+        summary TSV holds the answer and costs a few hundred bytes.
+    """
+
+    TTL = 60.0                 # the morning check does not need 15-second news
+    ROW_COUNT_LIMIT = 2 << 20  # 2 MB: above this, report bytes and not rows
+    TAIL_BYTES = 8192          # enough for the last several summary rows
+    SCAN_LIMIT = 5000          # frames/ entries examined before giving up
+
+    def __init__(self, script_dir):
+        self.script_dir = script_dir
+        self.lock = threading.Lock()
+        self.at = 0.0
+        self.cache = {}
+
+    def _conf(self, key, default=""):
+        """One key out of the config files, without running the script."""
+        out = default
+        pat = re.compile(r"\s*%s\s*=\s*(.*)" % re.escape(key))
+        for name in ("igate.conf", "igate.local.conf"):
+            try:
+                with open(os.path.join(self.script_dir, name),
+                          encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        m = pat.match(line)
+                        if m:
+                            out = m.group(1).split("#")[0].strip()
+            except OSError:
+                continue
+        return out
+
+    @classmethod
+    def _day_file(cls, log_dir, day):
+        """Size and age always; row count only while it is cheap.
+
+        Size and mtime are two stat fields and answer the question that
+        matters -- is it filling. The row count is a convenience and is not
+        worth reading a file that grows every day without limit.
+        """
+        path = os.path.join(log_dir, day + ".log")
+        try:
+            st = os.stat(path)
+        except OSError:
+            return {"day": day, "present": False, "rows": None,
+                    "bytes": 0, "age_s": None}
+        rows = None
+        if st.st_size <= cls.ROW_COUNT_LIMIT:
+            try:
+                with open(path, "rb") as fh:
+                    rows = max(0, sum(1 for _ in fh) - 1)   # less the header
+            except OSError:
+                pass
+        return {"day": day, "present": True, "rows": rows,
+                "bytes": st.st_size,
+                "age_s": max(0, int(time.time() - st.st_mtime))}
+
+    @classmethod
+    def _summary_tail(cls, path):
+        """The last few rows, read from the end of the file.
+
+        Reading the whole thing would be fine today and quietly linear in the
+        number of days the station has ever run.
+        """
+        header, rows = [], []
+        try:
+            size = os.path.getsize(path)
+            with open(path, "rb") as fh:
+                if size > cls.TAIL_BYTES:
+                    fh.seek(size - cls.TAIL_BYTES)
+                    fh.readline()           # discard a partial first line
+                chunk = fh.read().decode("utf-8", "replace")
+            for line in chunk.splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if parts[0] == "date":
+                    header = parts
+                else:
+                    rows.append(parts)
+            # The header lives at the top and a tail read will usually miss
+            # it, so fetch it separately -- one short read, not the file.
+            if not header:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if line.startswith("date\t"):
+                            header = line.rstrip("\n").split("\t")
+                            break
+                        if not line.startswith("#"):
+                            break
+        except OSError:
+            pass
+        return header, rows[-3:]
+
+    @classmethod
+    def _frames(cls, frames_dir):
+        """Count and total size, with a hard stop. scandir, not listdir+stat."""
+        chunks = total = 0
+        newest = 0.0
+        truncated = False
+        try:
+            with os.scandir(frames_dir) as it:
+                for entry in it:
+                    if chunks >= cls.SCAN_LIMIT:
+                        truncated = True
+                        break
+                    if not entry.name.endswith(".log.gz"):
+                        continue
+                    try:
+                        st = entry.stat()
+                    except OSError:
+                        continue
+                    chunks += 1
+                    total += st.st_size
+                    if st.st_mtime > newest:
+                        newest = st.st_mtime
+        except OSError:
+            pass
+        return chunks, total, newest, truncated
+
+    def _timer(self):
+        try:
+            p = subprocess.run(
+                ["systemctl", "show", "igate-archive.timer",
+                 "--property=LastTriggerUSec",
+                 "--property=NextElapseUSecRealtime",
+                 "--property=ActiveState"],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = {}
+            for line in p.stdout.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip()
+            return {"state": out.get("ActiveState", "unknown"),
+                    "last": out.get("LastTriggerUSec", "") or "never",
+                    "next": out.get("NextElapseUSecRealtime", "") or "unknown"}
+        except (OSError, subprocess.SubprocessError):
+            return {"state": "unknown", "last": "", "next": ""}
+
+    def get(self):
+        with self.lock:
+            if time.time() - self.at < self.TTL and self.cache:
+                return self.cache
+            try:
+                self.cache = self._collect()
+            except Exception as exc:                 # never take /api with it
+                _log(f"logging status unavailable: {exc!r}")
+                self.cache = {"error": "unavailable"}
+            self.at = time.time()
+            return self.cache
+
+    def _collect(self):
+        here = self.script_dir
+        log_dir = os.path.expanduser(
+            self._conf("LOG_DIR", os.path.join(here, "logs")))
+        arch_dir = os.path.expanduser(
+            self._conf("ARCHIVE_DIR", os.path.join(here, "archive")))
+
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        yday = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+
+        chunks, chunk_bytes, newest, truncated = self._frames(
+            os.path.join(arch_dir, "frames"))
+        header, rows = self._summary_tail(
+            os.path.join(arch_dir, "daily-summary.tsv"))
+
+        # The live packet log and which rotated generations exist. Four stats.
+        run_log = os.path.join(here, "run", "direwolf.log")
+        live, gens = 0, []
+        for suffix in ("", ".1", ".1.gz", ".2.gz"):
+            try:
+                st = os.stat(run_log + suffix)
+            except OSError:
+                continue
+            if suffix:
+                gens.append(suffix.lstrip("."))
+            else:
+                live = st.st_size
+
+        return {
+            "log_dir": log_dir,
+            "archive_dir": arch_dir,
+            "today": self._day_file(log_dir, today),
+            "yesterday": self._day_file(log_dir, yday),
+            "chunks": chunks,
+            "chunks_truncated": truncated,
+            "chunk_bytes": chunk_bytes,
+            "newest_chunk_age_s": int(time.time() - newest) if newest else None,
+            "summary_header": header,
+            "summary_rows": rows,
+            "live_log_bytes": live,
+            "rotations_held": gens,
+            "timer": self._timer(),
+        }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "igate-web"
     protocol_version = "HTTP/1.1"
@@ -577,8 +792,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, "text/html; charset=utf-8", body)
 
     def _status(self):
+        payload = dict(SETTINGS.get())
+        # Separate cache and TTL: the logging view is filesystem reads and is
+        # cheap, but it has no reason to be refreshed as often as liveness.
+        try:
+            payload["logging"] = LOGGING.get()
+        except Exception:                      # never let the panel break /api
+            payload["logging"] = None
         self._send(200, "application/json; charset=utf-8",
-                   json.dumps(SETTINGS.get()).encode())
+                   json.dumps(payload).encode())
 
     def _events(self):
         # subscribe() always succeeds now: at the limit it evicts the oldest
@@ -646,7 +868,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global STREAM, SETTINGS
+    global STREAM, SETTINGS, LOGGING
     script_dir = HERE
     cmd = os.environ.get("IGATE_MONITOR_CMD")
     cmd = shlex.split(cmd) if cmd else [
@@ -681,6 +903,7 @@ def main():
     httpd = Server((BIND, PORT), Handler)
 
     SETTINGS = Settings(script_dir)
+    LOGGING = LoggingStatus(script_dir)
 
     liveness_cmd = os.environ.get("IGATE_LIVENESS_CMD")
     if liveness_cmd:

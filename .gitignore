@@ -18,3 +18,9 @@ igate.local.conf
 
 # scratch notes
 scratch_notes.txt
+
+# Frame-log archives pulled off the Pi. `run/` is tmpfs, so these are the only
+# copy of a measurement window once the station reboots -- but they are large
+# and every position report in them is a real station's coordinates, including
+# this one's. Keep them, do not publish them.
+archive-*/

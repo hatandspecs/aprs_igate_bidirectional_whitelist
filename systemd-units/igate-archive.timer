@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily archive of the APRS iGate packet log
+
+[Timer]
+# 00:20 UTC: after the day it summarizes has closed, and off the hour so it
+# does not land with the hourly rotation. Persistent so a day missed to a
+# power cut is caught at the next boot rather than lost.
+OnCalendar=*-*-* 00:20:00 UTC
+Persistent=true
+RandomizedDelaySec=3min
+
+[Install]
+WantedBy=timers.target
