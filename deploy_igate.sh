@@ -276,7 +276,7 @@ load_and_resolve() {
 
   # What the radio can do. Everything downstream branches on these rather than on
   # the profile's name, so another radio is another profile rather than more code.
-  # Unset means the FTX-1 behaviour this project has always had, which is exactly
+  # Unset means the FTX-1 behavior this project has always had, which is exactly
   # what a config without RADIO needs.
   if [[ -z "${CFG[CAT]:-}" ]]; then
     CFG[CAT]=hamlib; CFG_SRC[CAT]="built-in default"
@@ -321,7 +321,7 @@ validate_capabilities() {
   fi
 
   case "${CFG[PTT_METHOD]}" in
-    # Recognised, but no start path exists: refused outright rather than
+    # Recognized, but no start path exists: refused outright rather than
     # half-working, because the half that would work is the transmitter.
     rts|dtr)
       echo "Config: PTT_METHOD = ${CFG[PTT_METHOD]} is not supported yet; rig and cm108 are implemented." >&2
@@ -448,7 +448,7 @@ build_tx_via() {
     via="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$legacy")"
   fi
   # Commas are the natural separator to write; this returns the path
-  # space-separated so callers can normalise it, and every emit site converts
+  # space-separated so callers can normalize it, and every emit site converts
   # back to whatever that directive wants.
   #
   # BOTH directives want commas, and for the same reason: Direwolf splits a
@@ -484,7 +484,7 @@ build_beacon_via() {
   tr ',' ' ' <<<"$via" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//'
 }
 
-# Maidenhead grid square -> decimal degrees, at the centre of the square.
+# Maidenhead grid square -> decimal degrees, at the center of the square.
 # Deliberately the preferred way to give a beacon position: a 6-character grid
 # is about 4 x 6 km, so it is rounded by construction rather than by remembering
 # to round. Plain awk, not gawk — no strftime here, so mawk is fine.
@@ -562,7 +562,7 @@ build_beacon() {
     RF)   _emit_beacon "" "1:00" ;;
     # Both paths: the RF beacon is what local stations see on their radios, and
     # the IS beacon guarantees the station appears on aprs.fi even when no
-    # neighbouring iGate happens to hear and gate the RF one.
+    # neighboring iGate happens to hear and gate the RF one.
     BOTH) _emit_beacon "sendto=IG " "0:30"; _emit_beacon "" "1:00" ;;
     *)    echo "Warning: BEACON_TO='${to}' is not IG, RF, BOTH or off; no beacon." >&2; return 0 ;;
   esac
@@ -2452,7 +2452,7 @@ Packet flow monitor.  Ctrl-C to stop.
   IS SERVER  APRS-IS server chatter        WARN/INFO  problems and state
   IS LOGIN   APRS-IS login handshake (passcode redacted)
 
-  Indented grey lines are Direwolf's decode of the frame above
+  Indented gray lines are Direwolf's decode of the frame above
   ("monitor raw" hides them).
 
 LEGEND
@@ -2558,7 +2558,7 @@ stations were, so two samples at identical gain can differ by 2x.
 
 A low reading is only worth acting on if it costs decodes. Establish that first:
 count decodes over a fixed window, change ONE thing, count again. Comparing
-against a neighbouring iGate on aprs.fi over the same period is the strongest
+against a neighboring iGate on aprs.fi over the same period is the strongest
 check available. Note that raising a radio output level when capture gain is
 already at maximum can only move toward clipping, which does degrade decoding.
 
@@ -3014,7 +3014,7 @@ cmd_reach() {
   #
   # "Does a digipeater repeat this station" cannot be answered from aprs.fi.
   # A digipeated copy carries the same source and payload as the direct one,
-  # APRS-IS discards duplicates, and a neighbour hearing the direct
+  # APRS-IS discards duplicates, and a neighbor hearing the direct
   # transmission gates it first — so the repeat is dropped before it is ever
   # visible there, whatever the digipeater did.
   #

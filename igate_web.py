@@ -783,7 +783,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
 
-    # Only GET exists. Anything that could change the station's behaviour is
+    # Only GET exists. Anything that could change the station's behavior is
     # absent by construction rather than by permission check.
     def do_POST(self):
         self._send(405, "text/plain; charset=utf-8", b"read-only monitor\n")
@@ -814,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
         # subscribe() always succeeds now: at the limit it evicts the oldest
         # viewer rather than refusing this one. The 503 that used to live here
         # turned out to be the wrong answer — it refused the person actually
-        # looking at the page in favour of connections that were often already
+        # looking at the page in favor of connections that were often already
         # dead.
         sub, backlog = STREAM.subscribe()
 

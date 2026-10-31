@@ -123,8 +123,10 @@ The design doc separates **Specification** (what it must do) from **Findings**
 ./deploy_igate.sh monitor     # live packet flow
 
 ./igate-archive.sh            # daily archive + summary row; safe to run by hand
+./heard_spatial.py CAPTURE    # receive coverage per 2 km cell; safe, reads only
 ./test_archive.sh             # 29 checks, incl. replay against archive-2026-10/
 ./test_web_logging.py         # 21 checks: the monitor panel's bounds
+./test_heard_spatial.py       # 48 checks, incl. replay against archive-2026-10/
 ```
 
 **`igate-archive.sh` is a separate script, not a subcommand**, run by
@@ -139,6 +141,38 @@ safe for an assistant to run.
   has no per-line timestamp. Difference consecutive rows for a rate. The
   `chunks_saved` column is the health signal: above 1 on a routine day means
   rotation is outpacing the timer.
+
+**`heard_spatial.py` answers "how much better does the antenna hear", and the
+answer does NOT come from comparing against another station.** APRS-IS keeps
+the first copy of a packet and drops the rest, so a neighboring iGate's
+heard-directly map moves DOWN when this station improves; a ratio against it
+overstates the gain and nothing in the data recovers by how much. The
+denominator that works is this station's own log: packets copied directly
+divided by packets that originated in the same 2 km cell, where the
+denominator comes from digipeated repeats of traffic this receiver had the
+chance to copy.
+
+  **Use the console log on both sides of a before/after.** It is the only
+  format old captures have. Measuring one month by console log and the other
+  by `LOG_DIR` CSV puts the method difference on top of the effect. The CSV is
+  a cross-check, not one half of a comparison.
+
+  Four ways this tool gave a confident wrong answer before it was fixed, all
+  now covered by tests: `[0L]` lines are this station TRANSMITTING; object,
+  item and third-party payloads carry somebody else's coordinates; a mobile's
+  last known position is not where it was copied from; and one lucky frame in
+  1742 is not a 98-mile path. The fifth is subtler and worth keeping in mind
+  anywhere else it might apply — **this station's own beacons come back off
+  the air after a digipeater repeats them**, 306 of 311 packets in the home
+  cell, reading it as 1.3% direct instead of 80.0%. They are excluded by
+  default, because how many come back is itself a function of antenna height.
+
+**15 ft baseline, from `archive-2026-10/frames-15ft-2026-10-30.log.gz`** (~8
+days to 2026-10-30): 21,406 placed packets, 4,430 copied directly, 1,236 cells
+with traffic, 46 with a direct copy, 14 stations with a real direct path.
+Direct capture by ring: 100% of active cells inside 5 miles, 75% at 5-10, then
+**38% at 10-15**. That fall is where the mast should act, and it is the
+prediction to test against a Nov 22-30 capture.
 
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
@@ -159,7 +193,7 @@ was never comparable.
 
 **The mast is about twenty-eight feet as of 2026-10-30**, up from fifteen. A
 33 ft Spiderbeam telescoping mast with the thinnest top segments left out --
-so the figure is the erected height, not the catalogue one, and it is
+so the figure is the erected height, not the catalog one, and it is
 approximate. Nothing else changed: same N9TAX monoband 2 m slim jim, same
 coax, same configuration. By the two-ray model 15 -> 28 ft is worth about
 **+5.4 dB**, and the radio horizon goes from 5.5 to about 7.5 miles -- but the
@@ -597,7 +631,7 @@ below. Every one of them tried to hold GPIO18 high through shutdown, when what
 the HAT needs is to have been armed low beforehand and then released. The momentary button was
 also ruled out — their script was run again with the button toggled and failed
 identically, and the HAT has been fully de-powered, cell disconnected, several
-times between attempts with no change in behaviour. Five attempts in total.
+times between attempts with no change in behavior. Five attempts in total.
 
 **PiShop support replied on 2026-10-06 (Martin), and the mechanism is the
 opposite way round from what all five attempts assumed.** His words: *"check

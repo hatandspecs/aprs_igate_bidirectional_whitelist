@@ -61,7 +61,7 @@ shutdown service that drove it; `pi.conf` and §15 of the design doc say why.
 **[PI-SETUP.md](PI-SETUP.md) is the full walkthrough**, blank card to gateway on
 the air, written for someone who has never used a Raspberry Pi. It also covers
 running the monitor and editing the whitelist over SSH, and has an appendix on
-how the image is customised offline by loop-mounting it (no Raspberry Pi Imager
+how the image is customized offline by loop-mounting it (no Raspberry Pi Imager
 involved).
 
 ## What it takes to build one
@@ -786,7 +786,7 @@ reads them out of the log.
 
 aprs.fi cannot answer this question and never will. A digipeated copy carries
 the same source and payload as the direct one, APRS-IS discards duplicates
-within about thirty seconds, and a neighbouring gate that hears the direct
+within about thirty seconds, and a neighboring gate that hears the direct
 transmission submits it first — so the repeat is dropped before it is visible
 there, whatever the digipeater did. A station's own receiver has no such
 problem: a repeat of its own beacon arrives over the air like any other frame,
@@ -798,6 +798,76 @@ eight and the near one on one in four, so naming the mountain explicitly would
 have made the gateway quieter rather than louder. Counts like those are a
 question about your own neighbors, and this is how to answer it rather than
 guess.
+
+### `heard_spatial.py` — where this station hears, per cell
+
+`reach` measures the transmit side. This measures the receive side, and it is
+the tool to use for a before-and-after on antenna work.
+
+```
+./heard_spatial.py archive-2026-10/frames-15ft-2026-10-30.log.gz --label oct --map
+./heard_spatial.py archive/frames/frames-2026-11-*.log.gz --label nov --map
+./heard_spatial.py --compare cells-oct.tsv cells-nov.tsv
+```
+
+The obvious comparison — this station's aprs.fi heard-directly map against a
+neighboring iGate's — does not work, and it fails in a direction that
+flatters the result. APRS-IS keeps the first copy of a packet and drops the
+rest as duplicates. Two iGates that both hear a transmission contribute one
+copy between them, and which one depends on whose path to the server was
+quicker as much as on what either receiver did. So a neighbor's map moves
+*down* when this station improves. Any ratio against it overstates the gain,
+by an amount the data does not let you recover.
+
+The denominator that does work is already in this station's own log. Every
+packet arrives one of two ways: copied directly off the air, or copied as a
+digipeated repeat. A repeat proves something transmitted in that cell and this
+receiver had its chance. So per 2 km cell:
+
+**direct share = packets copied directly / packets that originated there**
+
+That normalizes away how much any cell happened to transmit, and it is
+untouched by aprs.fi, by duplicate suppression, and by what any other station
+does. Difference it cell by cell between two captures and the result is a map
+of where the change helped. The one lean to know about: repeats arrive via
+digipeaters whose path to this station also improves with height, so the share
+is slightly optimistic — those are 49 W from 640 ft and near-certain decodes
+either way, so the lean is small, but it is a lean.
+
+```
+     ring  cells  direct        packet share
+      0-5     13      13  100%         50.9%
+     5-10     16      12   75%         58.8%
+    10-15      8       3   38%          6.2%
+```
+
+That is the 15 ft baseline, about eight days to 2026-10-30. Direct capture
+holds up inside five miles, is still three cells in four out to ten, and falls
+to 38% between ten and fifteen. That fall is where more height should act, and
+it is a prediction specific enough to be wrong.
+
+**Use the console log on both sides of a comparison.** It is the only format
+captures made before `LOG_DIR` existed have. Measuring one month by console
+log and the next by dated CSV lays the method difference on top of the effect
+and nothing separates them afterwards; the CSV is a cross-check, not one half
+of a comparison.
+
+Five things this tool got confidently wrong before it was fixed, each now a
+test in `test_heard_spatial.py`:
+
+| it counted | which meant |
+|---|---|
+| `[0L]` lines | this station's own transmissions became its own coverage |
+| object, item and third-party payloads | somebody else's coordinates became the sender's, putting a repeater 98 miles out |
+| a mobile's last known position | a station copied from inside 14 miles was plotted at 126 |
+| one frame in 1742 | a lucky decode of a corrupt path became a 98-mile reception |
+| this station's own beacons, heard back after a digipeater repeated them | 306 of the home cell's 311 packets, reading it as 1.3% direct instead of 80.0% |
+
+The last one is the one to remember, because it is the only one that is still
+a *reception* and still real. It is excluded by default because how many of
+your own beacons come back is itself a function of antenna height — leaving
+them in puts the effect being measured into the denominator that is supposed
+to control for it. `--include-own` keeps them for anyone who wants that.
 
 ## Monitoring
 
@@ -823,7 +893,7 @@ into plain language, and shows Direwolf's decode of each frame indented beneath:
 | `IS SERVER` | APRS-IS server chatter |
 | `WARN` / `INFO` | Problems and connection state |
 
-Indented grey lines are Direwolf's decode — packet type, position, radio model,
+Indented gray lines are Direwolf's decode — packet type, position, radio model,
 comment text. `./deploy_igate.sh monitor raw` hides them if you want it terse.
 
 **Why this exists:** Direwolf's raw log prints `[ig>tx]` when a packet *arrives
@@ -843,7 +913,7 @@ transmits under `IGTXLIMIT`, so those lines interleave rather than alternate —
 `monitor` matches them on the packet payload, not on position. A drop is only
 knowable by the *absence* of a transmission, so `IS DROP` is reported about 15
 seconds after the packet arrived. That delay is deliberate: report it sooner and
-a packet merely waiting in the transmit queue gets labelled as dropped.
+a packet merely waiting in the transmit queue gets labeled as dropped.
 
 `monitor` requires **gawk** — it uses `strftime()`, which mawk (the default
 `awk` on Debian-family systems) does not have. Bare-metal installs pull it in;
@@ -935,7 +1005,7 @@ Workstation's default zone allows ports 1025–65535. On other setups, check
 with `sudo firewall-cmd --list-all` or `sudo ufw status`.
 
 It shows the same annotated `RF RX` / `RF->IS UP` / `IS GATED` / `IS DROP` flow as
-`monitor`, colour-coded, with Direwolf's decode indented beneath each frame, plus
+`monitor`, color-coded, with Direwolf's decode indented beneath each frame, plus
 a panel with the callsign, whitelist, resolved filter, beacon and transmit path.
 Responsive — it is meant to be usable on a phone.
 
@@ -1296,7 +1366,7 @@ third-party format prevents. So Direwolf wraps every message it gates in it:
 KD3CCO-10>APDW18:}SMS>APOSMS,TCPIP,KD3CCO-10*::KD3CCO-7 :@4848324995 hello{16565
 ```
 
-A Yaesu FT5D unwraps that, recognises the message as its own and acknowledges it.
+A Yaesu FT5D unwraps that, recognizes the message as its own and acknowledges it.
 An app that ignores packets beginning `}` sees only a packet from `KD3CCO-10`
 addressed to nobody it knows, so it shows nothing and sends no acknowledgement.
 The monitor then shows `IS GATED` for every retry, and the sender's gateway keeps
@@ -1345,7 +1415,7 @@ more code:
 | `none` | `cm108` | Direwolf alone, `PTT CM108` | VX-6R + Digirig Lite — on the air (laptop and pi-gate) |
 | `hamlib` | `cm108` | `rigctld` for frequency and mode only; Direwolf `PTT CM108` | accepted; no profile uses it yet |
 | `none` | `rig` | — | refused: no CAT link to key the radio over |
-| any | `rts`, `dtr` | — | recognised, refused until a start path exists |
+| any | `rts`, `dtr` | — | recognized, refused until a start path exists |
 
 **How the radio's sound card is found.** `ADEVICE = auto` together with
 `USB_ID = vvvv:pppp` makes the card number a result rather than a setting. Every
@@ -1464,7 +1534,7 @@ merely listing it in the path.
 It also makes your station less useful to the network, since everything else you
 hear stops being gated — and it costs you gating races, because discarding the
 direct copy means waiting about a second for the digipeated one, which is long
-enough for a neighbouring iGate to get there first. Set it back to blank when the
+enough for a neighboring iGate to get there first. Set it back to blank when the
 test is done.
 
 `igate.test.conf` is a ready-made version of exactly this test, differing from
@@ -1517,7 +1587,7 @@ BEACON_COMMENT = RX iGate | TX whitelist only
 `IG` sends the beacon to APRS-IS over the internet and **never keys the radio** —
 the station appears on aprs.fi with a position at no cost in airtime. `RF`
 transmits it on 144.390, which is what local operators see on their own radios;
-it only reaches aprs.fi if a neighbouring iGate hears and gates it. `BOTH` does
+it only reaches aprs.fi if a neighboring iGate hears and gates it. `BOTH` does
 each, which is the combination to use if you want local visibility *and*
 guaranteed presence on the map.
 
@@ -1526,7 +1596,7 @@ guaranteed presence on the map.
 east-west at 40° N (the east-west width narrows toward the poles). It is
 rounded by construction rather than by remembering to round.
 
-`deploy_igate.sh` converts the locator to the **centre** of the square, so
+`deploy_igate.sh` converts the locator to the **center** of the square, so
 expect the beacon to plot up to ~2.3 km north or south and ~3.5 km east or west
 of where you actually are. That displacement is the privacy, not a defect: what
 an observer learns is "somewhere in this box", and where the marker sits inside
@@ -1593,7 +1663,7 @@ What Direwolf actually reports for received audio:
 ```
 
 Change it only if decodes are actually being missed — compare against a
-neighbouring iGate, or count decodes before and after a single change. If the
+neighboring iGate, or count decodes before and after a single change. If the
 capture control is already at maximum, the only knob left is **the radio's own USB
 audio output level**, and raising that with capture gain maxed can only move toward
 clipping.
@@ -1695,7 +1765,7 @@ the summary. `build_pi_image.sh` produces a Raspberry Pi OS SD card image that
 boots straight into this gateway: joins WiFi, enables SSH, installs Direwolf and
 hamlib, and starts the iGate — no keyboard or monitor needed at any point.
 
-The image is customised offline, on this machine, by loop-mounting the
+The image is customized offline, on this machine, by loop-mounting the
 downloaded Raspberry Pi OS image and writing into its two partitions. No Pi is
 involved in the build.
 
@@ -1705,7 +1775,7 @@ $EDITOR pi.secrets            # Pi login password + WiFi SSIDs and PSKs
 $EDITOR pi.conf               # hostname, user, country, SSH key, PI_RADIO
 
 ./build_pi_image.sh check     # validate before downloading ~500 MB
-./build_pi_image.sh build     # download, customise, write pi-build/aprs-igate-pi.img
+./build_pi_image.sh build     # download, customize, write pi-build/aprs-igate-pi.img
 ./build_pi_image.sh flash /dev/sdX
 ```
 
@@ -1722,7 +1792,7 @@ cd aprs-igate && ./deploy_igate.sh monitor
 ```
 
 Why a Pi runs bare-metal rather than in the container, how the image is
-customised offline, and what the first-boot units do is in §16 of the
+customized offline, and what the first-boot units do is in §16 of the
 [design document](aprs-igate-prototype-test.md).
 
 ### What ends up on the card
@@ -1803,7 +1873,7 @@ an appliance with nothing to isolate itself from.
 
 ### Digirig cautions
 
-Two hardware behaviours cost real time to find. Both still apply on a 3B+.
+Two hardware behaviors cost real time to find. Both still apply on a 3B+.
 
 **The Digirig's USB-C plug works only one way round.** Inserted the other way it
 is electrically invisible — no `lsusb` entry, nothing in `dmesg`, no attach event
@@ -1939,7 +2009,7 @@ message is not worth buying 1,400 times a month for the beacon.
 **Blank is direct-only.** A packet with no path is a packet no digipeater will
 repeat, because it was not asked to. Downlink coverage is then exactly this
 station's own footprint, however good the digipeater on the hill is. A handheld
-gateway covers its own neighbourhood, while its *receive* coverage spans several
+gateway covers its own neighborhood, while its *receive* coverage spans several
 states because it hears everyone else's repeats.
 
 **`TX_VIA = WIDE1-1`** gives the downlink the same relay the uplink already
@@ -2011,7 +2081,7 @@ Path entries are consumed left to right, so `WIDE1-1` became `W3YA-1,WIDE1` and
 the last entry used.
 
 The `qAR,<call>` construct names the gateway that injected the packet, which is
-how to tell whether this station carried a packet or a neighbour did.
+how to tell whether this station carried a packet or a neighbor did.
 
 ### Symptoms of a direct-only downlink
 

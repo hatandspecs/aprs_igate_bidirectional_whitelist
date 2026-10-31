@@ -251,7 +251,7 @@ repeating for each mounted partition) — don't just
 eject it in the file manager, which may also power the reader down.
 
 Raspberry Pi Imager works too, if you'd rather: choose **Use custom** and select
-`pi-build/aprs-igate-pi.img`. Decline its "customise settings" prompt — the
+`pi-build/aprs-igate-pi.img`. Decline its "customize settings" prompt — the
 image already carries all of that, and Imager's own settings would conflict.
 
 When it finishes, pull the card out.
@@ -804,7 +804,7 @@ Expect password prompts for `scp`, `ssh` and `sudo`; setting `PI_SSH_PUBKEY` in
 `pi.conf` before building a card removes the first two. Commit the `igate.conf`
 change as usual.
 
-> Only add callsigns you're authorised to transmit on behalf of. Adding a call
+> Only add callsigns you're authorized to transmit on behalf of. Adding a call
 > to this list means your station will key up carrying messages addressed to
 > that operator.
 
@@ -1360,7 +1360,7 @@ The fixes, in order of how much they help:
 
 **What actually fixed it here**, 2026-09-26: a common-mode choke at the
 feedpoint, the antenna changed from a ground-plane-less mobile whip on an
-indoor tripod to a slim jim outside several metres from the Pi, and ferrites
+indoor tripod to a slim jim outside several meters from the Pi, and ferrites
 on the interface and Pi power cables. The reset count then held at 8 across
 eight transmissions at **full power** — the setting that had been causing a
 reset roughly every other transmission. At the previous rate, eight clean
@@ -1890,7 +1890,7 @@ aprs-igate-pi.img                  a byte-for-byte disk image:
 ordinary cp / tee / sed / rsync into two directories
         │  umount, losetup -d
         ▼
-aprs-igate-pi.img, customised
+aprs-igate-pi.img, customized
         │  dd
         ▼
 SD card
@@ -1905,7 +1905,7 @@ tree, three systemd units, and a list of apt packages." Going through it would
 have meant generating a script to be consumed by their script, constrained by
 their schema, and still not being able to carry the project.
 
-Building the filesystem directly also yields a **reusable `.img` artefact**
+Building the filesystem directly also yields a **reusable `.img` artifact**
 rather than a written card: inspectable, diffable, keepable, flashable as many
 times as you like — including by Imager, via "Use custom", which is why that
 option is offered in Part 3.

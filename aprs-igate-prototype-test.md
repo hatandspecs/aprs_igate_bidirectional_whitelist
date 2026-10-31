@@ -17,7 +17,7 @@ to do it.
 * **Specification.** What the gateway does and the constraints it holds to:
   §1–§1.1 (objective, requirements), §4 (the whitelist), §7 (Dire Wolf
   configuration), §13 (implementation), §16 (the headless Pi). Current
-  behaviour is stated directly; where a decision needs justifying, the
+  behavior is stated directly; where a decision needs justifying, the
   justification follows it and can be skipped.
 * **Findings.** What was measured, what broke, and what it cost to learn:
   §9–§10 (bench procedure and criteria), §11 (operating cautions), §14
@@ -29,7 +29,7 @@ to do it.
 Two conventions hold throughout, and a contribution that breaks either is
 worth rejecting on that basis alone:
 
-1. **Behaviour before history.** What something does now is stated before any
+1. **Behavior before history.** What something does now is stated before any
    account of what it used to do. A reader must never have to absorb a bug
    report to learn a feature.
 2. **No assumption stated as fact.** Where something is unverified, it says so.
@@ -75,9 +75,9 @@ see [README.md](README.md). If it is "how do I build the Pi", see
   - [14.4 Container filesystem constraints](#144-container-filesystem-constraints)
   - [14.5 `rigctl` prefixes its answer with rigctld's banner](#145-rigctl-prefixes-its-answer-with-rigctlds-banner)
   - [14.6 Gated and dropped packets do not alternate in the log](#146-gated-and-dropped-packets-do-not-alternate-in-the-log)
-  - [14.7 Gating races with neighbouring iGates](#147-gating-races-with-neighbouring-igates)
+  - [14.7 Gating races with neighboring iGates](#147-gating-races-with-neighboring-igates)
 - [15. Limitations and future work](#15-limitations-and-future-work)
-  - [15.1 Verified behaviour](#151-verified-behaviour)
+  - [15.1 Verified behavior](#151-verified-behavior)
 - [16. Headless Raspberry Pi deployment](#16-headless-raspberry-pi-deployment)
   - [16.1 Offline image customisation](#161-offline-image-customisation)
   - [16.2 Access without a console](#162-access-without-a-console)
@@ -559,7 +559,7 @@ deployment rather than a hand-edited `direwolf.conf`.
 | `Dockerfile`, `entrypoint.sh` | Container image and process startup. |
 | `run/` | Generated at runtime: rendered `direwolf.conf`, status page, logs. Gitignored. |
 
-`direwolf.conf` is a build artefact, regenerated from the configuration layers
+`direwolf.conf` is a build artifact, regenerated from the configuration layers
 (§13.8) on every start and never edited directly.
 
 ### 13.1 Radio requirements
@@ -843,7 +843,7 @@ blank afterwards.
 
 **The beacon** is what makes the station discoverable. `BEACON_TO` selects
 `IG` (sent to APRS-IS over the internet, nothing transmitted on RF), `RF`
-(transmitted, and reaching APRS-IS only if a neighbouring iGate gates it), or
+(transmitted, and reaching APRS-IS only if a neighboring iGate gates it), or
 both. `delay=` gives a beacon shortly after every start, which is also the only
 way to force one; the delay is load-bearing, because `apply_radio_settings`
 configures frequency and mode *after* Direwolf launches, and a beacon fired
@@ -1004,7 +1004,7 @@ existed, and renders and starts identically (§15.1).
 
 ## 14. Operating constraints
 
-Behaviours of Direwolf, the radio and the host that this design must account
+Behaviors of Direwolf, the radio and the host that this design must account
 for. Each fails silently: nothing reports an error when they are wrong, so each
 is worth knowing before diagnosing a fault.
 
@@ -1111,15 +1111,15 @@ have no origin. `monitor_filter` therefore matches on the packet payload, which
 survives the third-party wrapper — stripping the AX.25 header and the `}` header
 reduces both forms to the same `:ADDRESSEE :text{id`.
 
-A drop can only be recognised by the absence of a transmission, so it is
+A drop can only be recognized by the absence of a transmission, so it is
 reported after a delay long enough that a packet still queued behind
 `IGTXLIMIT` is not mistaken for one that was refused.
 
-### 14.7 Gating races with neighbouring iGates
+### 14.7 Gating races with neighboring iGates
 
 APRS-IS deduplicates, so when two iGates hear the same frame only the first
 copy is kept and the second station receives no credit for it. Observed live:
-a neighbouring receive-only iGate gated a message one second before this
+a neighboring receive-only iGate gated a message one second before this
 station did, and the record on APRS-IS attributes it to that station.
 
 This has no effect on message delivery, because `IGFILTER` subscribes this
@@ -1130,7 +1130,7 @@ The q-construct distinguishes the two cases and is worth reading in any
 diagnostic: `qAR` is a packet gated from RF by a station that **can** deliver
 messages back to RF, and `qAO` is one gated from RF by a station that cannot —
 the APRS-IS specification notes that receive-only iGates use `qAO` exclusively.
-A neighbour showing `qAO` can hear a field station perfectly and is
+A neighbor showing `qAO` can hear a field station perfectly and is
 structurally unable to answer it, which is the gap a transmit-capable gate
 fills.
 
@@ -1211,7 +1211,7 @@ lands somewhere else entirely.
 Two cautions attach to the measurement:
 
 * **The reading is precise; the rule is the approximation.** Against gridlines
-  at 4 and 8 kHz either side of centre the trace edges are good to about 100 Hz,
+  at 4 and 8 kHz either side of center the trace edges are good to about 100 Hz,
   which is 50 Hz of deviation. The looser term is Carson's rule itself, which
   describes the bandwidth containing about 98% of the power — so which contour on
   the display corresponds to that is a systematic question, and a scope with more
@@ -1248,7 +1248,7 @@ framing suggests.
 information field match one seen in roughly the previous 30 seconds. **The
 digipeater path is not part of that comparison.** A beacon repeated by a
 digipeater is therefore byte-identical, as far as the filter is concerned, to the
-copy a neighbouring iGate heard directly. Only the first arrival survives.
+copy a neighboring iGate heard directly. Only the first arrival survives.
 
 **The digipeated copy always loses.** A digipeater is store-and-forward: it
 receives the complete frame, waits out channel access, and transmits it again.
@@ -1418,7 +1418,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
      was not running.
 
   In every case the halt releases the pad, GPIO18 falls to its default
-  pull-down, and the timer is cancelled before it expires.
+  pull-down, and the timer is canceled before it expires.
 
   **That is the whole fault, and it is on the HIGH side rather than the low
   one.** The arming worked: this project's sysfs monitor held GPIO18 low
@@ -1516,7 +1516,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
   cost three recoveries in one afternoon. The timeout costs nothing when power
   is cut before it expires.
 
-  **The division of labour is the point.** `ups-shutdown.sh` reads GPIO17
+  **The division of labor is the point.** `ups-shutdown.sh` reads GPIO17
   (mains/battery) and GPIO27 (heartbeat) and calls `systemctl poweroff`. It
   never touches GPIO18. That line belongs to the kernel, because the one thing
   userspace cannot do is still be running after userspace has been shut down.
@@ -1762,7 +1762,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
   varied from 4.0 to 7.4 at identical gain, so it partly tracks the strength of
   whichever stations were recently heard rather than the configuration. The
   measurement that would settle it is comparative: decodes per unit time against
-  a neighbouring iGate over the same window, or before-and-after counts across a
+  a neighboring iGate over the same window, or before-and-after counts across a
   single change. Until then this is an open question, not a defect — and an
   earlier attempt to "fix" it by setting 80% instead of a raw 35 silently halved
   the capture gain, because 35 was already the ceiling.
@@ -1791,7 +1791,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
   transmit until told to stop, so a host that dies mid-transmission leaves it
   keyed with only the radio's time-out timer to end it. Hardware PTT on a serial
   control line (`RTS`/`DTR`) is inherently fail-safe: losing power drops the
-  line and the radio unkeys itself. RTS/DTR keying is recognised but not
+  line and the radio unkeys itself. RTS/DTR keying is recognized but not
   implemented. CM108 GPIO keying, implemented for the Digirig Lite, should release
   in the same way on loss of power, since the interface is powered from the USB
   port, though this has not been tested. Neither releases PTT if the host hangs
@@ -1888,7 +1888,7 @@ only configuration in which the path on aprs.fi reports what actually happened.
   self-limiting rather than cumulative.
 
 - **A multi-hop `TX_VIA` would have been silently truncated to its first hop.**
-  `build_tx_via` normalised the path to spaces, and `IGTXVIA` was emitted with
+  `build_tx_via` normalized the path to spaces, and `IGTXVIA` was emitted with
   it unchanged. Direwolf splits a config line on whitespace, so `IGTXVIA 0
   WIDE1-1 WIDE2-2` is the path `WIDE1-1` followed by a token the parser never
   reads. Every log line would still have said the message was transmitted, and
@@ -1944,10 +1944,10 @@ only configuration in which the path on aprs.fi reports what actually happened.
   decoding resumes. It restarts nothing, because a restart does not switch a radio
   on. `status` reports the same as `Last RF decode:`. The underlying limit stands:
   this detects silence, and cannot distinguish a dead radio from a quiet band.
-- **`rts` and `dtr` PTT are unimplemented.** They are recognised values that
+- **`rts` and `dtr` PTT are unimplemented.** They are recognized values that
   `config` refuses. The start path is small, since Direwolf keys a serial control
   line directly, but no radio here uses it to test against.
-### 15.1 Verified behaviour
+### 15.1 Verified behavior
 
 | Function | Evidence |
 |----------|----------|
@@ -1960,11 +1960,11 @@ only configuration in which the path on aprs.fi reports what actually happened.
 | Unattended restart | After a reboot, first-boot setup is condition-skipped on its relocated marker, the `run/` tmpfs remounts from `fstab` before the service starts, and the gateway is gating 14 seconds later with no intervention |
 | Forced digipeat path | `TX_VIA` places the named digipeater in the transmitted path; a round trip completes through it in both directions |
 | Receive path filter | With `RX_VIA` set, the same frame heard twice — once direct, once repeated — is refused and gated respectively, one second apart |
-| Radio profiles preserve behaviour | With the FTX-1's settings moved into `radios/ftx1.conf` and the station separated from the machine, every start path — docker and bare-metal, with and without a host device override, the forced-path test config, and a config file written before profiles existed — renders a byte-identical `direwolf.conf` and issues identical `docker run`, `rigctld`, `direwolf`, `amixer` and `rigctl` invocations to the code before the change |
+| Radio profiles preserve behavior | With the FTX-1's settings moved into `radios/ftx1.conf` and the station separated from the machine, every start path — docker and bare-metal, with and without a host device override, the forced-path test config, and a config file written before profiles existed — renders a byte-identical `direwolf.conf` and issues identical `docker run`, `rigctld`, `direwolf`, `amixer` and `rigctl` invocations to the code before the change |
 | Pi image uses the layers | The installed `igate.conf` is byte-identical to the repository's, the Pi receives a generated `igate.local.conf` with `DEPLOY_MODE = bare-metal` and `WEB_MONITOR = no`, a build host's own `igate.local.conf` does not reach the image, and the installed tree resolves bare-metal from its local file |
 | Refactored configuration on the air | One `igate.conf` and one `radios/ftx1.conf` carried a full SMS round trip, RF to APRS-IS and APRS-IS to RF with the handheld's acknowledgements heard, on the FTX-1 in docker mode on the laptop and in bare-metal mode on a freshly built Pi 3A+. On the Pi the gateway started itself at boot on the profile's device names unchanged (`plughw:1,0`, `/dev/ttyUSB0`, `/dev/ttyACM0`). `config` there credited `DEPLOY_MODE` and `WEB_MONITOR` to `igate.local.conf`, `RADIO` to `igate.conf` and the passcode to `igate.secrets`, with those two overrides and no others |
-| Configuration layers | A local file's `DEPLOY_MODE`, `RADIO` and device paths override the station config and radio profile, with each override chain reported by `config`; a local file or profile that sets the whitelist or beacon is refused, while `down` still honours its `DEPLOY_MODE`; stray keys in `igate.secrets` are ignored and reported; and `down` stops a running bare-metal gateway when the mode resolves to docker, including with no docker binary installed |
-| Web monitor lifecycle | In docker mode on the laptop, `up` against a running gateway started only the monitor, and the page, status endpoint and event stream answered on the LAN address. In isolation: a second `up` is a no-op; `down` leaves no server and no `monitor` pipeline, and so does Ctrl+C; a busy port is reported with the cause, leaves no pidfile, and does not fail `up`; a pidfile naming an unrelated live process is neither reported as the monitor nor signalled; `WEB_MONITOR = no` starts nothing; `WEB_BIND = 127.0.0.1` listens on loopback only; invalid `WEB_MONITOR` and `WEB_PORT` values are refused |
+| Configuration layers | A local file's `DEPLOY_MODE`, `RADIO` and device paths override the station config and radio profile, with each override chain reported by `config`; a local file or profile that sets the whitelist or beacon is refused, while `down` still honors its `DEPLOY_MODE`; stray keys in `igate.secrets` are ignored and reported; and `down` stops a running bare-metal gateway when the mode resolves to docker, including with no docker binary installed |
+| Web monitor lifecycle | In docker mode on the laptop, `up` against a running gateway started only the monitor, and the page, status endpoint and event stream answered on the LAN address. In isolation: a second `up` is a no-op; `down` leaves no server and no `monitor` pipeline, and so does Ctrl+C; a busy port is reported with the cause, leaves no pidfile, and does not fail `up`; a pidfile naming an unrelated live process is neither reported as the monitor nor signaled; `WEB_MONITOR = no` starts nothing; `WEB_BIND = 127.0.0.1` listens on loopback only; invalid `WEB_MONITOR` and `WEB_PORT` values are refused |
 | Radio without CAT, CM108 PTT (without the radio) | With every external command stubbed, the VX-6R profile starts in both modes with no `rigctld`. The container receives only the ALSA nodes and one hidraw node, with `CAT=none`, and the rendered configuration carries `PTT CM108 3 <node>`. That configuration parses in the packaged Direwolf 1.8.1, which reports using the node on GPIO 3. In the rebuilt image the entrypoint starts no `rigctld` for `CAT = none`, `rigctld` without PTT arguments for CAT with CM108, and the unchanged FTX-1 command line for `rig` or for unset variables. It refuses a missing PTT setting or an invalid `CAT`. Against a fake sysfs tree, the node lookup returns only the audio card's own USB device, never a device on a hub port below it, a PCI card, or another C-Media device. `up` refuses a missing node, a root-only node, a bare-metal user outside the node's group, a missing explicit device, a GPIO outside 1–8, a non-`/dev/hidraw` path and a named `ADEVICE`, and warns on an explicit node that is not the card's own. `PI_RADIO` is checked against `radios/` and lands in the Pi's generated `igate.local.conf`, where `config` credits `RADIO` to it, with the udev rule installed beside it |
 | VX-6R on the air (laptop, docker) | A Yaesu VX-6R on a Digirig Lite, selected by `RADIO = vx6r` in the laptop's `igate.local.conf`, carried a full SMS round trip in docker mode. Direwolf used `/dev/hidraw7` on GPIO 3, found automatically on the same USB device as ALSA card 1; the udev rule gave the node group `audio`, and the container opened it without a permission error. APRS-IS to RF: the gated message was transmitted, and a Yaesu FT5D displayed and acknowledged it. The acknowledgement was heard both directly and via W3YA-1, and gated up. RF to APRS-IS: the FT5D's message was decoded and gated, and its acknowledgement was transmitted back over RF. Received levels were 57–86 at the profile's 50% capture gain (18 of 35), with no clipping; transmit at 50% (18 of 37) decoded. All three mixer control names in the profile exist on the Digirig Lite |
 | VX-6R on a pi-gate | On a Pi 3A+ built with `PI_RADIO = vx6r`, the VX-6R on a Digirig Lite carried a full SMS round trip in bare-metal mode on Direwolf 1.7. The FT5D's message was decoded and gated up, and the SMS gateway's acknowledgement was transmitted back. A message from the SMS gateway was transmitted and acknowledged by the FT5D, and that acknowledgement was heard and gated. `config` credited `RADIO` to the generated `igate.local.conf` and found `/dev/hidraw0` on the Digirig's card, in group `audio` from the image's udev rule. It needed a powered USB hub (§16.6) and `ADEVICE = plughw:2,0`: the Digirig was plugged in after boot, and HDMI audio held card 1. The image now disables HDMI audio |
@@ -2225,7 +2225,7 @@ with no `-19` beneath it, confirms W3YA-1 repeats the beacon, and only then step
 up. `dmesg | grep -c 'reset full-speed'` is the ingress instrument. The reach
 instrument is the gateway's **own** receiver — `reach`, or `grep
 'KD3CCO-10>APDW17' run/direwolf.log | grep -i W3YA-1` — and not the beacon's path
-on aprs.fi, which cannot show a digipeater repeat while a neighbouring gate hears
+on aprs.fi, which cannot show a digipeater repeat while a neighboring gate hears
 this station directly (§14.9). Both are free and both run continuously.
 
 **Supply.** The radio draws on the order of 11–12 A at full power. The supply's
@@ -2266,7 +2266,7 @@ first boot.
 
 ### 16.1 Offline image customisation
 
-The image is customised on the build host, not on the Pi. `losetup --partscan`
+The image is customized on the build host, not on the Pi. `losetup --partscan`
 attaches the decompressed image; its two partitions — FAT boot, ext4 root — are
 mounted and written to directly. A cleanup trap unmounts and detaches on any
 exit path, including interrupt.

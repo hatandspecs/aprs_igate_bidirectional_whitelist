@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Builds a Raspberry Pi SD card image that boots straight into this iGate.
 #
-# The image is customised offline — no Pi required to build it — by mounting the
+# The image is customized offline — no Pi required to build it — by mounting the
 # downloaded Raspberry Pi OS image and writing into its boot and root
 # partitions. On first boot the Pi joins WiFi, enables SSH, installs Direwolf
 # and hamlib, and starts the gateway.
 #
 # Usage:
 #   ./build_pi_image.sh check          Validate pi.conf and pi.secrets only.
-#   ./build_pi_image.sh build          Produce the customised image.
+#   ./build_pi_image.sh build          Produce the customized image.
 #   ./build_pi_image.sh flash /dev/sdX  Write a built image to an SD card.
 #       sdX is a placeholder on purpose, so a thoughtless paste cannot destroy a
 #       real disk. Find the device with lsblk: a USB reader is typically
@@ -173,7 +173,7 @@ fetch_image() {
 
   step "Preparing working image"
   # The marker must die with the old image: a stale one would vouch for a fresh
-  # decompression that has not been customised yet.
+  # decompression that has not been customized yet.
   rm -f "$OUTPUT_IMG" "${OUTPUT_IMG}.built"
   if [[ "$SOURCE_IMG" == *.xz ]]; then
     note "decompressing..."
@@ -290,7 +290,7 @@ autoconnect-priority=${prio}
 [wifi]
 mode=infrastructure
 ssid=${ssid}
-# Associate with the hardware MAC rather than a randomised one. A DHCP
+# Associate with the hardware MAC rather than a randomized one. A DHCP
 # reservation on the router is keyed to that address, and it is the only stable
 # way to reach the web monitor from a device whose browser cannot resolve
 # .local — Android, in particular. NetworkManager's default here has varied
@@ -384,7 +384,7 @@ install_project() {
   local dest="${ROOT_MNT}/opt/${CFG[PI_INSTALL_DIR]:-aprs-igate}"
   sudo mkdir -p "$dest"
 
-  # Copy the project without build artefacts, git history, or the host's own
+  # Copy the project without build artifacts, git history, or the host's own
   # rendered config and pidfiles.
   sudo rsync -a \
     --exclude '.git/' \
@@ -599,7 +599,7 @@ EOF
   #    station's logging, rotated by systemd, and a rounding error against an
   #    SD card's endurance — far less than the packet log would be if run/ were
   #    not tmpfs. Set PI_PERSISTENT_JOURNAL = no in pi.conf for the old
-  #    behaviour.
+  #    behavior.
   sudo mkdir -p "${ROOT_MNT}/etc/systemd/journald.conf.d"
   if [[ "${CFG[PI_PERSISTENT_JOURNAL]:-yes}" == yes ]]; then
     sudo mkdir -p "${ROOT_MNT}/var/log/journal"
@@ -637,7 +637,7 @@ EOF
   #    It has to go on the kernel command line: data= cannot be changed by the
   #    remount that fstab drives, so root must be mounted with it from the
   #    start. Verified on the running gateway 2026-10-02 — data=ordered before,
-  #    data=journal after, with no change in behaviour.
+  #    data=journal after, with no change in behavior.
   #
   #    This is the protection, not a UPS. Mains loss cuts this station without
   #    warning by design — see pi.conf — so the filesystem has to survive it.
@@ -730,7 +730,7 @@ emit_selftest_file() {  # service|timer  user  install-dir
 [Unit]
 Description=End-to-end delivery self-test for the APRS iGate
 # Only meaningful with the gateway up; the test refuses to run otherwise and
-# says so, which is the right behaviour for a human and noise for a timer.
+# says so, which is the right behavior for a human and noise for a timer.
 After=aprs-igate.service
 Wants=aprs-igate.service
 ConditionPathExists=${dir}/deploy_igate.sh
@@ -838,7 +838,7 @@ now=0
 # base 0; since kernel 6.6 the base is allocated dynamically and is 512 on a
 # 3B+ running 6.18. A hardcoded BCM number does not fail loudly — the export is
 # simply refused and the pin never appears. Ask the controller instead. The
-# SoC's own pin controller is the chip labelled pinctrl-* with 54 lines; the
+# SoC's own pin controller is the chip labeled pinctrl-* with 54 lines; the
 # 8-line raspberrypi-exp-gpio expander above it is not what the HAT is wired to.
 GPIO_BASE=""
 find_gpio_base() {
@@ -985,7 +985,7 @@ while true; do
         fi
     else
         if (( on_battery_since != 0 )); then
-            log "mains restored after $(( now - on_battery_since ))s — shutdown cancelled"
+            log "mains restored after $(( now - on_battery_since ))s — shutdown canceled"
         fi
         on_battery_since=0
     fi
@@ -1567,7 +1567,7 @@ configure_locale() {
   # laptop uses — and a locale this appliance has never generated makes every
   # shell emit setlocale warnings. AcceptEnv is additive, so a drop-in cannot
   # subtract it; the main config has to be edited. The Pi then uses its own
-  # LANG, which is the deterministic behaviour an appliance wants anyway.
+  # LANG, which is the deterministic behavior an appliance wants anyway.
   local sshd="${ROOT_MNT}/etc/ssh/sshd_config"
   if [[ -f "$sshd" ]]; then
     sudo sed -i 's/^\(AcceptEnv[[:space:]].*\)$/#\1   # disabled: appliance uses its own locale/' "$sshd"
@@ -1631,7 +1631,7 @@ cmd_flash() {
   [[ -n "$dev" ]] || die "usage: $0 flash <device>   e.g. /dev/mmcblk0 (built-in reader) or /dev/sdb (USB). Check with lsblk."
   [[ -f "$OUTPUT_IMG" ]] || die "no built image at $OUTPUT_IMG — run '$0 build' first"
 
-  # An image that exists but was never customised is the dangerous case: it boots,
+  # An image that exists but was never customized is the dangerous case: it boots,
   # expands its filesystem, and then sits there with no account, no WiFi and no
   # SSH, which is easily mistaken for a hardware or SD card fault.
   local marker="${OUTPUT_IMG}.built"
