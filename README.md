@@ -132,6 +132,7 @@ buying a Pi; see Quickstart A.
 |---|---|
 | [README.md](README.md) | This file: what the gateway does, how to configure and operate it, both modes |
 | [PI-SETUP.md](PI-SETUP.md) | Step-by-step pi-gate build, from SD card to on-air, plus day-to-day operation over SSH |
+| [OPERATIONS.md](OPERATIONS.md) | Station log: what was done to the hardware and when, which date windows are contaminated, and why a given measurement is or is not comparable |
 | [aprs-igate-prototype-test.md](aprs-igate-prototype-test.md) | Design document. §13 what was built, §14 constraints of Direwolf and the radio that the design has to work around, §15 limitations and future work, §16 the headless Pi deployment |
 | `igate.conf` | The station: callsign, whitelist, beacon, APRS-IS login, which radio. Identical on every machine |
 | `radios/<name>.conf` | Radio profiles: audio device, mixer levels, CAT, PTT. `ftx1` for that radio over USB; `digirig` for anything on a Digirig Lite |
@@ -868,6 +869,155 @@ a *reception* and still real. It is excluded by default because how many of
 your own beacons come back is itself a function of antenna height — leaving
 them in puts the effect being measured into the denominator that is supposed
 to control for it. `--include-own` keeps them for anyone who wants that.
+
+### Reading the dated packet log directly
+
+`LOG_DIR` holds one CSV per UTC day at `/opt/aprs-igate/logs/YYYY-MM-DD.log`,
+pruned only at `ARCHIVE_KEEP_DAYS` (400), so it goes back to the day the dated
+log was switched on. Unlike the console log it carries a `utime` per packet,
+which makes it the only source that can answer *when*.
+
+The columns these use are `utime`, `source`, `heard`, `name`, `latitude` and
+`longitude`. Each snippet finds them by name from the header rather than by
+position. The Pi ships `mawk`, so none of them use gawk extensions such as
+`strftime` — times are converted with `date` in the shell instead.
+
+**A direct copy is `heard == source`, or an empty `heard`.** Direwolf appends
+`?` to an uncertain heard-station, so both fields get the `?` stripped before
+comparing; skipping that counts every uncertain direct copy as digipeated.
+
+#### When did something change?
+
+Bins the log and prints a continuous time axis, so a dead radio shows up as
+zeros rather than as missing rows.
+
+```
+cd /opt/aprs-igate/logs && BIN=1800 && S=$(date -d '2026-11-04 00:00' +%s) && E=$(date +%s) && cat 2026-11-0[3456].log 2>/dev/null | awk -F, -v BIN=$BIN -v S=$S -v E=$E '
+/^chan,/{for(i=1;i<=NF;i++){if($i=="utime")u=i;if($i=="source")s=i;if($i=="heard")h=i};next}
+!u||!s{next}
+{src=$s;hrd=$h;sub(/\?$/,"",src);sub(/\?$/,"",hrd);if(src=="")next
+ t=int($u/BIN)*BIN;pkt[t]++
+ if(src=="KD3CCO-10"){ech[t]++;next}
+ if(hrd==src||hrd==""){dir[t]++;k=t"|"src;if(!(k in seen)){seen[k]=1;sta[t]++}}}
+END{for(t=int(S/BIN)*BIN;t<=E;t+=BIN)print t,pkt[t]+0,dir[t]+0,sta[t]+0,ech[t]+0}' | while read t p d s e; do m=""; [ "$p" -eq 0 ] && m="   <<< NO DECODES AT ALL"; printf '%s  rx=%-5s direct=%-4s stns=%-3s echoes=%-3s%s\n' "$(date -d @$t '+%a %m-%d %H:%M')" "$p" "$d" "$s" "$e" "$m"; done
+```
+
+`BIN=1800` is half-hourly for a first pass; re-run with `BIN=300` over the
+suspect hour to tighten it.
+
+How to read it, learned the hard way on 2026-11-05:
+
+- **`direct` is the column that finds the edge.** `rx` is dominated by
+  digipeated traffic arriving via strong near neighbors, which survives a
+  dropped antenna; `echoes` is the most height-sensitive but at one or two
+  beacons per bin it is far too sparse to time anything.
+- **Compare like-for-like clock hours.** APRS traffic has a strong daily cycle,
+  so a quiet bin at 03:00 is night. Pull two or three control days.
+- **Interpolate inside the edge bin.** With a normal rate and a degraded rate
+  either side, the fraction of the bin at the higher rate places the event to
+  about a minute.
+- **Cross-check against the log file's mtime**, which is the last decoded
+  packet. On 11-05 the interpolation said 17:16 and the mtime said 17:12.
+- **A fallen antenna is not an outage.** Receive drops hard but not to zero,
+  because the nearest digipeaters are still audible. Zero decodes means the
+  radio lost power or the station stopped.
+
+#### What changed, per station
+
+Matched windows either side of an event. `F` is the event time, `W` the window
+length in seconds on each side.
+
+```
+cd /opt/aprs-igate/logs && awk -F, -v F=$(date -d '2026-11-05 14:46' +%s) -v W=8760 '
+/^chan,/{for(i=1;i<=NF;i++){if($i=="utime")u=i;if($i=="source")s=i;if($i=="heard")h=i};next}
+!u||!s{next}
+{src=$s;hrd=$h;sub(/\?$/,"",src);sub(/\?$/,"",hrd)
+ if(src==""||src=="KD3CCO-10")next
+ d=(hrd==src||hrd=="")?1:0
+ if($u>=F-W&&$u<F){if(d)bd[src]++;bt[src]++;all[src]=1}
+ else if($u>=F&&$u<F+W){if(d)ad[src]++;at[src]++;all[src]=1}}
+END{printf "%7s %7s %7s %7s  %s\n","bef_dir","bef_tot","aft_dir","aft_tot","station"
+ for(k in all)printf "%7d %7d %7d %7d  %s\n",bd[k]+0,bt[k]+0,ad[k]+0,at[k]+0,k}' 2026-11-05.log | (read -r h; echo "$h"; sort -rn)
+```
+
+These are counts, so a Poisson test decides whether a change is real:
+`P(X <= after | lambda = before)`. Each station is its own baseline, so
+differing beacon rates between stations do not matter.
+
+#### Is that station fixed or mobile?
+
+**Run this before interpreting any per-station comparison.** A mobile driving
+away looks exactly like a path that failed.
+
+```
+cd /opt/aprs-igate/logs && awk -F, '
+/^chan,/{for(i=1;i<=NF;i++){if($i=="source")s=i;if($i=="latitude")la=i;if($i=="longitude")lo=i;if($i=="name")nm=i};next}
+!s||$la==""||$lo==""{next}
+nm&&$nm!=""{next}
+{src=$s;sub(/\?$/,"",src);i=++n[src];LA[src,i]=$la+0;LO[src,i]=$lo+0
+ k=src SUBSEP sprintf("%.3f,%.3f",$la,$lo);c[k]++
+ if(c[k]>b[src]){b[src]=c[k];cen[src]=sprintf("%.5f %.5f",$la,$lo)}}
+END{for(x in n){if(n[x]<5)continue;split(cen[x],p," ");near=0;mx=0
+ for(i=1;i<=n[x];i++){dy=(LA[x,i]-p[1])*69.05;dx=(LO[x,i]-p[2])*52.4;d=sqrt(dx*dx+dy*dy)
+  if(d<=0.25)near++; if(d>mx)mx=d}
+ printf "%-12s n=%-5d within 0.25mi %5.1f%%  max %6.2f mi  %s\n",x,n[x],100*near/n[x],mx,(near/n[x]>=0.9?"FIXED":"mobile")}}' 2026-11-05.log | sort -k2 -t= -rn
+```
+
+The `0.25` threshold and the `69.05` / `52.4` miles-per-degree constants are
+for this latitude; change them elsewhere. Three things this gets right that
+simpler tests do not:
+
+- **`nm&&$nm!=""` skips objects and items**, which travel under the
+  originating station's callsign carrying the OBJECT's coordinates. W3TM-10
+  originates `K3CR-U`, `K3CR-V` and `NARC mtg`; counting them made a fixed home
+  iGate score 70.7% with 1.71 mi of apparent movement. This is the same
+  confound the `heard_spatial.py` table above lists for coverage mapping.
+- **It measures distance from the modal position, not cluster membership.** A
+  fixed GPS station sitting on a rounding boundary splits across cells and
+  scores like a mobile.
+- **It is not position span.** One bad GPS fix destroys a max-minus-min
+  measure.
+
+**Scores fall in three groups and the middle one is a trap.** Exactly `100.0%`
+means the position is hard-coded in the config with no GPS — unambiguously
+fixed. An intermediate score means the station has a GPS and says nothing by
+itself. A low score is real movement.
+
+#### Who repeats this station, and what is a given station to it
+
+Which digipeaters put this station's beacons back on the air:
+
+```
+cd /opt/aprs-igate/logs && awk -F, '
+/^chan,/{for(i=1;i<=NF;i++){if($i=="source")s=i;if($i=="heard")h=i};next}
+!s{next}
+{src=$s;hrd=$h;sub(/\?$/,"",src);sub(/\?$/,"",hrd)
+ if(src=="KD3CCO-10"&&hrd!=""&&hrd!=src)n[hrd]++}
+END{for(k in n)printf "%6d  %s\n",n[k],k}' 2026-1*.log | sort -rn
+```
+
+And what one station actually is — mostly a digipeater, mostly a beacon, or
+both. Change `CALL` to taste:
+
+```
+cd /opt/aprs-igate/logs && CALL=W3YA-1 && awk -F, -v C=$CALL '
+/^chan,/{for(i=1;i<=NF;i++){if($i=="source")s=i;if($i=="heard")h=i};next}
+!s{next}
+{src=$s;hrd=$h;sub(/\?$/,"",src);sub(/\?$/,"",hrd)
+ if(hrd!=C)next
+ if(src==C)own++; else if(src=="KD3CCO-10")ours++; else other++}
+END{printf "  its own beacons, heard direct : %d\n  OUR beacons it repeated       : %d\n  other stations it relayed     : %d\n",own,ours,other}' 2026-1*.log
+```
+
+A station's own-beacon count is what sizes it as a measurement reference: the
+rate sets how large a change a comparison against it can resolve.
+
+#### Keep positions out of the repository
+
+Beacon coordinates in this project are rounded to a 6-character grid square on
+purpose. A precise range and bearing from this station to a known one undoes
+that rounding, so every command above reports counts and scatter rather than
+position, and results written down should do the same.
 
 ## Monitoring
 

@@ -12,6 +12,7 @@ FT-2900R through a Digirig Lite, and on a laptop in Docker.
 | `aprs-igate-prototype-test.md` | Design doc: numbered FR/NFR with honest status, faults found, §15 open items |
 | `PI-SETUP.md` | Building and deploying the Pi image |
 | `igate.conf` | Every setting, documented inline with the evidence behind it |
+| `OPERATIONS.md` | Station log: what was done to the hardware and when, and which date windows are contaminated |
 
 The design doc separates **Specification** (what it must do) from **Findings**
 (what was observed). Keep that separation when editing it.
@@ -30,6 +31,24 @@ The design doc separates **Specification** (what it must do) from **Findings**
 - **`IS GATED` in the monitor is not proof of transmission.** `[0L]` means the
   frame reached the modem, not that the radio keyed. Only an acknowledgement
   proves delivery, which is what `selftest` measures.
+- **Powering the radio off is invisible to every layer of monitoring**
+  (2026-11-01). On the Digirig profile the C-Media codec is in the dongle and
+  powered from the Pi's USB, so the sound card and the CM108 PTT node stay
+  present with the radio dead. `radio_devices_missing` finds nothing missing,
+  the watchdog takes no action, Direwolf keeps running, and every frame handed
+  to the modem is still logged `[0L]`. The station looks healthy in the log
+  and on the web monitor while transmitting into an unpowered radio -- the
+  same signature as the backwards PTT cable in `radios/digirig.conf`, reached
+  from the other direction. **Only an acknowledgement proves the air path**,
+  which is what `selftest` is for, and at four hours it can be that long
+  before anything notices. Write deliberate radio-off windows into
+  `OPERATIONS.md`; nothing else will record them.
+- **A mast that has dropped a section leaves no trace in any data**
+  (2026-11-01). It degrades marginal paths and nothing else, which is
+  indistinguishable from weather. Guy tension is a scheduled visual check, not
+  a troubleshooting step, and the height belongs in `OPERATIONS.md` whenever
+  it is confirmed -- a reach figure is only as good as the last time somebody
+  counted the segments.
 - **`reach` counts beacons**, so it measures `BEACON_VIA`, not `TX_VIA`.
 - **"The web monitor is down" is usually the client, not the Pi** (2026-10-14).
   The service was `active (running)`, listening on 8080, one `tail -F`, `/`
@@ -177,7 +196,7 @@ prediction to test against a Nov 22-30 capture.
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
 
-## Where it stands (2026-10-30)
+## Where it stands (2026-11-01)
 
 All functional requirements met.
 
@@ -205,7 +224,7 @@ show on marginal paths rather than on stations already solid.
 
   **November 2026 is the first clean twenty-eight-foot month**, and aprs.fi resets
   its per-station statistics on the 1st. October is therefore the fifteen-foot
-  baseline, with two caveats to carry into any comparison:
+  baseline, with three caveats to carry into any comparison:
 
   * **Oct 30-31 are already at twenty-eight feet** -- two of thirty-one.
   * **Oct 13-18 ran the `BEACON_VIA` two-hop experiment**, about 15% of the
@@ -218,13 +237,118 @@ show on marginal paths rather than on stations already solid.
     (see "The log holds about eight days"), so it cannot be corrected for
     either -- **use the measured baseline below instead of the monthly page**
     for anything about reach.
+  * **November has holes, but they have known edges, so slice it rather than
+    discarding it.** Two mast failures: a section collapsed 11-01, and on
+    11-05 the mast came down when its base stake failed. Both are timestamped
+    to the minute in `OPERATIONS.md`, recovered from the dated packet log --
+    which is the point. **A contaminated window with a known start and end is
+    excisable; a contaminated month is not.** Use `OPERATIONS.md`'s
+    data-quality table as the exclusion list and compare matched windows
+    between the holes. What cannot be sliced is the aprs.fi monthly page,
+    which is one more reason to prefer the station's own log to it.
 
   **Change nothing in the configuration during November.** A change made
-  mid-month confounds the only clean twenty-eight-foot month there will be. If
-  something is worth changing, change it before 11-01 or wait for 12-01.
+  mid-month confounds the comparison. If something is worth changing, change it
+  before 11-01 or wait for 12-01. (Written when November was expected to be one
+  clean month. It is not, but the rule still holds for a different reason: the
+  windows between the mast failures are only comparable to each other if
+  nothing else moved.)
   `igate-selftest.timer` was confirmed active on 2026-10-30, so `BEACON_TO`
   stays `RF` -- the condition under which this file calls for `BOTH` does not
   hold.
+
+### Measure height per station, not in aggregate (2026-11-05)
+
+The mast falling on 11-05 ran the experiment the whole 15-to-28-foot exercise
+has been trying to run: the same antenna, same radio, same feedline, at 28 feet
+and then at ground level, with the change timed to the minute. Direct packets
+over matched 2 h 26 m windows either side of it, by station:
+
+| Station | Class | Before | After | p | |
+|---|---|---|---|---|---|
+| WO3T-1 | fixed, max scatter 0.00 mi | 35 | 0 | 6e-16 | **lost** |
+| KE4MHE-10 | fixed, max scatter 0.02 mi | 17 | 0 | 4e-8 | **lost** |
+| W3YA-1 | fixed, max scatter 0.00 mi | 11 | 7 | 0.14 | **no detectable change** |
+| W3TM-1 | parked all day, max 0.01 mi | 15 | 15 | 0.57 | no change |
+| W3TM-10 | fixed; objects faked movement | 5 | 0 | 0.007 | lost |
+| W3TM-9 | MOBILE, max 3.98 mi | 11 | 0 | -- | discarded |
+| KF0JZM-7 | MOBILE, max 2.22 mi | 2 | 0 | -- | discarded |
+
+Non-moving stations: **78 -> 22 direct packets, -72%.**
+
+**Paths split in two; they do not taper.** Some stations lost everything and
+others lost nothing measurable.
+
+  **What this ranks is LINK MARGIN, not terrain.** The first reading of it was
+  "terrain -- some paths need height to clear a ridge". That does not survive
+  the station list: **W3TM-1 and W3TM-10 are 194 ft apart at Roger's QTH**, and
+  W3TM-1 was unchanged (15 -> 15) while W3TM-10 went 5 -> 0. Identical path,
+  opposite outcome, because the transmitters differ -- a 50 W Kenwood mobile
+  against a CSN iGateMini that beacons mostly over TCPIP and rarely on RF.
+  Terrain is one cause of thin margin; the far station's power and antenna are
+  others, and this measurement cannot separate them. Do not read the table as a
+  terrain map.
+
+**So compare per station, with a control, and the aggregate stops mattering.**
+
+- **Instruments: WO3T-1 and KE4MHE-10.** Both fixed, both went to zero. A mast
+  change shows up here or nowhere.
+- **Null channel: W3YA-1.** Fixed, and unmoved by the antenna going from 28
+  feet to the ground. **If W3YA-1's direct count changes between two windows,
+  height is not the explanation** -- look at the radio, feedline, audio levels
+  or receiver.
+- **Not W3TM-1**, despite its flat 15 -> 15. It is one of Roger's mobiles, and
+  it was parked for this event only. A control has to still be there next
+  month.
+
+This needs no clean month -- two matched windows at confirmed heights are
+enough, which is what makes the November holes survivable.
+
+  **Check mobility first, every time. Classifying by SSID or by eye does not
+  work, and two obvious tests do not either.** Three methods were tried on
+  2026-11-05 and the first two gave wrong answers:
+
+  | Test | Why it fails |
+  |---|---|
+  | Position **span** (max minus min) | One bad GPS fix destroys it. Called W3TM-10 a mobile that moved 1.4 mi, on 9 packets |
+  | Largest **cluster share** of rounded positions | Bin edges. A fixed GPS station straddling a 3-decimal boundary scores ~32%, indistinguishable from a mobile |
+  | **Distance from the modal position** | Works -- but only after objects are excluded |
+
+  The working test: round positions to 3 decimals, take the most common cell
+  as the center, and measure each packet's distance from it. Fixed if
+  essentially everything is within 0.25 mi. GPS jitter is hundredths of a
+  mile; driving is miles.
+
+  **And exclude packets carrying a NAME, because objects and items are not the
+  station's own position.** W3TM-10 originates `K3CR-U`, `K3CR-V` and
+  `NARC mtg`, which travel under its callsign with the OBJECT's coordinates.
+  That made a fixed home iGate score 70.7% with 1.71 mi of apparent movement;
+  filtering named packets returns it to 100% and 0.00 mi. Any station that
+  originates objects will look mobile without this filter.
+
+  **Scores cluster in three groups, and the middle one is the trap.** Exactly
+  100.0% means the position is hard-coded in the config with no GPS at all --
+  unambiguously fixed. Intermediate scores mean the station has a GPS, and
+  say nothing by themselves. Low scores are real movement.
+
+  **All the log-analysis commands live in README.md, "Reading the dated packet
+  log directly"** -- the time-binned profile that dates an event, the matched
+  per-station before/after, this mobility test, and the repeater breakdown.
+  One copy, so they cannot drift.
+
+  **The control's power scales with window length**, so p = 0.14 on W3YA-1
+  means "no detectable change", not "identical". At this sample size a real
+  55% loss could hide. A one-day window resolves 17%, an 8-day window 6% --
+  which is the right direction for matched October and November windows.
+
+  **Open: the "448 distinct stations heard via somebody's digipeater" figure
+  below may not mean what it says.** The 11-05 log contains HI8MSB, TA5FW,
+  PY1IP and a dozen more at similar distances, which is not 2 m propagation.
+  Almost certainly third-party traffic that a local iGate transmitted onto RF,
+  the same wrapping this station uses for whitelisted messages.
+  `heard_spatial.py` is unaffected -- it discards anything beyond 400 km as a
+  busted position -- but a raw count of distinct stations is not. Check before
+  quoting it again.
 
 ### The fifteen-foot baseline: 2026-10-22 to 10-30, measured not estimated
 
@@ -735,6 +859,16 @@ filtering or frame length, and the next test is a long beacon on a short path).
   "Where it stands" — a negative result is worth as much as a positive one and
   costs the same to record. At ~1,400 beacons a month this is not a setting to
   leave on an experiment.
+
+**1b. Confirm the erected mast height, and write it down.** NEW 2026-11-01:
+one section collapsed and was re-erected by hand without counting segments
+(`OPERATIONS.md`). Until somebody counts them, "about twenty-eight feet" is an
+assumption carried over from 10-30, and the +5.4 dB two-ray figure and the
+whole November-against-October comparison rest on it. This is a ladder and
+five minutes, and it blocks the only clean twenty-eight-foot month there will
+be. **Also check the 2026-11-01 journal for a failed `igate-selftest` between
+14:30 and 14:45 UTC** -- the journal is persistent, and a failure in that
+window is the radio-off period, not a fault.
 
 **2. The open coverage question, unchanged.** Whether a message gated by this
 station reaches a handheld genuinely outside its own footprint is still
