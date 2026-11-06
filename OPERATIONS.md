@@ -63,18 +63,232 @@ What to exclude, and why, before comparing anything to anything.
 | 2026-10-22 – 2026-10-30 | 15 ft mast, clean | The measured baseline. Archived to `archive-2026-10/` |
 | 2026-10-30 | Mast 15 ft → ~28 ft mid-day | Split day; belongs to neither baseline |
 | 2026-10-31 | First full UTC day at ~28 ft | 48 beacons, no outage |
-| 2026-11-01 14:30–14:45 UTC | Radio off, mast re-erected | 15-minute outage. Height between 10-30 and this is **unverified** |
-| 2026-11-05 19:46 UTC | **Mast down**, base stake failed | Antenna at ground level. rx -89%, transmit reach zero |
-| 2026-11-05 22:12 UTC onward | Radio powered off, station off air | Open at the time of writing. **November is not a clean month** |
+| 2026-11-01 14:30–14:45 UTC | Radio off, one section re-extended | 15-minute outage |
+| 2026-10-30 – 2026-11-05 | Nominally ~28 ft, **at least one section slipping** | Two joints let go inside this window. The height is unverified and may have crept downward through it |
+| 2026-11-05 19:46 – 22:12 UTC | **Mast down**, antenna at ground level | 2 h 26 m. rx -89%, transmit reach zero |
+| 2026-11-05 22:12 – 2026-11-06 18:00 UTC | Radio powered off, station off air | 19 h 48 m. No data of any kind |
+| 2026-11-06 18:00 UTC onward | Back on air, angle-iron base stake | New baseline starts here. **Height not yet confirmed** |
+
+**Expected, mid-November:** a short planned outage when the pole comes down to
+be measured and fitted with stop collars. Minutes, not hours. Record its start
+and end like any other window -- a planned hole with written edges costs
+nothing, and an unrecorded one contaminates everything either side of it.
+
+**November is not a clean month, but every edge in it is now known to the
+minute.** A contaminated window with a hard start and a hard end is excisable;
+that is the difference between slicing November and discarding it.
+
+---
+
+## Station reference — the 10 m mast and its joints
+
+The mast is a **Spiderbeam 10 m "mini"** fiberglass telescoping pole, catalog
+33 ft, erected with the thinnest top segments left out. Published figures:
+17 segments, 60 mm base diameter without the cap and 66 mm with it, 6 mm tip,
+0.72 m collapsed, 2.22 kg, wall tapering 1.4 mm at the bottom to 0.7 mm at the
+top.
+
+### Joint retention: stop collars, not friction grips
+
+The decision that matters, taken 2026-11-06 after two taped joints failed.
+
+A clamp belongs on the **inner (upper) section, snug against the rim of the
+outer one**. It cannot travel down, because the inner section thickens
+downward, so any descent requires the clamp to open, and the rim blocks it in
+any case. The load path is compression into the rim and **no friction is
+involved**.
+
+The instinctive alternative — clamping the outer section's top lip to squeeze
+it onto the inner one — is wrong twice over: it is a friction grip, which is
+the mechanism that has already failed twice, and it puts hoop stress on a
+0.7 to 1.4 mm fiberglass wall, where a split is a scrap pole.
+
+**This is why a hand-snug finger key is sufficient and not a compromise.** A
+stop collar only has to resist migrating *up* a 1 to 3 degree taper. It needs
+a few pounds of grip, not torque, and the inability to over-tighten a 0.7 mm
+wall by hand is a feature. A clamp at a joint also stops a guy ring from
+creeping down the taper past it.
+
+### Joint diameters
+
+**Derived, not measured.** Spiderbeam publishes only the 60 mm base and the
+6 mm tip, so the OD column is a linear interpolation across 16 joints at
+3.375 mm per joint. Fill in the measured column with calipers before ordering
+replacements; production variation is called out by the retailers themselves.
+
+Joint 1 is the lowest, between segments 1 and 2. The clamped column adds 3.2 mm
+for one layer of 1/16 in EPDM on each side.
+
+| Joint | Derived OD | Clamped, with 1/16 in EPDM | Measured OD | Clamp fitted |
+|---|---|---|---|---|
+| 1 | 57 mm | 60 mm | | |
+| 2 | 53 mm | 57 mm | | |
+| 3 | 50 mm | 53 mm | | |
+| 4 | 47 mm | 50 mm | | |
+| 5 | 43 mm | 46 mm | | |
+| 6 | 40 mm | 43 mm | | |
+| 7 | 36 mm | 40 mm | | |
+| 8 | 33 mm | 36 mm | | |
+| 9 | 30 mm | 33 mm | | |
+| 10 | 26 mm | 29 mm | | |
+| 11 | 23 mm | 26 mm | | |
+| 12 | 20 mm | 23 mm | | |
+| 13 | 16 mm | 19 mm | | |
+| 14–16 | 13 mm and below | — | | not clamped |
+
+Thirteen joints carry load on the erected mast, spanning roughly 19 to 60 mm
+clamped. Joints above 13 are left unclamped: the wall is down to 0.7 mm there
+and those segments weigh almost nothing. Number the clamps to their joints —
+every one is a different size, and re-erection should not require re-measuring.
+
+### Building the padded stop collars
+
+Heat shrink is part of the clamp assembly, not something applied to the pole.
+Each collar is built on the bench: a strip of 1/16 in EPDM inside the band, and
+heat shrink over the band to capture it. The finished part is one reusable
+piece with no loose pad to drop in the grass, and the shrink covers the band
+edges so no steel touches fiberglass anywhere.
+
+**The pole comes down and goes back up in a few minutes.** Measuring the
+joints, marking the sections and fitting the collars are all ground-level work
+on a lowered pole -- no ladder is involved in any of it. It also means lowering
+the mast ahead of a forecast is a realistic option rather than a theoretical
+one, and that a planned outage for mast work costs minutes of data, not a day.
+
+**This is Spiderbeam's own recommended method for securing the joints, and it
+has been built here before.** It does not need reinventing or explaining; what
+follows is only what bears on sizing and on the record.
+
+- **Keep the shrink off the tail that feeds through the worm housing.** A
+  covered band cannot feed, and the clamp stops adjusting.
+- **Pad and shrink both add to the clamped diameter.** The table above allows
+  3.2 mm for 1/16 in EPDM on each side; add the recovered shrink wall on top of
+  that before picking a clamp size.
+
+The collars stay removable on purpose. Radial clearance between nesting
+sections is a few tenths of a millimeter, so anything permanent added to the
+outside of a section would cost the ability to collapse the pole, which is the
+ability wanted on the day a storm is forecast.
 
 ---
 
 ## The log
 
-### 2026-11-05 — the mast came down; the base stake failed
+### 2026-11-06 — back on the air at 13:00 EST; the tape is the root cause
+
+**Back on the air and gating packets at exactly 13:00 EST (18:00 UTC) on
+2026-11-06.** Off the air for 19 h 48 m from the radio-off at 22:12 UTC the
+previous day, and 22 h 14 m from the fall itself.
+
+**Inspection found the actual cause, and it is not the base.** One of the taped
+telescoping joints came untaped and the section collapsed into the one below it.
+That shortened the mast, which took the tension out of all three guy lines,
+which left the mast standing as an unguyed cantilever on a light-duty wooden
+stake. The stake then bent and split along the grain, which is what the shape
+of the failure was pointing at all along: a guyed base sees compression, and a
+bending failure means the guys had stopped doing their job before the stake
+did.
+
+**Guy tension is part of the cause, not just a casualty.** A guy running from
+a point up the mast to a ground anchor pulls down along the mast axis as well
+as sideways, and down the mast axis is the direction a telescoping section
+slides. Tensioning the guys loads the joints in the direction they fail, so
+re-tensioning after a slip is not a neutral act -- it reloads the joint that
+just proved it would move. **This recurs until stop collars are fitted.** It is
+not a puzzle about why the guys went slack; the pole semi-collapsed, which is
+obvious on sight every time it has happened.
+
+The chain, in order:
+
+1. A taped joint lost its grip and the section telescoped down.
+2. The mast got shorter, so the guys went slack.
+3. With slack guys the mast became a free cantilever, and wind put a bending
+   moment into the base.
+4. The light-duty wooden ground stake bent, and the mast came down.
+
+**This is the same failure as 11-01, carried one step further.** On 11-01 slack
+guys were noticed and the section was re-extended within fifteen minutes, before
+anything downstream of step 2 happened. On 11-05 nobody was home to catch it.
+Two joints letting go in five days is a pattern, not bad luck, and the
+conclusion is that **friction plus tape is not a joint retention method for a
+semi-permanent deployment**.
+
+**Fixed:** the ground stake is now **angle iron** in place of the light-duty
+wooden one. That hardens step 4, where angle iron resists the bending moment
+that broke the wooden stake.
+
+**Open:** steps 1 and 2 are still as they were. The fix is padded hose clamps
+with finger keys at each load-bearing joint, acting as positive stops rather
+than friction grips. **Key-type clamps, EPDM rubber and heat shrink ordered
+2026-11-06; fitting deferred a few days**, until the pole comes down to be
+measured. That takedown is the moment to close every open measurement at once
+-- joint diameters, segment count and erected height, witness marks --
+because it is the only time the pole will be in hand. The sizing table, the orientation rule and why the heat shrink
+stays off the joints are in "Station reference -- the 10 m mast and its joints"
+above. Until the clamps are on, this is the same mast that has dropped a
+section twice.
+
+**Spot check, 13:05-13:15 EST (18:05-18:15 UTC).** 46 RF receptions in
+9 m 32 s from 26 distinct sources, essentially all gated. That is **24.1
+packets per five minutes against a pre-fall normal of 24.0**, where the
+grounded antenna gave 3.0. One short window at a slightly different hour of
+the day, so this is a sign of life and not a measurement -- but it is the
+right order of magnitude and it is not 3.
+
+  **The two height-sensitive instrument stations are back as direct copies.**
+  WO3T-1 at 13:06:24 and 13:10:24 with no digipeater in the path at all, and
+  KE4MHE-10 at 13:12:00 with its `WIDE1-1` unused. Those two went 35 -> 0 and
+  17 -> 0 when the mast fell, and they are being copied directly again within
+  ten minutes of the restoration. W3YA-1, the control that never went away, is
+  also direct (13:09:05). This is the fastest available confirmation that the
+  rebuild restored the paths the fall took away. It says the paths exist, not
+  how far they reach -- that needs matched clock-hour windows against 11-04.
+
+  **Nothing is known yet about transmit.** No beacon fell inside the watch
+  window, which is expected at a 30-minute interval.
+
+  **Service state, from `/api/status`:** `direwolf pid 6461`, CAT none, PTT
+  `cm108` on `/dev/hidraw0`, beacon every 30:00 on RF, IS filter
+  `IG 0 g/KD3CCO*/KD3CCP*/W3EDP*/W3TM*`, today's dated log present and five
+  seconds old. The monitor answered at `http://192.168.68.66:8080/` from the
+  LAN; that address is DHCP and `http://aprs-igate.local:8080/` is the stable
+  name.
+
+  **Two documented traps turned up live in the same ten minutes**, which is
+  worth recording as evidence that neither is rare:
+
+  * A **third-party wrapper arriving on RF** at 13:07:43 -- `KB2WAC-1`
+    carrying an inner station and a repeater object in central New York.
+    Direwolf unwrapped it and declined to gate it, correctly, on the grounds
+    of `TCPIP` in the path. This is the mechanism behind the inflated
+    distinct-station count in AGENTS.md, no longer a hypothesis.
+  * A **null MIC-E position** at 13:12:51 from KA3FMO-7, decoding to 0,0.
+    This is exactly the single bad fix that destroyed the span-based mobility
+    classification on 11-05, observed in the wild inside a ten-minute sample.
+
+**The wind on 11-05 was checked, and it does not explain the failure on its
+own.** Regional ASOS, hourly, the afternoon of the fall: 10 kt gusting 21 at
+13:53 EST, 12 kt gusting 18 at 14:53, both from 220 degrees, 72 F. The mast
+came down at 14:46, between those two observations. **Gusts of about 24 mph
+are nowhere near enough to bring down a correctly guyed 28 ft fiberglass
+mast, and entirely enough to topple an unguyed one.** This is the test the
+chain needed and it passes: wind is why the failure finished when it did, not
+why it happened. It also closes out "the weather around the time of the fall"
+from the 11-05 not-recorded list. Command in README.md.
+
+**Confirm and write down the erected height.** It has not been stated for this
+rebuild, and the whole point of the height work in AGENTS.md is that the number
+has to be known. Two further things are worth recording this time: the guy
+tension, which has never been measured, and a **witness mark on each section at
+the rim of the one below it**. A painted or taped witness mark turns "has a
+section crept?" into something answerable from the ground with a glance, and
+both of these failures would have been visible days early.
+
+### 2026-11-05 — the mast came down; the base stake bent
 
 **The mast came down at about 14:46 EST (19:46 UTC) on 2026-11-05.** The
-light-duty wooden ground stake at the base failed -- broken or bent. The mast
+light-duty wooden ground stake at the base failed -- bent into a pronounced
+curve and split lengthwise, without coming apart. The mast
 itself and all three guy lines are undamaged. Found some hours later; radio
 power switched off at **17:12 EST (22:12 UTC)**, Pi left running, per standing
 practice (above). The antenna lay on the ground working badly for **2 h 26 m**,
@@ -106,24 +320,33 @@ and the station has been off the air since.
   but at one or two beacons per bucket they are far too sparse to time
   anything. **`direct` finds the edge; echoes only confirm it.**
 
-**This is a different failure from 11-01.** That one was a telescoping section
-dropping with slack guys. This one is the foundation. The mast and guys came
-through it fine, which points at the base and not at the structure above it.
+**This is the same failure as 11-01, carried further.** A taped telescoping
+joint let go, the mast shortened, the guys went slack, the mast became an
+unguyed cantilever, and the base bent. Inspection on 11-06 established that
+order; see the entry above for the chain and the fix. The mast and the guy lines
+themselves came through undamaged.
 
-  **Working hypothesis, not a conclusion: tightening the guys on 11-01 may have
-  loaded the stake that failed on 11-05.** Guy lines compress a mast into its
-  base, by roughly 3 x tension x cos(angle from vertical) for a three-way set.
-  Guys at 36 degrees tensioned to 50 lb each put about 120 lb of down-force on
-  the base before any wind or the mast's own weight. The 11-01 repair was
-  re-tensioning slack guys. Nothing here is measured -- the guy tension was
-  never recorded -- so this is a chain worth testing on the rebuild, not a
-  finding.
+  **The break says sideways load.** The stake bent into a curve and split
+  lengthwise along the grain at the knee without coming apart, and the knee
+  sits where the stake stops being strapped to the mast, which is where a
+  cantilever's bending moment is largest. A mast with three tight guys on it
+  does not deliver a sideways load to its base, so the guys had stopped working
+  before the stake did. That is all the stake has to tell; it was the last link
+  in the chain and the analysis belongs upstream at the joints.
 
-  **"Bent" is the informative word.** Pure compression crushes or splits a
-  stake; bending means the load had a sideways component, which means the base
-  was not acting as a pin. A guyed mast base should see compression only. An
-  eccentric foot, a guy anchored to the mast foot rather than independently, or
-  a stake acting as a lever would all produce bending.
+  **The guy-compression hypothesis is dead**, recorded so it is not raised
+  again: the guys were slack when the stake failed, so they were not loading
+  the base at all. Guy tension matters to this failure at the joints, not at
+  the stake. **Do not turn it into a measurement task.** Nobody tensions a
+  lightweight portable mast to a specified figure, and the fix is mechanical
+  stops rather than a number.
+
+  **Three-way guying is not the fault either.** Three guys at 120 degrees is
+  standard and statically determinate; four-way is indeterminate and arguably
+  worse. What three-way is, is **unforgiving of a slack guy** -- let one go and
+  the remaining two form a hinge rather than a tripod. That sensitivity is what
+  turned a slipped joint into a fallen mast, which makes joint retention the
+  thing to fix rather than the guying pattern.
 
   **Three-way guying is not itself the fault.** Three guys at 120 degrees is
   standard and statically determinate; four-way is indeterminate and arguably
@@ -132,9 +355,8 @@ through it fine, which points at the base and not at the structure above it.
   were the 11-01 symptom, so that much is worth taking seriously even though
   the base is what actually failed this time.
 
-  **Not recorded, and needed for the rebuild:** the guy tension, whether the
-  guys were at one level or two on a 28 ft mast, and the weather around the
-  time of the fall. Soft ground after rain removes most of a stake's holding.
+  **Not recorded, and still wanted:** whether the guys were at one level or two
+  on a 28 ft mast. The weather is settled above.
 
   **The fall was an accidental height experiment, and its results are in
   AGENTS.md** under "Measure height per station, not in aggregate": same

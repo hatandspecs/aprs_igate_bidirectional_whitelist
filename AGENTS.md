@@ -49,6 +49,24 @@ The design doc separates **Specification** (what it must do) from **Findings**
   a troubleshooting step, and the height belongs in `OPERATIONS.md` whenever
   it is confirmed -- a reach figure is only as good as the last time somebody
   counted the segments.
+- **Taped telescoping joints are the root cause of both mast failures**
+  (established by inspection 2026-11-06). The chain is: a taped joint slips,
+  the mast shortens, the three guys go slack, the mast becomes an unguyed
+  cantilever, and the base takes a bending moment it was never meant to see.
+  11-01 was caught at step 2; 11-05 ran to the end and bent the stake.
+  **Guy tension drives the slip rather than merely suffering from it**: a guy
+  pulls down along the mast axis, which is the direction a section telescopes,
+  so re-tensioning reloads the joint that just moved. This repeats until stop
+  collars are fitted, and a height written down after a repair is only good
+  until the next joint slips.
+- **The weather at the time of a past event is recoverable from the station's
+  own packet log** (2026-11-06). Several of the WX stations in the gated
+  traffic -- N3DXC, N3TUQ-2 among them -- put wind, gust and temperature in
+  the comment field of every beacon, and those beacons are in the dated log
+  like any other packet. They are tens of miles out, so this is a **regional
+  proxy and not site wind**, but it separates "windy afternoon" from "dead
+  calm", which is enough to test whether wind was the thing that bent the
+  11-05 base stake. Command in README.md.
 - **`reach` counts beacons**, so it measures `BEACON_VIA`, not `TX_VIA`.
 - **"The web monitor is down" is usually the client, not the Pi** (2026-10-14).
   The service was `active (running)`, listening on 8080, one `tail -F`, `/`
@@ -222,6 +240,12 @@ show on marginal paths rather than on stations already solid.
   **Do not write "doubled" or "thirty feet".** Both were said in passing on
   10-30 before the segments were counted, and both are in this file's history.
 
+  **The figure is weaker than "approximate" as of 2026-11-06.** Two taped
+  joints slipped between 10-30 and 11-05, so the erected height inside that
+  window was not a constant. The 15-to-28-foot contrast is large enough that
+  its direction survives; the number itself should be treated as an upper
+  bound until somebody measures the rebuilt mast.
+
   **November 2026 is the first clean twenty-eight-foot month**, and aprs.fi resets
   its per-station statistics on the 1st. October is therefore the fifteen-foot
   baseline, with three caveats to carry into any comparison:
@@ -238,10 +262,14 @@ show on marginal paths rather than on stations already solid.
     either -- **use the measured baseline below instead of the monthly page**
     for anything about reach.
   * **November has holes, but they have known edges, so slice it rather than
-    discarding it.** Two mast failures: a section collapsed 11-01, and on
-    11-05 the mast came down when its base stake failed. Both are timestamped
-    to the minute in `OPERATIONS.md`, recovered from the dated packet log --
-    which is the point. **A contaminated window with a known start and end is
+    discarding it.** Two mast failures from one cause: a taped joint slipped on
+    11-01 and was caught in fifteen minutes, and another slipped on 11-05 and
+    took the mast down. Off the air 11-05 22:12 UTC to 11-06 18:00 UTC, back
+    up on an angle-iron base stake. Every edge is timestamped to the minute in
+    `OPERATIONS.md`, recovered from the dated packet log -- which is the point.
+    What the edges do **not** fix is the height inside the 10-30 to 11-05
+    window: two joints are known to have let go in it, so the mast was
+    somewhere at or below its nominal twenty-eight feet and drifting. **A contaminated window with a known start and end is
     excisable; a contaminated month is not.** Use `OPERATIONS.md`'s
     data-quality table as the exclusion list and compare matched windows
     between the holes. What cannot be sliced is the aprs.fi monthly page,
@@ -344,11 +372,35 @@ enough, which is what makes the November holes survivable.
   **Open: the "448 distinct stations heard via somebody's digipeater" figure
   below may not mean what it says.** The 11-05 log contains HI8MSB, TA5FW,
   PY1IP and a dozen more at similar distances, which is not 2 m propagation.
-  Almost certainly third-party traffic that a local iGate transmitted onto RF,
-  the same wrapping this station uses for whitelisted messages.
-  `heard_spatial.py` is unaffected -- it discards anything beyond 400 km as a
-  busted position -- but a raw count of distinct stations is not. Check before
-  quoting it again.
+  Third-party traffic that a local iGate transmitted onto RF, the same wrapping
+  this station uses for whitelisted messages. `heard_spatial.py` is unaffected
+  -- it discards anything beyond 400 km as a busted position -- but a raw count
+  of distinct stations is not. Check before quoting it again.
+
+    **The mechanism is confirmed live, 2026-11-06 13:07:43 EST.** A single
+    ten-minute watch of the web monitor caught
+    `KB2WAC-1>APJI43,...:}KB2WAC-13>APJIO4,TCPIP,KB2WAC-1*:;443.150/R*...`
+    -- a third-party wrapper arriving on RF, carrying an inner station and a
+    repeater object in central New York. Direwolf unwrapped it and correctly
+    declined to gate it ("Do not relay with TCPIP in path"), so the whitelist
+    and the relay logic are behaving. What it means for counting is that
+    inflation of a distinct-station count is not a hypothesis. Filter on the
+    third-party DTI (`}`) when counting stations; confirm what the `dti` column
+    actually holds for these on the 11-05 log first, since Direwolf unwraps
+    before logging.
+
+    **Three days of summary rows point the same way, and are not a trend.**
+    From `/api/status` on 2026-11-06, `rx_stations` ran 240 -> 315 -> 434 over
+    11-03, 11-04 and 11-05 while `rx_packets` ran 9,420 -> 11,654 -> 6,791.
+    The highest distinct-station count falls on the day with the fewest packets
+    and a four-hour hole in it. A count that moves against traffic is not being
+    driven by propagation. Three days decides nothing on its own; it agrees
+    with the live capture above, which is a different kind of evidence.
+
+    **Do not try to read the 11-05 outage out of daily totals.** Two intact
+    days differ by 24% (9,420 against 11,654), and the outage removed about
+    17% of a UTC day. The noise is larger than the signal, which is the whole
+    reason for matched clock-hour windows.
 
 ### The fifteen-foot baseline: 2026-10-22 to 10-30, measured not estimated
 
@@ -860,13 +912,24 @@ filtering or frame length, and the next test is a long beacon on a short path).
   costs the same to record. At ~1,400 beacons a month this is not a setting to
   leave on an experiment.
 
-**1b. Confirm the erected mast height, and write it down.** NEW 2026-11-01:
-one section collapsed and was re-erected by hand without counting segments
+**1b. Confirm the erected mast height, and write it down.** NEW 2026-11-01,
+and more pressing after the 2026-11-06 rebuild: the mast has now been
+re-erected by hand twice without the segments being counted
 (`OPERATIONS.md`). Until somebody counts them, "about twenty-eight feet" is an
-assumption carried over from 10-30, and the +5.4 dB two-ray figure and the
-whole November-against-October comparison rest on it. This is a ladder and
-five minutes, and it blocks the only clean twenty-eight-foot month there will
-be. **Also check the 2026-11-01 journal for a failed `igate-selftest` between
+assumption carried over from 10-30 through two joint failures, and the +5.4 dB
+two-ray figure and the whole November-against-October comparison rest on it.
+**No ladder is needed** -- the pole lowers and redeploys in a few minutes, so
+this is ground-level work. It blocks the only clean twenty-eight-foot month
+there will be, and it costs minutes of data.
+
+  **It is all one job, and it is already scheduled.** The pole comes down in
+  the next few days to be measured for stop collars (`OPERATIONS.md`), and that
+  is the only time it will be in hand. Count the segments and write the erected
+  height down, measure the joint diameters against the derived table, and put a
+  paint or tape **witness mark** on each section at the
+  rim of the one below it. The witness mark is the cheapest item on that list
+  and the one that would have caught both failures days early, by turning "has
+  a joint crept?" into a question answerable from the ground. **Also check the 2026-11-01 journal for a failed `igate-selftest` between
 14:30 and 14:45 UTC** -- the journal is persistent, and a failure in that
 window is the radio-off period, not a fault.
 

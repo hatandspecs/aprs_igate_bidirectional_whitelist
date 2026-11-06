@@ -1012,6 +1012,42 @@ END{printf "  its own beacons, heard direct : %d\n  OUR beacons it repeated     
 A station's own-beacon count is what sizes it as a measurement reference: the
 rate sets how large a change a comparison against it can resolve.
 
+#### What was the weather doing?
+
+**Not from this log.** Dire Wolf parses the weather fields out of a packet when
+it writes the CSV, so the raw APRS `ddd/sssgGGGtTTT` string is in no column of
+the dated log. The decoded values reach the annotated text output, which is
+where the web monitor gets them, but that log holds about eight days and is not
+per-UTC-day.
+
+Use the regional ASOS archive. It runs from any machine, needs nothing
+from the Pi, reaches back years, and comes from an instrument built for the
+job:
+
+```
+curl -s "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=UNV\
+&data=sknt&data=gust&data=drct&data=tmpf&year1=2026&month1=11&day1=5\
+&year2=2026&month2=11&day2=6&tz=America%2FNew_York&format=onlycomma\
+&latlon=no&missing=M&trace=T&direct=no&report_type=3"
+```
+
+Returns `station,valid,sknt,gust,drct,tmpf` -- one row per hourly observation,
+local time, wind in knots. `M` is a missing value, and a missing `gust` means
+no gust was reported rather than no wind. Change `station` and the dates.
+
+**This is regional weather, tens of miles out, not site wind.** It will not
+give the gust that bent a stake. What it does give is the difference between a
+windy afternoon and a calm one, which is enough to decide whether wind belongs
+in an explanation at all -- and a calm reading is the more informative result,
+because it moves the cause from weather to the static load of whatever was
+already wrong.
+
+Worked example, 2026-11-05, the afternoon the mast came down at 14:46 EST:
+10-12 kt sustained, gusts to 21 kt (about 24 mph), from 220 degrees. Breezy
+and unremarkable. That is enough to topple an unguyed mast and nowhere near
+enough to bring down a correctly guyed one, which is what makes it evidence
+rather than background.
+
 #### Keep positions out of the repository
 
 Beacon coordinates in this project are rounded to a 6-character grid square on
@@ -1020,6 +1056,40 @@ that rounding, so every command above reports counts and scatter rather than
 position, and results written down should do the same.
 
 ## Monitoring
+
+### The web monitor's JSON, without the browser
+
+The web monitor serves two endpoints besides the page, and both are read-only
+GETs that answer from off the machine. `/api/status` is the useful one for
+scripting and for a cold session:
+
+```
+curl -s http://aprs-igate.local:8080/api/status | python3 -m json.tool
+```
+
+It returns `running`, a `detail` line carrying the Direwolf pid, the resolved
+IS-side `filter`, the whole effective `settings` block with every "not used
+because" spelled out, and a `logging` block with today's and yesterday's row
+counts, the archive chunk state, the timer's last and next fire, and the last
+three rows of the daily summary CSV **with its header**, which is the
+authoritative definition of those columns:
+
+| Column | Meaning |
+|---|---|
+| `rx_packets` | Frames received on RF that UTC day |
+| `rx_direct` | Of those, copied with no digipeater hop |
+| `rx_stations` | Distinct source callsigns heard, any path |
+| `rx_stations_direct` | Distinct source callsigns copied directly |
+| `win_*` | Counted over the Direwolf text log's rolling window, **not** the UTC day. Confirm the window before comparing a `win_*` figure to an `rx_*` one |
+| `chunks_saved` | Archive chunks written that day |
+
+`rx_stations` is the count inflated by third-party traffic arriving on RF --
+see AGENTS.md. `/events` is the live server-sent-event feed the page consumes.
+
+`http://aprs-igate.local:8080/` is the stable name. The Pi answered at
+`http://192.168.68.66:8080/` on 2026-11-06, but that is DHCP and will move.
+
+### Annotated live output
 
 `./deploy_igate.sh monitor` is the one to use. It annotates Direwolf's output
 into plain language, and shows Direwolf's decode of each frame indented beneath:
