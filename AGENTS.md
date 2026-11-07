@@ -1332,8 +1332,9 @@ paste the output back. Local work in the repository needs no such restraint.
 **Writing.** No British spellings; US throughout. Design documents are
 declarative: no hero's-journey narrative, no second-person "you", and never
 state something as fact and then refute it a few lines later. For an article
-already published, add a dated update section rather than rewriting the
-narrative — the wrong turns are part of why it is worth reading. Do not repeat
+already published, ask whether I want a dated update section or an in-place
+rewrite. A dated update is the better default, because the wrong turns are part
+of why a piece is worth reading, but it is my call rather than a rule. Do not repeat
 a warning I have already acknowledged.
 
 **Images.** Look at any photograph or screenshot before adding it to an
