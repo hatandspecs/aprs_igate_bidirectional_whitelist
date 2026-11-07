@@ -2303,6 +2303,132 @@ the last entry used.
 The `qAR,<call>` construct names the gateway that injected the packet, which is
 how to tell whether this station carried a packet or a neighbor did.
 
+### Link length sweep
+
+`linktest_sweep.py` transmits paired short and padded frames to find the length
+at which a digipeater stops repeating this station. It exists because W3YA-1
+repeats this station's beacons and none of its gated IS-to-RF traffic, and the
+two obvious explanations are ruled out (see AGENTS.md). Frame length against a
+thin margin is what is left.
+
+Each cycle sends a control frame at the known-good beacon length, then a test
+frame at the length under examination, so a missing test echo cannot be
+confused with a dead minute. Lengths are visited round-robin rather than as a
+rising staircase, because a monotonic sweep confounds length with time: if
+conditions sag over the run, the longest frames are the ones sent last and a
+false cliff appears.
+
+Frames are status reports, not positions, so a run does not rewrite this
+station's position history. The source is this station's own callsign.
+
+**It needs the KISS port, which is off for a reason.** `KISS_PORT` opens an
+unauthenticated transmit port on `0.0.0.0`, so anything on the LAN can key the
+radio under `MYCALL`. Turn it on for the run and off afterward.
+
+**It goes in `igate.conf`, not `igate.local.conf`.** The local layer accepts
+only `DEPLOY_MODE`, `RADIO`, `WEB_*`, `DEVICE_WAIT`, `RF_QUIET_MINUTES` and
+hardware keys; anything else is collected and reported as "sets keys it may
+not" and then ignored. `igate.conf` carries the `KISS_PORT = 0` line and its
+own comment saying to set it to 8001 temporarily.
+
+```
+# 1. open the port
+sed -i 's/^KISS_PORT *=.*/KISS_PORT = 8001/' igate.conf
+./deploy_igate.sh restart
+./deploy_igate.sh config | grep -i kiss        # expect 8001
+
+# 2. prove the encoder before transmitting 240 frames
+./linktest_sweep.py --self-test                # expect "self-test passed"
+./linktest_sweep.py --dry-run
+
+# 3. run it (one hour cap, stops early once the answer settles)
+./linktest_sweep.py
+
+# 4. independent check from Direwolf's own log
+./linktest_report.py
+
+# 5. TEARDOWN, do not skip
+sed -i 's/^KISS_PORT *=.*/KISS_PORT = 0/' igate.conf
+./deploy_igate.sh restart
+./deploy_igate.sh config | grep -i kiss        # expect 0
+```
+
+`./deploy_igate.sh config | grep -i kiss` reporting 0 is the check that the
+port is really shut, not the absence of an error. On the Pi, `/opt/aprs-igate`
+is an rsync'd copy rather than a git checkout, so `git diff` is not available
+there as a confirmation.
+
+The two scripts are not part of a deployed image. Copy them over the documented
+way:
+
+```
+scp linktest_sweep.py linktest_report.py igate@aprs-igate.local:aprs-igate/
+```
+
+At the 30-second default this is 4 frames a minute, up to 240 in an hour. That
+is a real load on a shared channel, which is why `--max-minutes` defaults to 60
+and the early stop exists. `--cycle-seconds 60` halves it.
+
+Reading the result: `informative` counts cycles whose **control** frame the
+target repeated. A cycle whose control went unheard is excluded, not scored as
+a failure. `blocked` needs at least `--min-informative` informative cycles with
+zero test echoes; `repeated` needs two test echoes. A gated message is about
+120 bytes, so that is the length the verdict turns on.
+
+If the target repeated no control frame at all, the run says "no information"
+rather than reporting a false cliff. Check for `[0L] KD3CCO-10` lines in
+`./deploy_igate.sh monitor` before concluding anything from an empty table.
+
+### The aprs.fi API, for paths this station never heard
+
+The dated log and the text log are this station's view. A packet gated by
+somebody else's iGate is absent from both. The `qAR`/`qAS` field on APRS-IS is
+the complete record, and aprs.fi serves it.
+
+The key lives in `aprsfi.secrets`, gitignored, deliberately separate from
+`igate.secrets`: it is a workstation query credential, the daemon never calls
+aprs.fi, and `apply_secrets` in `deploy_igate.sh` reports any key other than
+`IGLOGIN_PASSCODE` as a layer warning.
+
+```
+. ./aprsfi.secrets
+curl -s "https://api.aprs.fi/api/get?name=KD3CCO-7&what=loc&apikey=${APRSFI_API_KEY}&format=json" \
+  | python3 -m json.tool
+```
+
+The `path` field on a `loc` entry is the full digipeater path with the gating
+station on the end. Worked example, 2026-11-07:
+
+```
+"time":     "1794063215"    09:53:35 EST
+"lasttime": "1794063351"    09:55:51 EST
+"path":     "W3YA-1,WIDE1,N3DXC-2,WIDE2*,qAS,K3MJW-10"
+```
+
+**The path belongs to one packet, the one at `lasttime`, and it is whichever
+duplicate APRS-IS kept.** It is not a statement about which stations heard the
+transmission. This station's own dated log has KD3CCO-7 copied DIRECT at
+09:53:35, 09:54:35 and 10:48:01 that same morning, and has no entry at all for
+09:55:51. A handheld asking for two hops reaches APRS-IS several times over
+different paths, and `path` reports one of them. Check the dated log before
+drawing any coverage conclusion from it.
+
+**What the API will not do:**
+
+- **No position history.** `what=loc` returns the *last* position per station,
+  so one path sample, not a morning of them. Use the dated log for a series.
+- **`what=msg` filters on `dst` only.** Messages *to* a station are one query;
+  messages *from* one cannot be isolated, and `dst=<gateway>` returns that
+  gateway's last ten messages globally, which is other operators' traffic.
+- **Ten entries per message query**, most recent first.
+
+**Retry count is the ack signal.** The SMS gateway resends until an ack comes
+back, so a message that appears once was acknowledged and one that appears six
+times was not. That is readable without any access to the handheld.
+
+**Phone numbers.** SMS-gateway messages carry them in the message body. Redact
+before pasting output anywhere, including into this repository.
+
 ### Symptoms of a direct-only downlink
 
 * Messages sent **from** the handheld arrive reliably from anywhere in the area.

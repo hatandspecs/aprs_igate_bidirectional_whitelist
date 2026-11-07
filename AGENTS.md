@@ -429,8 +429,10 @@ KF0JZM-7 22, W3AKU-7 16, the rest in single figures.
   Testing for a bare `SOURCE>DEST,qAR` path instead counts 6 stations, because
   it throws away everything heard direct that happened to request `WIDE1-1`.
 
-**394 beacons over 8.2 days is 48 a day**, which is the 30-minute interval
-exactly, so the window has no outage in it.
+**394 beacons over 8.2 days is 48 a day**, which was the 30-minute interval
+exactly, so the window has no outage in it. **`BEACON_EVERY` became `120:00` on
+2026-11-07**, so the same check against a later window expects **12 a day**, not
+48. A November capture showing ~12 a day is healthy, not an outage.
 
 ### An absolute path in igate.conf is readable by the station and invisible to its monitor
 
@@ -480,6 +482,346 @@ day it could not be recovered.
   That reasoning is wrong for 1.7. They are believed because their EFFECTS
   have been observed, not because the parser stayed quiet.
 
+### The web monitor cannot answer a path question (2026-11-07)
+
+`/api/status` is station state plus log row counts, with no packet-level data.
+`/events` holds `HISTORY = 300` events, which at this station's traffic is
+about **nine minutes**. Neither can reconstruct a path. The file that carries
+full digipeater paths is `run/direwolf.log`, and it is not served over HTTP on
+purpose, because it contains the APRS-IS passcode (`igate_web.py:19`). A path
+question means either the Pi's own logs or aprs.fi.
+
+**aprs.fi is now usable from the workstation.** The key is in `aprsfi.secrets`,
+gitignored, separate from `igate.secrets` by design: `apply_secrets` in
+`deploy_igate.sh` reports any key there other than `IGLOGIN_PASSCODE` as a
+layer warning, and `build_pi_image.sh` copies that file to the Pi, which has no
+use for it. Usage and the limits of the API are in README.md under "The aprs.fi
+API, for paths this station never heard". The short version: last position
+only, so one path sample per station; `what=msg` filters on `dst` only; ten
+entries per query.
+
+**aprs.fi's `path` is one duplicate, not a coverage statement.** A `loc` entry's
+`path` comes from the packet at `lasttime` and is whichever copy APRS-IS kept.
+On 2026-11-07 it read `W3YA-1,WIDE1,N3DXC-2,WIDE2*,qAS,K3MJW-10` for KD3CCO-7
+while this station's own dated log had that handheld copied DIRECT at 09:53:35,
+09:54:35 and 10:48:01. Reading that path as "this station did not hear it" is
+wrong, and this session made exactly that mistake before checking the log. The
+APRS-IS side does answer what the local logs cannot, which is whether another
+gateway carried something this station missed, but it takes both sources to
+tell that case apart from a discarded duplicate.
+
+**W3YA-1 is the only first hop this handheld gets.** Every digipeated copy of
+KD3CCO-7 in the 2026-11-07 window begins `W3YA-1,WIDE1`, with WO3T-1 or
+KE4MHE-10 taking the second hop afterward. Those two never heard the handheld
+directly, they heard W3YA-1's repeat. Treat second-hop digipeaters in this
+log as evidence about W3YA-1's coverage, not the handheld's.
+
+### W3YA-1 repeats the beacons and none of the gated traffic (2026-11-07)
+
+Counted over the text log's window, from echoes of this station's own
+transmissions. A path containing `WIDE2` is gated traffic, since
+`TX_VIA = WIDE1-1,WIDE2-2`; a path with only `WIDE1*` is a beacon, since
+`BEACON_VIA = WIDE1-1`.
+
+| Digipeater | Gated, first hop | Beacons |
+|---|---|---|
+| WO3T-1 | 26 | 21 |
+| KE4MHE-10 | 15 | 19 |
+| W3VO-1 | 2 | 1 |
+| **W3YA-1** | **0** | **18** |
+
+**This matters because W3YA-1 is the handheld's only first hop.** Every
+digipeated copy of KD3CCO-7 in the 2026-11-07 window begins `W3YA-1,WIDE1`.
+WO3T-1 and KE4MHE-10 heard W3YA-1's repeat, not the handheld. So the one
+digipeater the handheld demonstrably reaches is the one that will not repeat
+what this station gates down, and the measured downlink that morning was **4 of
+10 messages reaching the radio** against **4 of 4** on the uplink.
+
+**The SMS gateway's retry count is not a delivery signal.** It measures the ack
+round trip. On 2026-11-07 two messages (luna, nittany) reached the handheld and
+were retried the full three times because no ack came back, and neither
+`ack2915` nor `ack2919` appears anywhere in this station's logs. Retries give a
+lower bound on failure and nothing more. Delivery was established by reading the
+handheld's message list, and that step is not optional: skipping it undercounted
+the downlink by half. By site: South Atherton corridor 3 of 4, Elixer Cafe
+downtown 0 of 6, Fraser garage fifth floor 1 of 1.
+
+**The handheld's antenna does not explain that split, and the reason is worth
+keeping.** Stock rubber duck on every message. In a moving vehicle for the South
+Atherton sites and the Fraser garage, **on foot for both Elixer sites** (four
+from inside the building, two from the sidewalk). The messages that arrived went
+to a rubber duck shielded inside a car; the six that failed went to the same
+radio in open air. Taking the handheld out of the vehicle improved its receive
+situation and the downlink went to zero, so the limitation sits elsewhere in the
+chain. A mag-mount rerun would still be worth doing, to find out whether it
+lifts the overall level rather than the ranking.
+
+The three easy explanations are ruled out: the station copies W3YA-1 direct 90
+times in the same log, so it is not a hearing problem; 28 gated transmissions
+with zero repeats against a beacon rate matching WO3T-1's is not sample size;
+and where two digipeaters repeat the same gated packet the log holds both, so
+nothing is being suppressed.
+
+**Confirmed in a second capture.** `archive-2026-10/frames-15ft-2026-10-30.log.gz`
+holds 306 echoes of this station's beacons, 113 of them W3YA-1, against 13
+echoes of its gated traffic, none W3YA-1. Different mast height, same split.
+
+**Two explanations are ruled out. Do not re-propose either.**
+
+*Not the `TCPIP` in the payload.* On the protocol, `TCPIP` is never in the AX.25
+digipeater path of an RF frame; a gated message is third-party wrapped so the
+string lives in the information field after `:}`, and the address fields a
+digipeater acts on read `WIDE1-1,WIDE2-2`. A KPC-3 cannot filter on payload
+content. On the measurement, W3YA-1 repeated **39 third-party frames** in the
+October day, including `KC3ZLD-10>APDW17,NJ3T-4,W3YA-1,WIDE2*` and
+`N3TJJ-13>APMI06,W3YA-1,WIDE1*`.
+
+*Not a three-hop ceiling.* The same archive has
+`KG4DQH>APT311,W3YA-1,WIDE1*,WIDE2-2:!4052.49N/07746.52W>234/052`. W3YA-1 took
+the first hop of a three-hop request from a mobile tracker.
+
+**What is left.** No single factor survives: W3YA-1 accepts third-party packets,
+accepts three-hop paths, and accepts this station's beacons, while refusing this
+station's gated traffic, which is the combination of the first two. The leading
+candidate is **frame length against a thin margin**. Gated messages are the
+longest frames this station sends, roughly twice a beacon; KG4DQH's accepted
+three-hop frame is a bare position report; W3YA-1 is the most distant of the
+three digipeaters involved. That is a candidate, not a conclusion.
+
+The reproduction commands are in README.md under "The aprs.fi API"; the
+per-digipeater third-party tabulation runs against the archive with awk and
+needs no Pi access.
+
+**Two tests, neither yet run. Do the first one first.**
+
+1. *Length, on the beacon.* Pad the beacon comment until the frame matches a
+   gated message in length, leave `BEACON_VIA = WIDE1-1` alone, run an hour.
+   W3YA-1 repeats those beacons reliably now. If the padded ones stop appearing
+   while WO3T-1 and KE4MHE-10 keep repeating them, frame length is the variable
+   and the fix is on the transmit side rather than in the path. The beacon fires
+   on a timer, so it builds a sample without waiting for message traffic, and the
+   other two digipeaters are a built-in control.
+2. *Hop count, on the gated path.* `TX_VIA = WIDE1-1,WIDE2-1`, then watch for
+   `KD3CCO-10>APDW17,W3YA-1,WIDE1*,WIDE2-1`. The surviving `WIDE2-1` keeps the
+   echo distinguishable from a beacon echo, which bare `WIDE1-1` would not.
+   KG4DQH's frame rules out a hard ceiling, but a rule treating two hops
+   differently from three is still possible. The current two-hop reach carries
+   gated traffic to Cortland, NY, which is of no use to a handheld four miles
+   away.
+
+**Do not assume the handheld can hear W3YA-1.** Digipeating is one-way
+evidence. W3YA-1 hears the handheld; the reverse is untested and the whole
+proposed fix depends on it.
+
+### What this station's channel share actually is (2026-11-07)
+
+Measured from `archive-2026-10/frames-15ft-2026-10-30.log.gz`, counting
+originals (no `*` in the path) per source over the 8.2-day window:
+
+- **29,800 RF frames heard, only 4,785 of them originals.** 84% of what this
+  station hears is digipeater repeats of other people's packets. Local
+  congestion is set by infrastructure relaying, not by anyone's originals.
+- **3,634 frames a day** heard at this location.
+- 22 stations heard directly. Median **1.3 a day**, mean 26.5. The median is
+  dominated by mobiles heard once or twice in eight days, so it is not a
+  useful yardstick; the resident infrastructure is what to compare against:
+  WO3T-1 **356/day**, W3YA-1 84, K3DNA 49, W3TM-10 37, N3DXC-2 19.5.
+
+This station's own share, originals plus the repeats its one-hop beacon and
+three-hop gated path provoke (0.78 and 0.26 repeats each, from the same
+window):
+
+| beacon interval | own TX/day | with repeats | share of frames heard | local percentile |
+|---|---|---|---|---|
+| 30:00 (through 2026-11-07) | 54 | ~93 | 2.6% | 91st |
+| **120:00 (set 2026-11-07)** | **18** | **~29** | **0.8%** | **77th** |
+| 240:00 (considered, rejected) | 12 | ~18 | 0.5% | 77th |
+
+**Going to 4 hours was rejected because it changes nothing measurable.** There
+is a gap in the local distribution between 10.4 and 19.5 packets a day, so 18
+and 12 land on the same percentile. It would cost 0.3 points of channel
+occupancy and halve the `reach` sample and the W3YA-1 beacon reference again.
+Do not revisit this without new data.
+
+**Caveats on the numbers.** "Originals heard directly" misses the 448 stations
+heard only via digipeaters, so the population is stations in direct range,
+which is the right one for local courtesy but is not "the region." The window
+is also the 15-foot/indoor era; the mast hears more now, which grows the
+denominator and makes this station's share smaller than the table says. The
+estimate is conservative in the safe direction.
+
+### W3YA-1 has a frame length cliff between 75 and 83 bytes (2026-11-07)
+
+**Measured, and it answers the question this session opened with.** 30 cycles
+of `linktest_sweep.py`, stopped early for channel courtesy, with every frame
+identical but for padding length:
+
+| on-air bytes | KE4MHE-10 | W3YA-1 | WO3T-1 |
+|---|---|---|---|
+| 75 (test) | 2 | **2** | 2 |
+| 83 | 1 | **0** | 3 |
+| 91 | 2 | **0** | 0 |
+| 99 | 2 | **0** | 1 |
+| 107 | 1 | **0** | 1 |
+| 115 | 4 | **0** | 1 |
+| 123 | 2 | **0** | 1 |
+| 131 | 1 | **0** | 0 |
+| 75 (control) | 19 | **17** | 13 |
+
+Pooled: at 75 bytes W3YA-1 repeated **19 of 34**, 56%. At 83 bytes and above,
+**0 of 26**. The probability of 26 straight misses at the 56% control rate is
+about 3e-10.
+
+**This also kills the transmit-chain hypothesis.** KE4MHE-10 and WO3T-1
+repeated frames at every length up to 131, so the station's audio, deviation
+and power are putting long frames on the air successfully. The behavior is
+specific to W3YA-1.
+
+**It is not this station's receiver failing on long echoes either.** A W3YA-1
+repeat of an 83-byte frame is 90 bytes, because the digipeater inserts its own
+callsign. W3YA-1's own beacons are about 86 bytes bare, 93 with one unused
+`WIDE2-2` and 100 after a hop, and this station decodes all three shapes dozens
+of times in the same window. The receive path handles 90 to 100 byte frames
+from W3YA-1 fine.
+
+**Why the original mystery existed.** The beacon is 75 bytes, just under the
+cliff, so W3YA-1 repeats it. A gated message is about 120 bytes, far over, so
+W3YA-1 never does. That is the whole of it: not `TCPIP`, not hop count, not
+power.
+
+**The sharpness argues for a configured limit, not a signal margin.** 56% to 0%
+across 8 bytes is not the gradual rolloff a thin margin produces.
+
+**Practical consequence: W3YA-1 is unavailable for message downlink, and no
+setting on this end changes that.** A third-party wrapper alone is about 41
+bytes, so even a one-character gated message runs about 75 bytes with a one-hop
+path and 82 with two. Shortening `TX_VIA` buys 7 bytes, nowhere near enough for
+real message text. The downlink has to rely on WO3T-1, KE4MHE-10 and direct
+copy, none of which the handheld reached from downtown.
+
+**The free confirmation, if ever wanted:** grep the text log for
+`[ig>tx] KD3CCO-10>APDW17,W3YA-1` with an `LT ` marker. If some other gateway
+had heard W3YA-1 repeating a long test frame, it would have come back from
+APRS-IS. That check does not depend on this station's receiver at all.
+
+**The per-length verdict in both scripts is too conservative for a short run.**
+It needs 6 informative cycles per length and got 1 to 4, so it reported
+"undecided" everywhere while the pooled numbers were already decisive. Both
+scripts now print a pooled block; read that first.
+
+### The length sweep exists, was paused for channel courtesy (2026-11-07)
+
+`linktest_sweep.py` and `linktest_report.py` are built, self-tested and proven
+to transmit (`[0L] KD3CCO-10>APDW17,WIDE1-1:>LT C001 b075` confirmed in the
+log). The full sweep was **stopped early on purpose**: at 4 frames a minute it
+adds real congestion to 144.390, and that cost is not worth paying for a
+question the station's own traffic can mostly answer. Use it only when the
+cheaper route below is exhausted, and prefer `--cycle-seconds 300` and two or
+three lengths over the defaults.
+
+**The smoke test's one data point:** a 75-byte control frame was repeated by
+W3YA-1, WO3T-1 **and** KE4MHE-10; the 131-byte test frame by none of them. One
+sample each, so it is a hint, not a result. If it holds, every digipeater has
+its own length cliff set by its own margin to this station, W3YA-1's falling
+below the 120-byte gated length and the other two above it, and the cause is
+this station's transmit chain rather than W3YA-1's configuration.
+
+**The LOW3 arm is already measured, for free.** The November window holds 28
+gated transmissions with zero W3YA-1 echoes against 18 beacon echoes, all at
+the power the radio was already set to. So only the HIGH arm is missing, and
+`./deploy_igate.sh selftest` produces exactly one gated RF frame at the real
+length per invocation. Ten or fifteen of those at HIGH is the whole remaining
+experiment, against 28 already banked at LOW3, and it adds about a dozen frames
+rather than hundreds. Raising power costs no extra airtime: a 120-byte frame
+occupies the same time slot at 5 W or 75 W.
+
+**Confirm the power setting did not change during the November window** before
+treating those 28 as a clean arm. There is no CAT port, so nothing in the
+software can read or log it, which is the whole weakness of the method.
+
+**`radios/digirig.conf` carries an older power note that is stale context, not
+a current finding.** It recorded W3YA-1 repeating 2 of 8 beacons and concluded
+"power is not the knob; antenna height is." That was measured on an **indoor
+antenna**, and W3YA-1 repeated 18 beacons in the November window on the mast,
+so the relationship changed. The note's metric was also insensitive: success
+rate at one frame length cannot see a cliff move. Do not cite it as settling
+the power question.
+
+### Elevation is not why the downlink failed (2026-11-07)
+
+Checked because it is the obvious next idea, and it does not hold. Every test
+site that morning sits inside a 93 ft band of ground elevation and the station
+is above all of them. The **highest** site delivered, the second highest failed
+all six times, and the lowest failed too. Distance does not separate them
+either: the farthest site delivered and nearer ones both delivered and failed. The table is in the blog article; it is not repeated here
+because it would put the station's position back into this repository by
+arithmetic.
+
+**The argument that settles it:** the handheld's own message from inside that
+cafe was copied **direct** by this station at 09:54:35, street level, no
+digipeater. A path blocked by terrain is blocked both ways. The path exists, so
+elevation is not the variable.
+
+**Mobility is ruled out too.** The tempting explanation was that a moving car
+samples new ground between retries while a stationary operator retries the same
+spot. The Fraser garage message was sent to a **parked** car on the fifth floor,
+went out once, and was acknowledged in 7 seconds. A stationary receiver did
+fine.
+
+**What is still open.** All six failures came from one address, so they are six
+samples of one place, not six samples of a condition. Elixer differs from the
+working sites in two surviving ways: on foot rather than in a vehicle, and
+ground level in a downtown block. **Only one of those points the right way.** A
+rubber duck in a car body sitting in the car's noise is a worse receive setup
+than the same antenna in open air, so if being out of the vehicle were the cause
+the on-foot site should have done better, not gone 0 of 6. Height is the
+survivor that explains the direction.
+
+The separating test: three messages from the Fraser garage ground floor against
+three from its fifth floor, **parked in the car both times**, which holds
+location, posture, mobility and the antenna's surroundings fixed and moves only
+height. Note the condition to match is in-vehicle, not on-foot, because
+in-vehicle is the one already known to work.
+
+### Another gateway carried a message this station never heard (2026-11-07)
+
+The SMS gateway acknowledged handheld message `{17}`, which appears nowhere in
+this station's logs in any form. Positive proof that the local logs are a
+partial view, alongside the Cortland echo in the next section, which arrived
+only because APRS-IS handed it back.
+
+### A corrupted echo defeated third-party loop detection (2026-11-07)
+
+One gated message came back around. KD3CCO-10's own RF transmission was
+digipeated by KE4MHE-10, then N3TJJ-7 and KC2ANT-1, gated back to APRS-IS by
+KB2LUV-1, and arrived at this station as `[ig>tx]`, which re-transmitted it
+wrapped in a second layer of third-party encapsulation:
+
+```
+[ig>tx] KD3CCO-10>APDW17,KE4MHE-10,WIDE1,N3TJJ-7,KC2ANT-1,WIDE2*,qAR,KB2LUV-1:}SMS>APOSMS,TCPYP,KD3CCO-1p*::KD3CCO-7 :...
+[0L] KD3CCO-10>APDW17,WIDE1-1,WIDE2-2:}KD3CCO-10>APDW17,TCPIP,KD3CCO-10*:}SMS>APOSMS,TCPYP,KD3CCO-1p*::KD3CCO-7 :...
+```
+
+Note `TCPYP` for `TCPIP` and `KD3CCO-1p*` for `KD3CCO-10*`. Loop detection
+drops a third-party packet whose inner path carries this station's own
+callsign, and RF bit errors corrupted that callsign past recognition, so the
+check passed it. The `g/KD3CCO*` whitelist term then matched the outer source,
+which is KD3CCO-10 itself.
+
+**Observed once**, so this is a recorded mechanism rather than a measured rate.
+It self-limited here. Each pass adds an encapsulation layer, so a sustained
+loop would be visible as growing `}` nesting in `[0L]` lines:
+
+```
+grep -c '}.*}.*}' /opt/aprs-igate/run/direwolf.log
+```
+
+
+**Retry count reads as an ack signal.** The SMS gateway resends until acked, so
+a message appearing once in `what=msg` was acknowledged and one appearing six
+times was not. Note that SMS-gateway message bodies carry phone numbers;
+redact before writing output anywhere.
+
 ### The log holds about eight days, not the uptime
 
 `uptime -s` was 2026-10-12 and the log reached back only to 10-22. `run/` is a
@@ -488,11 +830,23 @@ station's traffic the readable history is roughly eight days** however long
 the station has been up. `reach` and any retrospective question are bounded by
 that, not by the uptime.
 
-  **This makes the November comparison easy rather than hard.** Run `reach`,
-  `config` and the frame-log archive again on 2026-11-30 and compare against
-  the table above: Nov 22-30 against Oct 22-30 is the same days of the month,
-  the same ~8-day length, the same one-hop `BEACON_VIA`, and the same
-  everything else. **Only the mast differs.** Commands are in "Commands";
+  **This makes the November comparison easy rather than hard, with one
+  caveat added 2026-11-07.** Run `reach`, `config` and the frame-log archive
+  again on 2026-11-30 and compare against the table above: Nov 22-30 against
+  Oct 22-30 is the same days of the month, the same ~8-day length and the same
+  one-hop `BEACON_VIA`. **The mast is no longer the only difference:**
+  `BEACON_EVERY` went from `30:00` to `120:00` on 2026-11-07 to cut this
+  station's channel footprint, so an 8-day November window holds roughly 98
+  beacons where October held 394. **Compare the rates, never the counts.** The
+  table above is already in rates for exactly this reason, and quartering n
+  widens the 95% interval on the 77% figure from about +/-4 to +/-8 points. The
+  gated-message row is unaffected, because it comes from the four-hourly
+  selftest timer and gated traffic, not the beacon timer.
+
+  **Transmit-fault detection does not depend on the beacon.**
+  `igate-selftest.timer` fires every 4 hours and is the thing that catches a
+  dead transmitter, so a longer beacon interval costs measurement precision
+  rather than safety. Commands are in "Commands";
   the archive one-liner is in the 10-30 session.
 
   **The Oct 13-18 two-hop experiment is NOT in this window** -- zero two-hop
