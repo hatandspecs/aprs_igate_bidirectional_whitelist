@@ -791,6 +791,63 @@ to 7 of 26 (44% to 27%, in the range frame duration predicts from collisions).
 rule entry above); do not write that it is unmeasured. Raising power remains
 worth doing as a margin test, not as a fault test.
 
+**Height insensitivity is geometry, not evidence about margin (2026-11-08).**
+This was got wrong once in the same session and then corrected, so do not
+re-derive it. W3YA-1's pickup barely moves with this station's antenna height:
+29% at 15 ft, 32% at 28 ft, and 11 to 7 across the mast fall while WO3T-1 and
+KE4MHE-10 both went to zero. The tempting reading is "the link is not
+margin-limited". **It does not follow.** Height buys clearance, the path to a
+mountaintop is already clear line of sight, and a ridge station can still see
+an antenna lying on the ground where valley stations cannot. The observation
+says W3YA-1 has the most robust geometry of any digipeater here, and nothing
+about its margin.
+
+**The handheld is the matched transmitter, and it gets through (2026-11-08).**
+W3YA-1 repeats KD3CCO-7 at 68 and 77 bytes on air, from downtown, on a rubber
+duck, and the Nov 7 run found every digipeated copy of the handheld beginning
+`W3YA-1,WIDE1`. So W3YA-1 is not failing on frames of that length, only on
+frames from the igate above it. **The handheld never transmits above 79 bytes
+on air**, its longest being "angelos 2", so it has never been tested above the
+cliff and cannot locate it.
+
+**What the two transmitters differ in is the modulation chain.** The handheld
+modulates from the FT5D's own modem; the igate modulates from Direwolf through
+the Digirig into the radio's audio input. If a level-independent defect exists,
+frequency offset, deviation asymmetry, clipping or sound-card bit timing, that
+chain is the only place left for it. An occupied-bandwidth deviation check
+cannot see any of those, which is why the 2.8 kHz measurement does not close
+it.
+
+**The selftest ack loop already measures the 91-byte path, and it works.**
+aprs.fi's 2-day raw window held 8 selftests and 4 acks from KD3CCO-7, which is
+4 of 5 in daylight hours with the overnight ones unanswered. The handheld
+decodes the igate's 91-byte gated frames at the house. That rules out frame
+corruption and nothing else: at that range it has enormous margin.
+
+**W3SWL-2 is the best unused instrument.** A Direwolf igate at FN10BS, online
+since 2026-10-31, which heard KD3CCO-10 242 times in 2026-11, more than it
+heard any other station. Direwolf logs which slicer decoded each frame and
+whether bit-error correction was needed. **Asking its operator for that is the
+cheapest remaining test of this station's signal quality**, and it needs no
+transmissions. For scale on the decoder asymmetry: this station's own receiver
+runs at least six slicers, visible as `[0.4]` and `[0.5]` in the log, against
+W3YA-1's single hardware DPLL with no error correction.
+
+**Per-digipeater beacon rates are not clean margin proxies.** W3TM-10 takes 46%
+of this station's beacons and W3YA-1 29%, which looks like a ranking and is
+not one. A one-hop beacon echo is only logged if this station hears that
+digipeater directly, while a two-hop gated frame gets a second chance to be
+seen through the next hop, so the denominators differ per digipeater. Use them
+for existence, not for ordering.
+
+**Published distances come from the beaconed position, not the antenna.** The
+beacon reports the center of its grid square by design, so every distance in
+the articles is measured from there and is deliberately coarse. If one looks
+slightly off against a map, that is the rounding and not an error. **Do not
+recompute these from the true antenna location, and do not put that location,
+or any distance or bearing derived from it, into this repository or an
+article.** Two precise distances to known stations locate a house.
+
 **The sharpness needs no separate explanation now.** Fitting an independent
 per-bit error rate to 56% at 75 bytes predicts 53% at 83 bytes, so 0 of 26 is
 not a simple bit-error-rate effect (p ~ 3e-9). Independent bit errors are the
@@ -1080,6 +1137,19 @@ fail more often than the acknowledgement test it replaced.
   16 beacons / by W3YA-1(4) W3TM-10(1)` (2026-10-13).
 
   **A used hop is an asterisk in the PATH, which is everything before the first
+  **The whitelist matches a message's addressee, not its source (2026-11-08).**
+  `build_filter()` renders `WHITELIST_CALLS` as the APRS-IS `g/`
+  group-message filter, and `g/` is addressee-matched. The 2026-10 loop packet
+  was addressed to `KD3CCO-7`, which is on the whitelist and has to be, so
+  **narrowing the whitelist to explicit SSIDs would not have stopped it** and
+  the whitelist is not the control that failed. The loop check is. Two guards
+  would close it, neither implemented: the returning packet's outer source was
+  `KD3CCO-10` and uncorrupted, and this station never needs to retransmit a
+  frame it sourced, so `FILTER IG 0 ! b/KD3CCO-10` rejects it on a field the
+  bit errors did not touch; and a gated message carries one layer of
+  encapsulation, so refusing two is a depth check no corrupted callsign
+  defeats.
+
   colon.** A third-party frame's payload contains `TCPIP,KD3CCO-10*`, which a
   whole-line search cannot tell from a used hop — so the gateway's own callsign
   appeared in a list of digipeaters that had repeated it. The patterns are
