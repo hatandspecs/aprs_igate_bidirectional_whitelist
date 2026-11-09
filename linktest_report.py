@@ -21,7 +21,11 @@ import re
 import sys
 
 ALIAS_PREFIXES = ("WIDE", "TRACE", "RELAY", "ECHO", "GATE", "ARISS", "SGATE")
-RF_LINE = re.compile(r"^\[0\.[0-9]+\]\s+(\S+?)>(\S+?):(.*)$")
+# Direwolf puts an optional -T timestamp INSIDE the bracket, after the channel:
+# "[0.3]" without -T, "[0.3 2026-11-08T21:56:02-0500]" with it. A third number
+# appears when both multiple subchannels and multiple slicers are configured.
+RF_LINE = re.compile(
+    r"^\[0\.[0-9]+(?:\.[0-9]+)?(?: [^\]]*)?\]\s+(\S+?)>(\S+?):(.*)$")
 MARK = re.compile(r"^>LT ([CT])(\d{3}) b(\d{3}) ")
 
 

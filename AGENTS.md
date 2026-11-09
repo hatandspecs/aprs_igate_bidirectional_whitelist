@@ -650,7 +650,7 @@ is also the 15-foot/indoor era; the mast hears more now, which grows the
 denominator and makes this station's share smaller than the table says. The
 estimate is conservative in the safe direction.
 
-### W3YA-1 has a frame length cliff between 75 and 83 bytes (2026-11-07)
+### W3YA-1 has a frame length cliff between 75 and 83 bytes (2026-11-07, cause corrected 2026-11-08)
 
 **Measured, and it answers the question this session opened with.** 30 cycles
 of `linktest_sweep.py`, stopped early for channel courtesy, with every frame
@@ -672,9 +672,11 @@ Pooled: at 75 bytes W3YA-1 repeated **19 of 34**, 56%. At 83 bytes and above,
 **0 of 26**. The probability of 26 straight misses at the 56% control rate is
 about 3e-10.
 
-**This also kills the transmit-chain hypothesis.** KE4MHE-10 and WO3T-1
-repeated frames at every length up to 131, so the station's audio, deviation
-and power are putting long frames on the air successfully. The behavior is
+**It does not kill the transmit-chain hypothesis, which the 2026-11-07 version
+of this entry claimed.** KE4MHE-10 and WO3T-1 repeated frames at every length
+up to 131, which shows the audio, deviation and power are good enough for
+those two paths. It does not show the signal is clean, and a length-dependent
+transmit defect would surface first at the thinnest-margin digipeater. The behavior is
 specific to W3YA-1.
 
 **It is not this station's receiver failing on long echoes either.** A W3YA-1
@@ -689,11 +691,117 @@ cliff, so W3YA-1 repeats it. A gated message is about 120 bytes, far over, so
 W3YA-1 never does. That is the whole of it: not `TCPIP`, not hop count, not
 power.
 
-**The sharpness argues for a configured limit, not a signal margin.** 56% to 0%
-across 8 bytes is not the gradual rolloff a thin margin produces.
+**A configured length limit is ruled out (2026-11-08).** In
+`archive-2026-10/frames-15ft-2026-10-30.log.gz`,
+counting only frames where W3YA-1 was the first hop, so it heard them off air
+directly, it repeated **2,269 frames with a median decoded length of 84 bytes,
+1,139 of them over 82 bytes and 600 over 90**. Decoded length is the
+retransmitted length less 7 bytes where W3YA-1 inserted its own callsign, since
+that address was not in the frame it had to decode.
 
-**Practical consequence: W3YA-1 is unavailable for message downlink, and no
-setting on this end changes that.** A third-party wrapper alone is about 41
+| station | longest frame repeated | frames over 82 bytes |
+|---|---|---|
+| NJ3T-4 | **97** | 622 |
+| WV8MT-4 | 94 | 22 |
+| K3DNA | 91 | 188 |
+| K3ARL-6 | 91 | 1 |
+| WO3T-1 | 88 | 50 |
+| N3KTX-1 | 88 | 14 |
+| W3VLG-14 | 87 | 2 |
+| N3DXC-2 | 85 | 57 |
+| N3SNN-3 | 84 | 396 |
+| **KD3CCO-10** | **75** | **0 of 113** |
+
+**The station's own traffic measures the cliff, and the sweep was not needed.**
+Same tool, `--mine` block, over the Pi's `archive/frames/frames-2026-11-*.log.gz`:
+
+| on-air bytes | sent | repeated by W3YA-1 | rate |
+|---|---|---|---|
+| 75 | 493 | 160 | 32% |
+| 79 | 10 | 0 | 0% |
+| 83 | 4 | 0 | 0% |
+| 91 | 63 | 0 | 0% |
+| 99 to 150 | 61 | 0 | 0% |
+
+0 of 128 over 82 bytes at the 32% beacon rate is 1e-22, but 105 of the 128 are
+the sweep's own frames. **Dropping every sweep length and adding October's 50
+gated frames at 91 bytes leaves 0 of 73 ordinary transmissions over 82 bytes at
+a pooled 31% beacon rate, 2e-12.** The archive alone settles it, which is the
+case for never running the sweep again.
+
+**The matched-length comparison, which is the whole argument in one line.** On
+October 30, at exactly 91 bytes on the air, W3YA-1 repeated **96 frames from
+K3DNA and 1 from K3ARL-6, and 0 of the 50 KD3CCO-10 sent**. Same digipeater,
+same day, same length.
+
+**Height is not the knob.** October ran on the 15 ft mount, November with the
+mast up. W3YA-1's own behavior is identical, median 84 bytes and max 97 in both,
+and so is the outcome: 178 frames over 82 bytes from this station across the two
+captures, 0 repeated.
+
+**The 79-byte row is the open edge.** 0 of 10 is p = 0.02, which puts the cliff
+below 83 rather than at it. Do not write that down as established; 10 frames do
+not settle a rate.
+
+**The gated length is 91 to 150 bytes, not "about 120".** It varies with the
+message text. The selftest frame is 91 bytes, which is why 91 carries the most
+ordinary-traffic evidence.
+
+`digi_length_profile.py` recomputes all of this from any Direwolf text log, with
+`--digi` naming the digipeater and `--mine` the own callsign that is always
+reported. It reads `archive/frames/frames-*.log.gz` or `run/direwolf.log`, not
+`LOG_DIR`, whose dated CSV carries no digipeater path.
+
+So the cliff is a property of this station's signal at W3YA-1, not of W3YA-1's
+configuration. The 9 stations that get long frames through are fixed digipeater
+sites, which is what a margin explanation predicts.
+
+**W3YA-1 is a Kantronics KPC-3, and K3DNA is the matched control (2026-11-08).**
+Both send with tocall `APN391`; the aprs.org tocall registry maps `APN3xx` to
+Kantronics KPC-3 ROM versions, and aprs.fi lists W3YA-1's device as a KPC-3. An
+identical tocall means the same model and ROM. **K3DNA repeated 12 of the same
+50 gated 91-byte frames that W3YA-1 took 0 of**, so identical hardware gave the
+opposite result on the same day from the same transmitter. A device explanation
+is therefore dead along with a configuration one.
+
+**The KPC-3 cannot do what a per-type or per-length rule would need.** Its UI
+digipeat parameters are `DIGIPEAT`, `MYCALL`, `MYALIAS`, `UIDIGI`, `UIFLOOD`,
+`UITRACE` and `UIDWAIT`, all matching on a call sign or alias in the AX.25
+address field. `PACLEN` (0 to 255) cuts data arriving from the serial port and
+does not touch repeated frames. `BUDLIST`/`SUPLIST` select terminal monitoring
+only. Nothing reads the information field, so the TNC cannot know a frame's APRS
+data type, and nothing rejects a frame by length. Confirmed in the KPC-3 Plus
+v8.2 user guide. The data agree: on 2026-10-30 W3YA-1 repeated frames over 82
+bytes in **11 APRS data types**, including 320 status reports to 96 bytes (the
+sweep's type) and 24 third-party frames to 90 bytes (a gated message's type).
+
+**Three surviving explanations, all of them unreachable from this end:** receive
+audio level into that TNC; site noise and co-channel traffic at a 2065 ft ridge;
+and a marginal signal from this station at that receiver, since 29% of 75-byte
+beacons in October and 32% in November is poor in absolute terms for 5.4 miles
+to a mountaintop.
+
+**A transmit fault is not a candidate, structurally.** Anything wrong at this
+end reaches every receiver identically, so it cannot single out one digipeater.
+A corruption-type fault would also cost every receiver the same frames, and it
+does not: in the sweep KE4MHE-10 went 21 of 34 at 75 bytes to 13 of 26 at 83
+through 131 (62% to 50%, not a real difference at that sample), WO3T-1 15 of 34
+to 7 of 26 (44% to 27%, in the range frame duration predicts from collisions).
+**Deviation was already measured at 2.8 kHz on 2026-10-03** (see the Carson's
+rule entry above); do not write that it is unmeasured. Raising power remains
+worth doing as a margin test, not as a fault test.
+
+**The sharpness needs no separate explanation now.** Fitting an independent
+per-bit error rate to 56% at 75 bytes predicts 53% at 83 bytes, so 0 of 26 is
+not a simple bit-error-rate effect (p ~ 3e-9). Independent bit errors are the
+wrong model for a hardware modem that recovers its bit clock in a DPLL and
+corrects nothing.
+
+**Practical consequence: W3YA-1 is unavailable for message downlink at the
+power and antenna of that run.** "No setting on this end changes that" was the
+2026-11-07 wording and does not survive the archive check above: if the cause
+is margin, power, antenna and transmit audio are all in play, and the HIGH
+power arm is still unmeasured. A third-party wrapper alone is about 41
 bytes, so even a one-character gated message runs about 75 bytes with a one-hop
 path and 82 with two. Shortening `TX_VIA` buys 7 bytes, nowhere near enough for
 real message text. The downlink has to rely on WO3T-1, KE4MHE-10 and direct
@@ -715,20 +823,22 @@ scripts now print a pooled block; read that first.
 to transmit (`[0L] KD3CCO-10>APDW17,WIDE1-1:>LT C001 b075` confirmed in the
 log). The full sweep was **stopped early on purpose**: at 4 frames a minute it
 adds real congestion to 144.390, and that cost is not worth paying for a
-question the station's own traffic can mostly answer. Use it only when the
-cheaper route below is exhausted, and prefer `--cycle-seconds 300` and two or
-three lengths over the defaults.
+question the station's own traffic answers outright. **Do not run it again for
+this question.** `digi_length_profile.py` over the archive gives a larger sample
+at zero channel cost, which is recorded above. If some later question does need
+it, prefer `--cycle-seconds 300` and two or three lengths over the defaults.
 
 **The smoke test's one data point:** a 75-byte control frame was repeated by
 W3YA-1, WO3T-1 **and** KE4MHE-10; the 131-byte test frame by none of them. One
-sample each, so it is a hint, not a result. If it holds, every digipeater has
-its own length cliff set by its own margin to this station, W3YA-1's falling
-below the 120-byte gated length and the other two above it, and the cause is
-this station's transmit chain rather than W3YA-1's configuration.
+sample each, so it is a hint, not a result. The archive has since confirmed the
+shape it suggested: every digipeater has its own length cliff set by its own
+margin to this station, W3YA-1's falling below the gated length and the other
+two above it, and the cause is on this station's side rather than in W3YA-1's
+configuration.
 
-**The LOW3 arm is already measured, for free.** The November window holds 28
-gated transmissions with zero W3YA-1 echoes against 18 beacon echoes, all at
-the power the radio was already set to. So only the HIGH arm is missing, and
+**The LOW3 arm is already measured, for free.** The November archive holds 128
+transmissions over 82 bytes with zero W3YA-1 echoes against 160 of 493 beacons
+repeated, all at the power the radio was already set to. So only the HIGH arm is missing, and
 `./deploy_igate.sh selftest` produces exactly one gated RF frame at the real
 length per invocation. Ten or fifteen of those at HIGH is the whole remaining
 experiment, against 28 already banked at LOW3, and it adds about a dozen frames
@@ -821,6 +931,48 @@ grep -c '}.*}.*}' /opt/aprs-igate/run/direwolf.log
 a message appearing once in `what=msg` was acknowledged and one appearing six
 times was not. Note that SMS-gateway message bodies carry phone numbers;
 redact before writing output anywhere.
+
+### Frames in the archive are chunks, not days (2026-11-08)
+
+**`archive/frames/frames-YYYY-MM-DD-<hash>.log.gz` is named for the day the
+archiver first saw the chunk, not the day it covers.** `igate-archive.sh`
+copies logrotate generations deduplicated by content; its own comment says
+"whatever day it was first seen on". A chunk is 8 MB of text log, which at this
+station takes about a day and a half to fill, so five files named 11-01 to
+11-08 covered roughly 10-30 to 11-08. **A day with no file is a day no chunk
+finished, not a day with no data.** 11-03 and 11-07 have no file and are
+ordinary days of 9,420 and 9,047 packets.
+
+**For anything per-day, use `logs/YYYY-MM-DD.log`**, Direwolf's dated CSV,
+named with `gmtime_r` and therefore genuinely one UTC day. It has no
+digipeater path column, so it cannot do length work, but it is the right
+record for outages and daily counts:
+
+```
+cd ~/aprs-igate && for f in logs/*.log; do printf '%s  %6d rows\n' \
+  "$(basename "$f" .log)" "$(( $(wc -l < "$f") - 1 ))"; done
+```
+
+**Transmit lines are logged whether or not RF left the antenna.** Direwolf
+prints `[0L]` for a queued frame with the radio off or the antenna down, so
+frames from an outage inflate the denominator of any rate computed over that
+window. **2026-11-06 is the known outage**, 1,913 packets against a 9,047
+median. Exclude it with `digi_length_profile.py --since/--until` rather than
+leaving it in: it moves W3YA-1's beacon rate from 32% to about 36%.
+
+**Since 2026-11-08 the text log is timestamped.** Both direwolf invocations,
+`deploy_igate.sh` bare-metal and `entrypoint.sh` container, pass
+`-T "%Y-%m-%dT%H:%M:%S%z"`. Direwolf puts the stamp **inside** the existing
+bracket, on received and transmitted frames alike: `[0.3 2026-11-08T21:56:02-0500]`
+and `[0L 2026-11-08T21:56:02-0500]`. It uses `localtime_r` while the daily CSV
+uses `gmtime_r`, which is why `%z` is not optional. **Any new parser of this
+log must accept the timestamp**; `digi_length_profile.py` and
+`linktest_report.py` were updated in the same commit and still read older
+undated logs, reporting how many lines were undated.
+
+**`rotate 2` plus a once-daily archiver tolerates at most two new chunks per
+day.** Safe at current traffic, where a chunk takes a day and a half. If
+traffic triples, chunks will age out before the archiver sees them.
 
 ### The log holds about eight days, not the uptime
 

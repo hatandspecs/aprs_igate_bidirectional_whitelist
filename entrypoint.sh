@@ -71,4 +71,11 @@ esac
 #
 # NOTE: it is "-d i", not "-d g". "-d g" is the GPS debug flag
 # (direwolf.c:222) and does nothing useful here.
-exec stdbuf -oL -eL direwolf -c /etc/direwolf/direwolf.conf -t 0 -d i
+#
+# -T timestamps every logged frame inside the existing bracket, received and
+# transmitted: "[0.3 2026-11-08T21:56:02-0500]". %z is mandatory because
+# direwolf formats this with localtime_r while LOG_DIR's daily CSV is named
+# with gmtime_r. Keep this identical to the bare-metal invocation in
+# deploy_igate.sh, or the two deployments produce logs that parse differently.
+exec stdbuf -oL -eL direwolf -c /etc/direwolf/direwolf.conf -t 0 -d i \
+  -T "%Y-%m-%dT%H:%M:%S%z"

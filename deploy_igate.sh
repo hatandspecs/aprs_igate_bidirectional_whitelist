@@ -1858,8 +1858,18 @@ _bare_up() {
   # block-buffered so `monitor` lags behind reality.
   # `-l` is read into an array so an unset LOG_DIR contributes no argument at
   # all rather than an empty string, which direwolf would take as a directory.
+  #
+  # -T timestamps every logged frame, received and transmitted, INSIDE the
+  # existing bracket: "[0.3 2026-11-08T21:56:02-0500]" and
+  # "[0L 2026-11-08T21:56:02-0500]". Without it the text log carries no time at
+  # all, so an archived chunk cannot be dated and an outage cannot be excluded
+  # from a rate. Direwolf formats this with localtime_r, while LOG_DIR's daily
+  # CSV is named with gmtime_r, so %z is mandatory: it is the only thing that
+  # ties the two together. Any parser of this log must accept the timestamp --
+  # digi_length_profile.py and linktest_report.py already do.
   local -a logflag=(); mapfile -t logflag < <(build_logdir_flag)
-  nohup stdbuf -oL -eL direwolf -c "$RENDERED_CONF" -t 0 -d i "${logflag[@]}" >> "$BARE_LOG" 2>&1 &
+  nohup stdbuf -oL -eL direwolf -c "$RENDERED_CONF" -t 0 -d i \
+    -T "%Y-%m-%dT%H:%M:%S%z" "${logflag[@]}" >> "$BARE_LOG" 2>&1 &
   echo $! > "$BARE_DIREWOLF_PID"
   sleep 1
 
