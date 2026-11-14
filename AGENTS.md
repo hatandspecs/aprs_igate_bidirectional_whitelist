@@ -1017,6 +1017,52 @@ window. **2026-11-06 is the known outage**, 1,913 packets against a 9,047
 median. Exclude it with `digi_length_profile.py --since/--until` rather than
 leaving it in: it moves W3YA-1's beacon rate from 32% to about 36%.
 
+**The clean rate is 55%, not 32%, and the 32% is not simply the 55% with the
+outages left in (2026-11-13).** W3YA-1 repeats **55%** of this station's 75-byte
+beacons over the clean stretch, which agrees with the **56%** the sweep's own
+controls measured in a 15-minute window with the mast up. Two independent
+measurements in the same era landing within a point of each other is what makes
+55% the figure to quote. **29%, 32% and 36% are superseded and should not be
+used**, including where they still appear in the entries above and in
+`aprs-downlink-paths-2026-11.md`, which has 29% and 32% in its "what is left"
+section. The direction matters: a higher control rate makes the long-frame
+absence *more* improbable, not less. Against 55%, the 23 consecutive misses on
+ordinary (non-sweep) frames over 82 bytes come out at about 8.5e-9, roughly one
+in a hundred million.
+
+**Do not describe the correction as "the month minus the radio-off windows." The
+arithmetic rules that out.** The recorded base is 160 repeats of 493 beacons,
+32.5%. November's four no-RF windows total about 23 h, which is roughly 47
+queued `[0L]` beacons at one beacon per 30 minutes, and removing only those
+gives 160/446 = **35.9%**. Reaching 55% with the numerator fixed needs the
+denominator down to 291, so about **202 beacons excluded, 41% of the month**.
+That can only come from also dropping the 2026-10-30 to 11-05 stretch, where the
+mast was slipping and then on the ground and beacons went out from a degraded
+antenna. **So 55% is the rate over the post-rebuild era, not the whole month with
+holes punched out**, which is also why it matches a sweep control taken in that
+same era.
+
+**This composition is inferred from the counts, not read off the run that
+produced 55%.** That run came from a pasted Pi session and its exact `--since`
+bounds are not recorded here. **Re-derive it from
+`archive/frames/frames-2026-11-*.log.gz` before quoting 55% in anything new**,
+and write the bounds down when doing so.
+
+**The four windows with no RF path** are 2026-11-01 14:30-14:45 UTC (15 m),
+2026-11-05 19:46-22:12 UTC (mast on the ground, 2 h 26 m), 2026-11-05 22:12 to
+2026-11-06 18:00 UTC (19 h 48 m), and 2026-11-13 17:31-18:23 UTC (52 m, the
+stop-collar fitting). The full table with the reasons is `OPERATIONS.md`,
+"Data-quality windows at a glance". **Size the correction to the hole**: the
+19 h 48 m one is worth excising and the 52 m one puts about 2 phantom beacons in
+and is not.
+
+**Two traps in the exclusion itself.** `--since/--until` *selects* a window
+rather than excluding one, so passing an outage's own edges keeps the outage and
+discards the month; a hole in the middle of a UTC day therefore needs two runs
+pooled by hand, or the whole UTC day dropped. And `parse_bound` accepts only
+`%Y-%m-%d`, `%Y-%m-%dT%H:%M:%S` and `%Y-%m-%dT%H:%M:%S%z`, so a bound written
+without seconds is rejected rather than rounded.
+
 **Since 2026-11-08 the text log is timestamped.** Both direwolf invocations,
 `deploy_igate.sh` bare-metal and `entrypoint.sh` container, pass
 `-T "%Y-%m-%dT%H:%M:%S%z"`. Direwolf puts the stamp **inside** the existing
@@ -1498,12 +1544,16 @@ two-ray figure and the whole November-against-October comparison rest on it.
 this is ground-level work. It blocks the only clean twenty-eight-foot month
 there will be, and it costs minutes of data.
 
-  **It is all one job, and it is already scheduled.** The pole comes down in
-  the next few days to be measured for stop collars (`OPERATIONS.md`), and that
-  is the only time it will be in hand. Count the segments and write the erected
-  height down, measure the joint diameters against the derived table, and put a
-  paint or tape **witness mark** on each section at the
-  rim of the one below it. The witness mark is the cheapest item on that list
+  **The takedown happened on 2026-11-13 and this did not get done.** The pole
+  came down, the collars were fitted and the mast went back up
+  (`OPERATIONS.md`), but the segments were not counted, the erected height was
+  not written down and no witness marks were painted. So the erected height is
+  still an estimate and still load-bearing, and all of this needs another
+  takedown. When that happens: count the segments, write the erected height
+  down, and put a paint or tape **witness mark** on each section at the
+  rim of the one below it. **Not joint diameters.** The per-joint diameter table
+  was deleted on 2026-11-13 because the pads are wrapped on the mast rather than
+  cut to a measurement; do not reinstate measuring the joints as a task. The witness mark is the cheapest item on that list
   and the one that would have caught both failures days early, by turning "has
   a joint crept?" into a question answerable from the ground. **Also check the 2026-11-01 journal for a failed `igate-selftest` between
 14:30 and 14:45 UTC** -- the journal is persistent, and a failure in that

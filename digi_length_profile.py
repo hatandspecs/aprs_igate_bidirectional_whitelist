@@ -237,6 +237,10 @@ def main():
                     parse_bound(args.until, True) if args.until else None)
 
     if args.log == ["-"]:
+        # Direwolf logs are ISO-8859, not UTF-8: a degree sign or a corrupted
+        # byte in a comment field kills the default stdin decoder. The file
+        # path below already opens latin-1, so match it here.
+        sys.stdin.reconfigure(encoding="latin-1")
         streams = [sys.stdin]
     else:
         streams = [open(f, encoding="latin-1") for f in args.log]

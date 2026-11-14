@@ -67,12 +67,59 @@ What to exclude, and why, before comparing anything to anything.
 | 2026-10-30 – 2026-11-05 | Nominally ~28 ft, **at least one section slipping** | Two joints let go inside this window. The height is unverified and may have crept downward through it |
 | 2026-11-05 19:46 – 22:12 UTC | **Mast down**, antenna at ground level | 2 h 26 m. rx -89%, transmit reach zero |
 | 2026-11-05 22:12 – 2026-11-06 18:00 UTC | Radio powered off, station off air | 19 h 48 m. No data of any kind |
-| 2026-11-06 18:00 UTC onward | Back on air, angle-iron base stake | New baseline starts here. **Height not yet confirmed** |
+| 2026-11-06 18:00 – 2026-11-13 17:31 UTC | Back on air, angle-iron base stake, **joints partly retained** | 6 d 23 h 31 m. Some stop collars were already fitted during this stretch; how many and on what date is not recorded |
+| **2026-11-13 17:31 – 18:23 UTC** | **Radio powered off, Pi running, mast lowered and the collar set completed** | **52 m. No RF in either direction. Small enough to ignore in practice, recorded because an unwritten edge is worse than a small one** |
+| 2026-11-13 18:23 UTC onward | Back on air, all 13 stop collars fitted | Current baseline. **Height still not confirmed** |
 
-**Expected, mid-November:** a short planned outage when the pole comes down to
-be measured and fitted with stop collars. Minutes, not hours. Record its start
-and end like any other window -- a planned hole with written edges costs
-nothing, and an unrecorded one contaminates everything either side of it.
+**That planned outage happened on 2026-11-13 and it was 52 minutes, as
+predicted here.** Radio off 12:31 EST, back on 13:23 EST. **The whole cycle fits
+inside that**: lowering the mast, wrapping and cutting the rubber, fabricating
+the collars, fitting them, raising, sweeping. Nothing was prepared on another
+day. It is the shortest recorded hole in November and the cleanest, because both
+edges are operator-recorded rather than inferred from a degradation curve.
+
+**Compensating November analysis for it, which is barely necessary.** The radio
+was off and the Pi was up, which is the contaminating combination: Direwolf
+prints `[0L]` for every frame it queues with no RF path. But at one beacon per
+30 minutes, 52 minutes is about **2 queued beacons that never left the
+antenna**, against 493 sent in the month. That is below the point where it moves
+any rate, so the guidance is to record the window and not bother excising it.
+
+**Size the correction to the hole.** Excising 2026-11-05 to 11-06, at 19 h 48 m
+and roughly 40 phantom beacons, moves W3YA-1's 75-byte beacon rate from 32.5% to
+about 36%. Excising this one moves it by a fraction of a point. **Neither
+accounts for the clean 55% figure**, which needs about 202 beacons out of the
+month's 493 removed and therefore also drops the 2026-10-30 to 11-05 stretch
+where the mast was slipping and then down. See AGENTS.md, "The clean rate is
+55%, not 32%", which has that arithmetic and the warning not to quote 55% as
+"the month minus the outages".
+
+**If a mid-day hole ever does need excising, the obvious command is wrong.**
+`--since/--until` *selects* a window rather than excluding one:
+`digi_length_profile.py` skips frames before `--since` and at or after
+`--until`, so passing the outage's own edges keeps the outage and discards the
+month. A hole in the middle of a UTC day takes one of these instead:
+
+1. **Two runs, pooled by hand.** `--until 2026-11-13T17:31:00` for everything
+   before the hole, `--since 2026-11-13T18:23:00` for everything after, and add
+   the counts. This keeps all 23 h of good data from that day.
+2. **Drop the UTC day**, by leaving `frames-2026-11-13.log.gz` out of the file
+   list. For a 52-minute hole that discards 23 hours to save 2 beacons, so it
+   is the wrong trade here and was the right one on 2026-11-06.
+
+Note the seconds. `parse_bound` accepts `%Y-%m-%d`, `%Y-%m-%dT%H:%M:%S` and
+`%Y-%m-%dT%H:%M:%S%z`, so a bare `2026-11-13T05:31` is rejected outright rather
+than rounded.
+
+**The window edges are checkable against the log and should be checked.** The
+times above are from the operator's own note, not from the data, so they are
+subject to a misremembered hour in a way the log is not. The dated packet log
+carries a `utime` per packet and the console log is timestamped since 2026-11-08,
+so the last decode before the hole and the first after it bracket the real
+window. If the log's edges disagree with 17:31 and 18:23 UTC, **the log wins**
+and this entry should be corrected to match it. The 12:31 figure was first
+written down as 12:31 am and corrected to 12:31 pm the same day, which is
+exactly the misremembered-hour failure this paragraph exists for.
 
 **November is not a clean month, but every edge in it is now known to the
 minute.** A contaminated window with a hard start and a hard end is excisable;
@@ -88,82 +135,67 @@ The mast is a **Spiderbeam 10 m "mini"** fiberglass telescoping pole, catalog
 0.72 m collapsed, 2.22 kg, wall tapering 1.4 mm at the bottom to 0.7 mm at the
 top.
 
-### Joint retention: stop collars, not friction grips
+### Joint retention: stop collars at the rim
 
 The decision that matters, taken 2026-11-06 after two taped joints failed.
 
 A clamp belongs on the **inner (upper) section, snug against the rim of the
-outer one**. It cannot travel down, because the inner section thickens
-downward, so any descent requires the clamp to open, and the rim blocks it in
-any case. The load path is compression into the rim and **no friction is
-involved**.
+outer one**. The rim takes the load.
 
-The instinctive alternative — clamping the outer section's top lip to squeeze
-it onto the inner one — is wrong twice over: it is a friction grip, which is
-the mechanism that has already failed twice, and it puts hoop stress on a
-0.7 to 1.4 mm fiberglass wall, where a split is a scrap pole.
+**It is friction that holds the collar on the section, and the taper works
+against it (corrected 2026-11-13).** Earlier versions of this entry, and of both
+articles, said the load path was compression into the rim with no friction
+involved. That is wrong. If the collar slips it slips *upward*, toward
+decreasing diameter, so the band gets looser as it goes and a collar that starts
+to migrate keeps getting looser. The same entries then said a stop collar "only
+has to resist migrating up a 1 to 3 degree taper", which contradicts the
+no-friction claim outright. **Do not restore it.**
 
-**This is why a hand-snug finger key is sufficient and not a compromise.** A
-stop collar only has to resist migrating *up* a 1 to 3 degree taper. It needs
-a few pounds of grip, not torque, and the inability to over-tighten a 0.7 mm
-wall by hand is a feature. A clamp at a joint also stops a guy ring from
-creeping down the taper past it.
+The practical consequences, which are all this needs:
 
-### Joint diameters
+- **A hand-snug finger key on a rubber pad is enough.** The load is small and
+  rubber on epoxy grips far better than steel would, and the inability to
+  over-tighten a 0.7 mm wall by hand is a feature.
+- **Check the collars rather than trusting them.** Because migration is a
+  runaway rather than self-arresting, a witness mark at each rim is the cheap
+  instrument, not more torque.
+- **Clamping the outer section's top lip instead is the wrong orientation.** It
+  adds no mechanical stop, so it is the same squeeze-and-hope that failed twice,
+  and it puts hoop stress on a 0.7 to 1.4 mm wall where a split is a scrap pole.
+- A clamp at a joint also stops a guy ring from creeping down the taper past it.
 
-**Derived, not measured.** Spiderbeam publishes only the 60 mm base and the
-6 mm tip, so the OD column is a linear interpolation across 16 joints at
-3.375 mm per joint. Fill in the measured column with calipers before ordering
-replacements; production variation is called out by the retailers themselves.
+### How many clamps, and roughly what size
 
-Joint 1 is the lowest, between segments 1 and 2. The clamped column adds 3.2 mm
-for one layer of 1/16 in EPDM on each side.
+Thirteen joints carry load on the erected mast and that is how many collars were
+built. They run from roughly 57 mm at joint 1, the lowest, down to 16 mm at
+joint 13, which is the range the clamps have to cover. Joints 14 to 16 are left
+unclamped: the wall is down to 0.7 mm there and those segments weigh almost
+nothing.
 
-| Joint | Derived OD | Clamped, with 1/16 in EPDM | Measured OD | Clamp fitted |
-|---|---|---|---|---|
-| 1 | 57 mm | 60 mm | | |
-| 2 | 53 mm | 57 mm | | |
-| 3 | 50 mm | 53 mm | | |
-| 4 | 47 mm | 50 mm | | |
-| 5 | 43 mm | 46 mm | | |
-| 6 | 40 mm | 43 mm | | |
-| 7 | 36 mm | 40 mm | | |
-| 8 | 33 mm | 36 mm | | |
-| 9 | 30 mm | 33 mm | | |
-| 10 | 26 mm | 29 mm | | |
-| 11 | 23 mm | 26 mm | | |
-| 12 | 20 mm | 23 mm | | |
-| 13 | 16 mm | 19 mm | | |
-| 14–16 | 13 mm and below | — | | not clamped |
+That range is all the sizing information this job needs. **There is no table of
+per-joint diameters here any more, and one should not be added** (removed
+2026-11-13, along with its blank `Measured OD` and `Clamp fitted` columns). The
+pads are not sized from a number, so the number was never used.
 
-Thirteen joints carry load on the erected mast, spanning roughly 19 to 60 mm
-clamped. Joints above 13 are left unclamped: the wall is down to 0.7 mm there
-and those segments weigh almost nothing. Number the clamps to their joints —
-every one is a different size, and re-erection should not require re-measuring.
+Number the clamps to their joints. Every one is a different size, and
+re-erection should not require sorting them out again.
 
 ### Building the padded stop collars
 
-Heat shrink is part of the clamp assembly, not something applied to the pole.
-Each collar is built on the bench: a strip of 1/16 in EPDM inside the band, and
-heat shrink over the band to capture it. The finished part is one reusable
-piece with no loose pad to drop in the grass, and the shrink covers the band
-edges so no steel touches fiberglass anywhere.
+**Wrap the rubber around the mast at the position it is going to sit, cut it
+there, and number it. Cut heat shrink to fit, leaving a gap under the worm
+housing so the band can still feed. Heat gun. Done.**
 
-**The pole comes down and goes back up in a few minutes.** Measuring the
-joints, marking the sections and fitting the collars are all ground-level work
-on a lowered pole -- no ladder is involved in any of it. It also means lowering
-the mast ahead of a forecast is a realistic option rather than a theoretical
-one, and that a planned outage for mast work costs minutes of data, not a day.
+Each collar comes out one reusable piece with no loose pad to drop in the grass,
+and the shrink covers the band edges so no steel touches fiberglass anywhere.
+Nothing about this is difficult or interesting, and it does not need more
+explanation than the paragraph above. It is also Spiderbeam's own recommended
+method for securing the joints, so it is not an invention here.
 
-**This is Spiderbeam's own recommended method for securing the joints, and it
-has been built here before.** It does not need reinventing or explaining; what
-follows is only what bears on sizing and on the record.
-
-- **Keep the shrink off the tail that feeds through the worm housing.** A
-  covered band cannot feed, and the clamp stops adjusting.
-- **Pad and shrink both add to the clamped diameter.** The table above allows
-  3.2 mm for 1/16 in EPDM on each side; add the recovered shrink wall on top of
-  that before picking a clamp size.
+**The pole comes down and goes back up in a few minutes.** Wrapping, marking and
+fitting are all ground-level work on a lowered pole, with no ladder in any of
+it, which is why lowering the mast ahead of a forecast is realistic and why a
+planned outage for mast work costs minutes of data rather than a day.
 
 The collars stay removable on purpose. Radial clearance between nesting
 sections is a few tenths of a millimeter, so anything permanent added to the
@@ -173,6 +205,98 @@ ability wanted on the day a storm is forecast.
 ---
 
 ## The log
+
+### 2026-11-13 — the collar set completed, 13 of them; 52-minute planned outage
+
+**Radio off 12:31 EST (17:31 UTC), back on 13:23 EST (18:23 UTC). 52 minutes off
+the air, by plan, and the hole is in the middle of the 2026-11-13 UTC day.** The
+Pi ran throughout, so about 2 of the day's beacons are queued `[0L]` lines with no
+RF behind them, which is small enough to leave in. See "Data-quality windows at a
+glance" above.
+
+**The set is 13 collars, and 2026-11-13 completed it rather than starting it.**
+Some were already fitted during the 11-06 to 11-13 stretch. **How many, and on
+what date, is not recorded**, so that stretch is "joints partly retained" in the
+window table rather than unretained, and no analysis should treat 11-06 to 11-13
+as a fully taped mast or a fully collared one. Worth reconstructing from the
+photographs if it ever matters.
+
+**52 minutes covered the entire measure-fabricate-fit cycle, and that is the
+operational finding.** Nothing was pre-built on another day. The time came from
+planning each move before the radio went off, which is why this log's original
+"minutes, not hours" prediction held for a session that included fabrication.
+**Plan the sequence, not the parts**: the pole is down for the duration either
+way, so the saving is in not deciding anything while it is down.
+
+**Work done inside the window:** mast lowered, rubber wrapped at each position
+and cut there, collars fabricated, collars fitted on the inner section against
+the rim of the outer one, mast raised, 2 m sweep taken, radio reconnected and
+powered on. **Thirteen collars now in total**, each a key-type worm clamp with a
+rubber strip inside the band and heat shrink over the band, numbered to its
+joint.
+
+The two key colors in the photographs are the two band-size ranges the taper
+needs, blue on the low large-diameter joints and yellow on the high small ones,
+with the joint number inked on each key.
+
+**The pads were sized by wrapping, not measuring.** A strip of rubber wrapped
+around the mast at the position it was going to sit, cut there, numbered; heat
+shrink cut to fit with a gap under the worm housing; heat gun. No calipers, and
+the old per-joint diameter table was not used, so it has been deleted. Nothing
+here is outstanding work.
+
+**Not done, although the pole was in hand:** segment count, erected height, and
+witness marks at each rim. Those three were queued against exactly this takedown
+and all three were missed, so the erected height is still "about twenty-eight
+feet" by estimate and still carrying the two-ray figure and the
+November-against-October comparison. They need another takedown.
+
+**SWR after the work, at the station end, four markers over 144 to 148 MHz:**
+
+| Frequency | R | X | SWR |
+|---|---|---|---|
+| 144.000 MHz | 36.1 Ω | −17.4 Ω | 1.68 |
+| 145.413 MHz | 28.6 Ω | −2.2 Ω | 1.75 |
+| 146.787 MHz | 32.1 Ω | +19.9 Ω | 1.93 |
+| 148.000 MHz | 58.4 Ω | +44.2 Ω | 2.25 |
+
+All four displayed SWR values reproduce from the R and X on the same screen, so
+the instrument is at least self-consistent. Interpolated to 144.390 MHz: R 34 Ω,
+X −13 Ω, SWR 1.64.
+
+**The match is resistance-limited, not reactance-limited.** Reactance crosses
+zero at 145.55 MHz and R there is 28.9 Ω, which is a 1.73 mismatch on its own.
+Trimming an element would move the crossing frequency and leave the depth of the
+minimum alone, so this is a matching question at the slim jim's stub tap and not
+a length question. **Do not log a future "retune" against this number.**
+
+**Unresolved: 2026-10-30 recorded "SWR under 1.3" and this reads 1.70.** Three
+candidates, not separated by one sweep. The reference plane, since 50 ft of
+RG-8X at 146 MHz puts 3.6 dB on the reflection and a reading at the feedpoint is
+not a reading at the station end. The instrument, since the October figure is
+not sourced to a VNA in this log. And the collars themselves, since the slim jim
+is taped along the mast and the upper bands are steel within a few millimeters of
+a radiating element. **The resonant-parasitic version of that third one is
+dead:** at 146 MHz a resonant loop needs 654 mm across and the largest collar is
+57 mm, one eleventh of a wavelength in circumference. Local capacitance is the
+mechanism left. Whichever it is, the whole 1.30-to-2.29 span across both planes
+is 0.07 dB to 0.73 dB of mismatch loss, which this station cannot resolve in
+packet counts.
+
+**The test that separates them, unrun:** with the pole down, sweep untouched,
+sweep again with the top three or four collars off, refit and sweep a third
+time. Ground-level work, no ladder. Pair it with the takedown that still owes
+segment count, height and witness marks.
+
+**The collars are untested by weather.** The 2026-11-05 failure took a 24 mph
+gust on top of two prior joint slips. A collar fitted in still air is not yet
+evidence of anything.
+
+**Off-station: the W3YA-1 administrator was told about the frame-length
+behavior** and finds it unexpected, and is looking at it from the site end. That
+matters because two of the three surviving explanations, the receive audio level
+into that TNC and co-channel noise at the ridge site, are not observable from
+this yard at all.
 
 ### 2026-11-06 — back on the air at 13:00 EST; the tape is the root cause
 
@@ -217,16 +341,28 @@ semi-permanent deployment**.
 wooden one. That hardens step 4, where angle iron resists the bending moment
 that broke the wooden stake.
 
-**Open:** steps 1 and 2 are still as they were. The fix is padded hose clamps
-with finger keys at each load-bearing joint, acting as positive stops rather
-than friction grips. **Key-type clamps, EPDM rubber and heat shrink ordered
-2026-11-06; fitting deferred a few days**, until the pole comes down to be
-measured. That takedown is the moment to close every open measurement at once
--- joint diameters, segment count and erected height, witness marks --
-because it is the only time the pole will be in hand. The sizing table, the orientation rule and why the heat shrink
-stays off the joints are in "Station reference -- the 10 m mast and its joints"
-above. Until the clamps are on, this is the same mast that has dropped a
-section twice.
+**Fixed 2026-11-13:** the padded stop collars are built and fitted. Radio off
+00:31, mast lowered and joints measured, collars built on the bench, fitted,
+mast raised, swept, radio back on 13:23. Each collar is a key-type worm clamp
+with a rubber strip inside the band and heat shrink over the band to capture it,
+numbered in marker to the joint it was measured for, and fitted **on the inner
+section against the rim of the outer one** as a positive stop. That hardens
+steps 1 and 2. The sizing table, the orientation rule and why the heat shrink
+stays off the tail are in "Station reference -- the 10 m mast and its joints"
+above.
+
+**Still open after that takedown.** The pole was in hand and three of the
+measurements queued against that moment were *not* taken: **segment count,
+erected height, and witness marks**. The erected height is still "about
+twenty-eight feet" by estimate, and the two-ray figure and the whole
+November-against-October comparison still rest on it. The witness mark remains
+the cheapest unclosed item and the one that would have caught both failures
+days early. Expect to need another takedown for them, and do not record this
+one as having closed them.
+
+**The collars are untested by weather.** The November 5 failure took a 24 mph
+gust on top of two prior joint slips. Nothing about a collar fitted in still air
+is evidence yet.
 
 **Spot check, 13:05-13:15 EST (18:05-18:15 UTC).** 46 RF receptions in
 9 m 32 s from 26 distinct sources, essentially all gated. That is **24.1
