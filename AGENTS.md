@@ -874,6 +874,119 @@ It needs 6 informative cycles per length and got 1 to 4, so it reported
 "undecided" everywhere while the pooled numbers were already decisive. Both
 scripts now print a pooled block; read that first.
 
+### The HIGH arm is measured and the 79-byte edge is closed (2026-11-14)
+
+**The HIGH power arm the 2026-11-08 entry asked for is done, and it is a null.**
+The radio is an FT-2900R and the two settings are Low3 and High, **30 W and
+75 W, a 4.0 dB step**, not 5 W and 75 W. Above the cliff, meaning 86 on-air bytes and up:
+0 of 24 at 30 W and 0 of 18 at 75 W. Below it: 15 of 29 at 30 W against 3 of 12
+at 75 W, one-tailed
+Fisher p = 0.11, which is no change in either direction. High is the radio's
+maximum, so no larger power step exists at this station. This sits beside the
+8 dB step in 2026-09 that also bought nothing measurable.
+
+**The 79-byte edge is closed, and it went the other way.** The old reading was
+0 of 10 at 79 bytes, flagged here as not established. New numbers, all on-air:
+**81 bytes 4 of 9, 82 bytes 6 of 15, 86 bytes 0 of 12.** 81 and 82 are
+repeated, so the cliff sits **between 82 and 86 on-air bytes**, not below 83.
+The old 0 of 10 at 79 was a fluke and the warning against writing it down was
+right.
+
+**New control: W3YA-1 answers its own callsign.** Every earlier run used
+`WIDE1-1`. With `TX_VIA = W3YA-1`, frames below the threshold were repeated
+16 of 35. That removes an alias-only digipeat configuration, which nothing had
+tested.
+
+**New control: the information field is not what is counted.** Holding the
+information field at exactly 55 bytes and changing only the digipeater count,
+which costs 7 bytes of address field and nothing in the field itself:
+
+| Information field | Digipeaters | On-air bytes | Repeated |
+|---|---|---|---|
+| 55 | 1 | 82 | 4 of 9 |
+| 55 | 2 | 89 | 0 of 10 |
+
+Same message, same message length, 7 more header bytes, and it stops. So the
+whole frame is the variable. At 1200 baud that is also airtime, and the two
+cannot be separated from this end.
+
+**Every figure in this entry is an on-air length**, the arithmetic
+`digi_length_profile.py` and `linktest_sweep.py` already use: 7 per address,
+control, PID, information, flag, FCS, flag. `w3ya_length_sweep.py` counted
+2 bytes less until 2026-11-14, so any figure taken off that tool before then is
+low by 2 and does not line up with the tables above.
+
+**Do not ask W3YA-1's manager about `PACLEN`.** This session drafted that email
+before reading this file, and it is wrong twice over for reasons already
+recorded above: `PACLEN` cuts data arriving from the serial port and does not
+touch repeated frames, and W3YA-1 demonstrably repeats 84 to 97 byte frames
+from nine other stations, including K3DNA which is another KPC-3 on the same
+`APN391` tocall and took 12 of the same 50 frames W3YA-1 took 0 of. A
+configuration or device cause is dead. The three surviving explanations are the
+ones listed above: receive audio into that TNC, site noise at the ridge, and
+this station's margin at that receiver.
+
+**The sweep was re-run against the instruction below, and cost about 141 frames
+over three hours.** It produced the three controls above, which the archive
+cannot produce because the archive holds no callsign-path frames and no
+matched-information-field pairs. It produced nothing about the cause. The
+instruction stands: read this file before transmitting.
+
+### Direwolf's -T timestamp broke twelve log-parsing sites (regression 2026-11-08, found 2026-11-14)
+
+Commit `6073541` added `-T "%Y-%m-%dT%H:%M:%S%z"`, which puts the timestamp
+**inside the existing bracket**: `[0L]` became `[0L 2026-11-14T04:31:52-0500]`.
+Everything anchored on `^\[0L\]` or `^\[0\.[0-9]+\]` stopped matching that
+day, and so did every `sed 's/:.*//'`, which then truncated at the timestamp's
+own colon and left no path to parse.
+
+What was silently dead for six days:
+
+- `cmd_selftest` step 3 reported `FAIL at step 3: the gateway had the message
+  and did not transmit it` every four hours, while the log showed the `[0L]`
+  transmission one second after each report.
+- `cmd_selftest` step 4 never fired, so the echo proof was unavailable.
+- `_selftest_repeats` returned no repeater attribution at all.
+- `cmd_monitor` printed no `IS GATED`, `TX LOCAL` or `RF RX` lines, which is
+  the tool the step 3 failure message tells the operator to use.
+- `cmd_reach`'s floor was zero.
+- `heard_spatial.py` parsed zero RX frames from any console log after 11-08.
+
+Fixed in `deploy_igate.sh` (patterns given `[^]]*`; the three attribution
+`sed`s given a leading-bracket strip; monitor's `[0L]` branch given a
+`sub()`-based body extraction in place of `substr($0, 6)`) and in
+`heard_spatial.py`'s `RX_FRAME`. **`test_archive.sh`'s fixtures still emit the
+pre-`-T` format, which is why the test suite passed throughout.** Fix the
+fixtures or the next log format change does this again.
+
+Two more faults surfaced once steps 3 and 4 fired again:
+
+- **Step 5's ack match had no boundary.** `ack${msgid}` with msgid 36 matched a
+  genuine `ack3686` from twelve minutes earlier and reported a delivery that
+  never happened. Now `ack${msgid}([^0-9]|$)`.
+- **Step 4 printed the starred path entry**, which is usually a routing alias
+  after callsign substitution, so it credited `WIDE1` and `WIDE2` with repeats
+  that KE4MHE-10 and WO3T-1 made. Now skips aliases the way
+  `_selftest_repeats` and `cmd_reach` do.
+
+**None of it is deployed or verified.** The fixes are in the working tree with
+`bash -n` clean and nothing more. Deploying `deploy_igate.sh` to the Pi and
+running one `selftest` is the verification, and it has not been done.
+
+### The downlink has at least five transmitting gateways, not one (2026-11-14)
+
+The README's downlink section says "there is no redundancy here" and "only this
+one has these callsigns whitelisted". Both are wrong. Frames addressed to
+KD3CCO-7 were observed being gated to RF independently by **KB2WAC-1, N3TJJ-7,
+N3DXC-2 and N3TJJ-13**, each identifiable by its own callsign before the `*`
+inside the third-party header. Whitelisting is not what another igate needs:
+having heard the addressee is enough.
+
+Also wrong in that section: condition 1, that the gateway "must have heard the
+addressed station on RF recently". This station gated messages to KD3CCO-7
+through six days of that radio being switched off, and gated test frames to
+KD3CCO-9, an SSID it has never heard at all.
+
 ### The length sweep exists, was paused for channel courtesy (2026-11-07)
 
 `linktest_sweep.py` and `linktest_report.py` are built, self-tested and proven
@@ -1553,7 +1666,12 @@ there will be, and it costs minutes of data.
   down, and put a paint or tape **witness mark** on each section at the
   rim of the one below it. **Not joint diameters.** The per-joint diameter table
   was deleted on 2026-11-13 because the pads are wrapped on the mast rather than
-  cut to a measurement; do not reinstate measuring the joints as a task. The witness mark is the cheapest item on that list
+  cut to a measurement; do not reinstate measuring the joints as a task.
+  **The segment count is counted, not derived.** The pole ships with seventeen
+  segments, the three thinnest are not in it, fourteen go up, and fourteen
+  segments meet at thirteen joints, which is why there are thirteen collars.
+  Drafts that described the thin top segments as "left unclamped" were wrong:
+  they are out of the pole. Nothing here was interpolated from the taper. The witness mark is the cheapest item on that list
   and the one that would have caught both failures days early, by turning "has
   a joint crept?" into a question answerable from the ground. **Also check the 2026-11-01 journal for a failed `igate-selftest` between
 14:30 and 14:45 UTC** -- the journal is persistent, and a failure in that

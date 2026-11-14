@@ -51,7 +51,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # counted as a reception -- it is the gateway's own beacons and the traffic it
 # gates down from APRS-IS, and including it put this station's own position
 # into its own coverage map on the first attempt.
-RX_FRAME = re.compile(r'^\[0\.[0-9]+\]\s+([A-Z0-9][A-Z0-9-]*)>([^:]*):(.*)$')
+RX_FRAME = re.compile(r'^\[0\.[0-9]+(?: [^\]]*)?\]\s+([A-Z0-9][A-Z0-9-]*)>([^:]*):(.*)$')
 
 # Direwolf prints its own decoded position under the frame. Reading that rather
 # than hand-parsing the payload gets MIC-E and the compressed formats for free.

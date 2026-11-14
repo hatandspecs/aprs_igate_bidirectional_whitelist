@@ -2201,13 +2201,22 @@ flowchart LR
   G2["W3TM-10"] -. "receive only:<br/>cannot help here" .-> IS
 ```
 
-There is no redundancy here. Only a **transmitting** iGate can put an APRS-IS
-message onto RF, and only this one has these callsigns whitelisted. Everything
+There is less redundancy here than on the uplink, but it is not zero.
+Corrected 2026-11-14: messages addressed to KD3CCO-7 were observed being gated
+to RF independently by KB2WAC-1, N3TJJ-7, N3DXC-2 and N3TJJ-13, each named
+before the `*` inside its own third-party header. Whitelisting is not what
+another gateway needs; having heard the addressee is enough. What remains true
+is that only a **transmitting** iGate can put an APRS-IS message onto RF, and
+that this one is the only one tuned for these callsigns whitelisted. Everything
 depends on one station's transmitter.
 
 Three things must all be true:
 
-1. **The gateway must have heard the addressed station on RF recently.** Dire
+1. **This station does not require having heard the addressee.** Corrected
+   2026-11-14: it gated messages to KD3CCO-7 through six days of that radio
+   being switched off, and gated test frames to KD3CCO-9, an SSID it has never
+   heard at all. The paragraph below describes the standard iGate rule, which
+   is worth knowing for other gateways, and is not what this one does. Dire
    Wolf follows the standard iGate rule of only gating a message down to a
    station it knows is local — otherwise every gateway on the continent would
    transmit every message. Out of receive range means out of transmit
@@ -2233,7 +2242,11 @@ gateway covers its own neighborhood, while its *receive* coverage spans several
 states because it hears everyone else's repeats.
 
 **`TX_VIA = WIDE1-1`** gives the downlink the same relay the uplink already
-uses. One hop, and the right default.
+uses. One hop, and it is **not** what this station runs: the deployed value is
+`WIDE1-1,WIDE2-2`, and on 2026-11-14 the second slot is what carried an
+acknowledgement to the handheld. KE4MHE-10 took the first hop and W3YA-1 the
+second, which a single-slot path could not have offered. Treat one hop as the
+polite default and two as the one that has been observed to deliver.
 
 **A second slot is how a distant digipeater gets used at all.** Measured here
 over 112 beacons on a single `WIDE1-1`: the near digipeater 3.5 miles away took

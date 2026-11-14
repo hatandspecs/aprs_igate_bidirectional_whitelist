@@ -167,10 +167,10 @@ The practical consequences, which are all this needs:
 ### How many clamps, and roughly what size
 
 Thirteen joints carry load on the erected mast and that is how many collars were
-built. They run from roughly 57 mm at joint 1, the lowest, down to 16 mm at
-joint 13, which is the range the clamps have to cover. Joints 14 to 16 are left
-unclamped: the wall is down to 0.7 mm there and those segments weigh almost
-nothing.
+built, counted rather than estimated. The pole ships with seventeen segments;
+the three thinnest are not in it, leaving fourteen, and fourteen segments meet
+at thirteen joints. They run from roughly 57 mm at joint 1, the lowest, down to
+16 mm at joint 13, which is the range the clamps have to cover.
 
 That range is all the sizing information this job needs. **There is no table of
 per-joint diameters here any more, and one should not be added** (removed

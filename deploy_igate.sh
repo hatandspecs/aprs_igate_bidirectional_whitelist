@@ -568,6 +568,58 @@ build_beacon() {
   esac
 }
 
+# A status report (APRS data type `>`), which is what aprs.fi shows as "Last
+# status". Without one, whatever last sent a status sticks there indefinitely:
+# linktest_sweep.py sends status frames on purpose, so a finished sweep leaves
+# a string like "LT T030 b115 linktest.linktest..." as this station's public
+# status until something replaces it. Observed on 2026-11-14, weeks after the
+# sweep that put it there.
+#
+# PBEACON cannot do this; it builds a position report. CBEACON passes an
+# information field through verbatim, and the leading ">" is what makes it a
+# status rather than a comment.
+#
+# Destination follows BEACON_TO and the RF path follows BEACON_VIA, because a
+# status is the same class of traffic as the position beacon and does not
+# deserve a third set of knobs.
+build_status_beacon() {
+  local text="${CFG[STATUS_TEXT]:-}"
+  [[ -z "$text" ]] && return 0
+  local to="${CFG[BEACON_TO]:-off}"
+  [[ "$to" == "off" || -z "$to" ]] && return 0
+  local every="${CFG[STATUS_EVERY]:-4:00:00}"
+
+  # The APRS status field holds 62 characters. Receiving software truncates a
+  # longer one rather than rejecting it, which is worse than refusing to send
+  # it, because the truncation is invisible from here.
+  if (( ${#text} > 62 )); then
+    echo "Warning: STATUS_TEXT is ${#text} characters and the APRS status field holds 62; no status beacon." >&2
+    return 0
+  fi
+
+  local bvia; bvia="$(build_beacon_via)"
+  _emit_status() {
+    printf 'CBEACON %sdelay=%s every=%s info=">%s"' "$1" "$2" "$every" "$text"
+    [[ -z "$1" && -n "$bvia" ]] && printf ' via="%s"' "${bvia// /,}"
+    printf '\n'
+  }
+  # Offset from the position beacon's delay so the two do not key together on
+  # startup.
+  case "$to" in
+    IG)   _emit_status "sendto=IG " "2:30" ;;
+    RF)   _emit_status "" "3:00" ;;
+    BOTH) _emit_status "sendto=IG " "2:30"; _emit_status "" "3:00" ;;
+  esac
+}
+
+status_desc() {
+  local text="${CFG[STATUS_TEXT]:-}"
+  [[ -z "$text" ]] && { echo "off"; return 0; }
+  local to="${CFG[BEACON_TO]:-off}"
+  [[ "$to" == "off" || -z "$to" ]] && { echo "off (BEACON_TO is off)"; return 0; }
+  echo "every ${CFG[STATUS_EVERY]:-4:00:00} as \"${text}\" (${#text}/62 chars)"
+}
+
 # Optional restriction on what gets gated UP. "FILTER 0 IG" is the RF->APRS-IS
 # direction (the reverse of "FILTER IG 0"), and d/ matches packets that were
 # actually repeated by the named digipeater — Direwolf checks the AX.25
@@ -806,6 +858,7 @@ TX_VIA           = $(via_desc)
 BEACON_VIA       = $(beacon_via_desc)
 RX_VIA           = $(rx_via_desc)
 BEACON           = $(beacon_desc)
+STATUS           = $(status_desc)
 AGW_PORT         = $(port_desc "${CFG[AGW_PORT]:-0}")
 KISS_PORT        = $(port_desc "${CFG[KISS_PORT]:-0}")
 WEB_MONITOR      = $(web_desc)
@@ -943,6 +996,7 @@ IGTXVIA   0 $(build_tx_via | tr ' ' ',')
 IGTXLIMIT ${CFG[IGTXLIMIT]:-6 10}
 
 $(build_beacon)
+$(build_status_beacon)
 EOF
   chmod 600 "$RENDERED_CONF"
   echo "Wrote ${RENDERED_CONF} (whitelist filter: ${filter})"
@@ -2410,13 +2464,14 @@ monitor_filter() {
       collecting = 0; flushdetail(); next
     }
     /^\[ig>tx\]/ { flushdetail(); collecting = 0; expirepending(); addpending(substr($0, 9)); next }
-    /^\[0L\]/ {
+    /^\[0L[^]]*\]/ {
       flushdetail(); collecting = 0
-      if (matchpending(substr($0, 6))) { emit("1;32", "IS GATED ", matched) }
-      else                             { emit("1;36", "TX LOCAL ", substr($0, 6)) }
+      body = $0; sub(/^\[[^]]*\][ ]?/, "", body)
+      if (matchpending(body)) { emit("1;32", "IS GATED ", matched) }
+      else                    { emit("1;36", "TX LOCAL ", body) }
       expirepending(); next
     }
-    /^\[0\.[0-9]+\]/ {
+    /^\[0\.[0-9]+[^]]*\]/ {
       flushdetail(); expirepending()
       sub(/^\[[^]]*\][ ]?/, "")
       emit("1;34", "RF RX    ", $0)
@@ -2653,6 +2708,64 @@ GUIDE
 # Recent gateway log lines, in either mode. The self-test reads the log rather
 # than the monitor pipeline so that a broken monitor cannot make a working
 # gateway look failed — which is a failure mode this project has already had.
+# One row per self-test: did the gated frame come back, and off whose first
+# hop. Appended to a TSV and deliberately kept OUT of the pass/fail logic.
+# _selftest_repeats documents why gated frames must not drive the verdict (a
+# burst of them starved the repeat window on 2026-10-13), and the open question
+# in this project needs exactly the denominator that only banking every run can
+# build. So this records and does not decide.
+#
+# Length is the on-air figure digi_length_profile.py and linktest_sweep.py
+# already use: 7 per address, control, PID, information, flag, FCS, flag.
+# Anything else produces numbers that cannot be compared with the tables
+# already banked.
+_selftest_echo_record() {   # text msgid
+  local text="$1" id="$2" dir="${CFG[LOG_DIR]:-}" out row
+  [[ -z "$dir" ]] && return 0
+  [[ "$dir" = /* ]] || dir="${SCRIPT_DIR}/${dir}"
+  [[ -d "$dir" ]] || return 0
+  out="${dir}/gated-echoes.tsv"
+  row="$(_selftest_log 900 | ET_TEXT="$text" ET_MINE="${CFG[MYCALL]}" python3 -c '
+import os, re, sys
+ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
+want = os.environ["ET_TEXT"]
+mine = os.environ["ET_MINE"] + ">"
+sent = None
+hop1 = ""
+echoed = False
+for line in sys.stdin:
+    if want not in line or not line.startswith("[0"):
+        continue
+    body = line.split("]", 1)[-1].strip()
+    head, _, info = body.partition(":")
+    info = info.split("<0x")[0]
+    # Only our own frames. Other gateways gate the same message to RF and this
+    # station copies theirs; those are not echoes of our transmission.
+    if not head.startswith(mine):
+        continue
+    digis = head.split(",")[1:]
+    if line.startswith("[0L"):
+        sent = (7 * (2 + len(digis)) + 1 + 1 + len(info) + 4, len(digis), len(info))
+        continue
+    echoed = True
+    if not hop1:
+        for hop in digis:
+            call = hop.strip().rstrip("*")
+            if call and not ALIAS.match(call):
+                hop1 = call
+                break
+if sent:
+    # "unattributed" is a repeat whose path carries no real callsign, which a
+    # digipeater running UIFLOOD NOID produces. It is still a repeat.
+    print("%d\t%d\t%d\t%s\t%s" % (sent[0], sent[1], sent[2],
+                                    "yes" if echoed else "no",
+                                    hop1 or ("unattributed" if echoed else "")))
+' 2>/dev/null || true)"
+  [[ -z "$row" ]] && return 0
+  [[ -f "$out" ]] || printf 'iso\tmsgid\tonair\tdigis\tinfolen\trepeated\thop1\n' > "$out"
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$id" "$row" >> "$out"
+}
+
 _selftest_log() {  # seconds-back
   local since="${1:-300}"
   if [[ "$MODE" == docker ]]; then
@@ -2788,7 +2901,7 @@ cmd_selftest() {
     if (( ! saw_igtx )) && grep -qF "[ig>tx]" <<<"$log" && grep -qF "$text" <<<"$log"; then
       saw_igtx=1; echo "  step 2 OK: the server routed it back to this gateway"
     fi
-    if (( ! saw_tx )) && grep -E "^\[0L\]" <<<"$log" | grep -qF "$text"; then
+    if (( ! saw_tx )) && grep -E "^\[0L[^]]*\]" <<<"$log" | grep -qF "$text"; then
       saw_tx=1; tx_deadline=$(( SECONDS + ack_wait ))
       echo "  step 3 OK: the gateway transmitted it"
     fi
@@ -2798,8 +2911,35 @@ cmd_selftest() {
     # `[0L]` proves. A digipeated copy arrives 1.5-3 s behind the original.
     if (( ! saw_echo )); then
       local echoed
-      echoed="$(grep -E "^\[0\.[0-9]+\]" <<<"$log" | grep -F "$text" \
-                | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' | head -1 || true)"
+      # Skips routing aliases, as _selftest_repeats and cmd_reach do. A
+      # digipeater consuming a WIDE1-1 hop inserts its own call and marks the
+      # ALIAS used, so the asterisk sits on WIDE1 and reporting the starred
+      # entry names a routing alias as though it were a station. Seen for real
+      # on 2026-11-14, printing "WIDE1 repeated it" and "WIDE2 repeated it".
+      # The source must be MYCALL. Other transmitting gateways gate the very
+      # same message to RF and this station copies theirs, 34 and 40 s later on
+      # 2026-11-14. Those are not echoes of our transmission and they prove
+      # nothing about whether our frame was radiated.
+      #
+      # And the fallback must only fire when a line was actually seen: an
+      # earlier version printed it on empty input, which made step 4 pass on
+      # every run.
+      echoed="$(grep -E "^\[0\.[0-9]+[^]]*\] ${CFG[MYCALL]}>" <<<"$log" \
+                | grep -F "$text" | head -1 \
+                | python3 -c '
+import re, sys
+ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
+seen = False
+for line in sys.stdin:
+    seen = True
+    head = line.split("]", 1)[-1].strip().split(":", 1)[0]
+    for hop in head.split(",")[1:]:
+        call = hop.strip().rstrip("*")
+        if call and not ALIAS.match(call):
+            print(call); sys.exit(0)
+if seen:
+    print("a digipeater")
+' 2>/dev/null || true)"
       if [[ -n "$echoed" ]]; then
         saw_echo=1; echo_by="$echoed"
         echo_deadline=$(( SECONDS + grace ))
@@ -2810,12 +2950,18 @@ cmd_selftest() {
     # hears it. Stronger than the echo, because it proves delivery to a
     # particular radio rather than only that the transmission went out — so
     # it is still looked for, and still reported when it happens.
-    if (( ! saw_ack )) && grep -qiE "${target}>.*ack${msgid}" <<<"$log"; then
+    # The boundary is not optional: without it ack36 matches a genuine
+    # ack3686 from another conversation and the test reports a delivery that
+    # never happened. That is exactly what it did on 2026-11-14.
+    if (( ! saw_ack )) && grep -qiE "${target}>.*ack${msgid}([^0-9]|$)" <<<"$log"; then
       saw_ack=1; echo "  step 5 OK: ${target} acknowledged it over RF"
       break
     fi
     sleep 3
   done
+
+  # Recorded before the verdict and never consulted by it.
+  _selftest_echo_record "$text" "$msgid"
 
   # Neither the ack nor an echo of this particular frame. That is the normal
   # case rather than a fault: at the measured 40% repeat rate, three frames in
@@ -2912,18 +3058,18 @@ _full_log() {
 # station's beacon), `}` a third-party frame (anything gated from APRS-IS).
 # Those are the two that matter here, because the downlink this project exists
 # for is the second one and the beacons are what `reach` has always measured.
-_RX_REPEAT='^\[0\.[0-9]+\] %s>[^:]*\*[^:]*:'
-_RX_BEACON='^\[0\.[0-9]+\] %s>[^:]*\*[^:]*:!'
-_RX_GATED='^\[0\.[0-9]+\] %s>[^:]*\*[^:]*:\}'
-_TX_ANY='^\[0L\] %s>'
-_TX_BEACON='^\[0L\] %s>[^:]*:!'
-_TX_GATED='^\[0L\] %s>[^:]*:\}'
+_RX_REPEAT='^\[0\.[0-9]+[^]]*\] %s>[^:]*\*[^:]*:'
+_RX_BEACON='^\[0\.[0-9]+[^]]*\] %s>[^:]*\*[^:]*:!'
+_RX_GATED='^\[0\.[0-9]+[^]]*\] %s>[^:]*\*[^:]*:\}'
+_TX_ANY='^\[0L[^]]*\] %s>'
+_TX_BEACON='^\[0L[^]]*\] %s>[^:]*:!'
+_TX_GATED='^\[0L[^]]*\] %s>[^:]*:\}'
 
 # Which digipeaters appear in a set of received frames, most frequent first.
 # Reads stdin; skips routing aliases, the same way the rest of this script
 # does, and looks only at the path.
 _digis_from() {
-  sed 's/:.*//' | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' \
+  sed -E 's/^\[[^]]*\][ ]?//; s/:.*//' | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' \
     | grep -vE '^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$' \
     | sort | uniq -c | sort -rn
 }
@@ -2988,7 +3134,7 @@ _selftest_repeats() {  # beacons-back
   # somebody; it is counted as unattributed rather than dropped, because
   # dropping it would under-report repeats that did happen.
   SELFTEST_REPEATERS="$(grep -E "$(printf "$_RX_BEACON" "$mine")" <<<"$window" \
-    | sed 's/:.*//' | python3 -c '
+    | sed -E 's/^\[[^]]*\][ ]?//; s/:.*//' | python3 -c '
 import re, sys, collections
 ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
 seen = collections.Counter()
@@ -3090,7 +3236,7 @@ cmd_reach() {
   # aliases here would loosen the bound for no reason.
   local floor
   floor="$(grep -E "$(printf "$_RX_REPEAT" "$mine")" <<<"$log" \
-           | sed 's/:.*//' | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' \
+           | sed -E 's/^\[[^]]*\][ ]?//; s/:.*//' | grep -oE ',[A-Z0-9-]+\*' | tr -d ',*' \
            | sort | uniq -c | sort -rn | head -1 | awk '{print $1+0}')"
   floor="${floor:-0}"
 
@@ -3150,7 +3296,7 @@ cmd_reach() {
     # and says nothing. With a two-slot path it is the whole question: whether
     # the second hop is reaching a digipeater the first one did not, or is
     # buying a second transmission of the same footprint.
-    grep -E "^\[0\.[0-9]+\] ${mine}>" <<<"$log" | grep '\*' \
+    grep -E "^\[0\.[0-9]+[^]]*\] ${mine}>" <<<"$log" | grep '\*' \
       | python3 -c '
 import re, sys, collections
 ALIAS = re.compile(r"^(WIDE|TRACE|RELAY|ECHO|GATE|TEMP)[0-9]*(-[0-9]+)?$", re.I)
