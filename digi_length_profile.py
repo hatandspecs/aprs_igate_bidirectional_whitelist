@@ -43,6 +43,7 @@ denominator and depress every rate computed over that window. --since and
 """
 import argparse
 import collections
+import gzip
 import datetime
 import re
 import statistics
@@ -243,7 +244,18 @@ def main():
         sys.stdin.reconfigure(encoding="latin-1")
         streams = [sys.stdin]
     else:
-        streams = [open(f, encoding="latin-1") for f in args.log]
+        # A .log.gz opened as text yields binary, matches nothing, and the
+        # report then prints "none" as though that were a measurement. That
+        # silent failure nearly inverted a conclusion on 2026-11-14, so detect
+        # the gzip magic rather than trusting the extension.
+        streams = []
+        for f in args.log:
+            with open(f, "rb") as probe:
+                gz = probe.read(2) == b"\x1f\x8b"
+            if gz:
+                streams.append(gzip.open(f, "rt", encoding="latin-1"))
+            else:
+                streams.append(open(f, encoding="latin-1"))
 
     direct, relayed = [], []
     by_source = collections.defaultdict(list)

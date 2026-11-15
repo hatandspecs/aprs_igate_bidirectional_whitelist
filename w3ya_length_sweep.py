@@ -7,7 +7,10 @@ so a threshold sits somewhere between. Length is the only thing this varies.
 
 HELD CONSTANT, by construction
     AX.25 source and dest  KD3CCO-10>APDW17
-    digipeater path        whatever TX_VIA names, one entry, unconsumed
+    digipeater path        whatever TX_VIA names, unconsumed. The on-air
+                           arithmetic reads the entry count from TX_VIA, so a
+                           one-entry and a two-entry path are both counted
+                           right.
     frame type             third-party wrap, dti `}`, exactly as a gated
                            message from APRS-IS to RF
     gating station         KD3CCO-10, named inside the wrap as the real
@@ -58,7 +61,16 @@ import sys
 import time
 
 WRAP_OVERHEAD = 46          # }SRC>APRS,TCPIP,GATE*::ADDRESSEE_:  plus {nn
-AX25_OVERHEAD = 27          # 7*(2+1) addresses + control + PID + flag+FCS+flag
+
+# 7 bytes per address, plus control, PID, opening flag, FCS, closing flag.
+# The address count is 2 (dest + source) plus however many entries TX_VIA
+# names, so it MUST be read from the config rather than assumed: a hardcoded
+# 27 is right only for a single-entry path. With TX_VIA = WIDE1-1,WIDE2-2 it
+# understates every frame by 7 bytes, which silently puts a whole run on a
+# scale of its own. That happened on 2026-11-15.
+def ax25_overhead(tx_via):
+    ndigis = len([p for p in tx_via.replace(","," ").split() if p])
+    return 7 * (2 + ndigis) + 1 + 1 + 4
 
 
 def config(key, *files):
@@ -87,6 +99,12 @@ def main():
     ap.add_argument("--dir", default=os.path.join(os.path.expanduser("~"), "aprs-igate"))
     ap.add_argument("--marker", default="L",
                     help="first character of the text, so runs at different\n                         power or antenna are separable in the log without\n                         changing any frame length")
+    ap.add_argument("--tx-via", default=None,
+                    help="path to assume for the on-air arithmetic. Defaults "
+                         "to TX_VIA from igate.conf. Set it when the station "
+                         "being driven is configured differently from the "
+                         "config this script can see, e.g. when running from "
+                         "a workstation against the Pi.")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -95,11 +113,19 @@ def main():
     if not passcode and not a.dry_run:
         sys.exit("cannot read IGLOGIN_PASSCODE")
 
+    tx_via = a.tx_via if a.tx_via is not None else config("TX_VIA", "igate.conf")
+    OVERHEAD = ax25_overhead(tx_via)
+    FLOOR = WRAP_OVERHEAD + OVERHEAD
+    print("# TX_VIA = %s  ->  %d address fields, %d bytes of overhead, "
+          "floor %d on-air bytes" % (tx_via or "(unset)",
+          2 + len([p for p in tx_via.replace(","," ").split() if p]),
+          OVERHEAD, FLOOR + 1), file=sys.stderr)
+
     lengths = [int(x) for x in a.lengths.split(",")]
     for n in lengths + [a.control]:
-        if n - 73 < 1:
+        if n - FLOOR < 1:
             sys.exit("%d on-air bytes is below the %d-byte floor of this frame "
-                     "type" % (n, 74))
+                     "type on TX_VIA = %s" % (n, FLOOR + 1, tx_via))
 
     env = dict(os.environ)
     env.update({"SELFTEST_SERVER": config("IGSERVER", "igate.conf"),
@@ -114,7 +140,7 @@ def main():
         order = [a.control] + lengths[:]
         random.shuffle(order)
         for n in order:
-            text = a.marker + "." * (n - 73 - 1)
+            text = a.marker + "." * (n - FLOOR - 1)
             env["SELFTEST_TEXT"] = text
             env["SELFTEST_ID"] = "%02d" % ids[k]
             role = "control" if n == a.control else "test"
@@ -122,7 +148,7 @@ def main():
                 info = "}%s>APRS,TCPIP,KD3CCO-10*::%-9s:%s{%02d" % (
                     a.src, a.to, text, ids[k])
                 print("%02d\t%d\t%s\tDRY len(info)=%d total=%d" % (
-                    ids[k], n, role, len(info), len(info) + AX25_OVERHEAD))
+                    ids[k], n, role, len(info), len(info) + OVERHEAD))
             else:
                 r = subprocess.run([sys.executable, "selftest_inject.py"],
                                    env=env, capture_output=True, text=True)

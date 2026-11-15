@@ -113,11 +113,16 @@ echo
 echo "the transmit columns count this station's own frames"
 U="$WORK/c"; mkstation "$U"
 {
+  # Deliberately a MIX of the two bracket formats. Direwolf's -T flag puts a
+  # timestamp inside the bracket, and on 2026-11-08 that broke twelve parsing
+  # sites for six days while every test passed, because every fixture here
+  # used the old shape. Both have to work: the archive holds logs from either
+  # side of the change.
   echo '[0L] KD3CCO-10>APDW17,WIDE1-1:!4046.25NR07747.50W&RX iGate'
-  echo '[0L] KD3CCO-10>APDW17,WIDE1-1:!4046.25NR07747.50W&RX iGate'
-  echo '[0.1] KD3CCO-10>APDW17,W3YA-1*:!4046.25NR07747.50W&RX iGate'
+  echo '[0L 2026-11-14T13:49:16-0500] KD3CCO-10>APDW17,WIDE1-1:!4046.25NR07747.50W&RX iGate'
+  echo '[0.1 2026-11-14T13:49:16-0500] KD3CCO-10>APDW17,W3YA-1*:!4046.25NR07747.50W&RX iGate'
   echo '[0L] KD3CCO-10>APDW17,WIDE1-1,WIDE2-2:}KD3CCO-1>APRS,TCPIP,KD3CCO-10*::KD3CCO-7 :hello'
-  echo '[0.1] KD3CCO-10>APDW17,W3TM-10*,WIDE2-1:}KD3CCO-1>APRS,TCPIP,KD3CCO-10*::KD3CCO-7 :hello'
+  echo '[0.1 2026-11-14T13:49:16-0500] KD3CCO-10>APDW17,W3TM-10*,WIDE2-1:}KD3CCO-1>APRS,TCPIP,KD3CCO-10*::KD3CCO-7 :hello'
   echo '[rx>ig] WO3T-1>APNU3B,qAR,KD3CCO-10:!4029.80NS07807.92W#somebody else'
 } > "$U/run/direwolf.log"
 IGATE_ARCHIVE_DAY=2026-11-01 "$U/igate-archive.sh" "$U/igate.conf" >/dev/null

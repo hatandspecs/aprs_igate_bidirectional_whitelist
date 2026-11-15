@@ -164,10 +164,15 @@ tx_stats() {  # -> "frames beacons beacon_repeats gated gated_repeats"
   # instead gives 279,294 against reach's 30,247 on the same log, and the two
   # columns stop being comparable.
   frames="$(printf '%s\n' "$all" | grep -acE '^\[0' || true)"
-  beacons="$(printf '%s\n' "$all" | grep -acE "^\[0L\] ${MYCALL}>[^:]*:!" || true)"
-  gated="$(printf '%s\n' "$all"  | grep -acE "^\[0L\] ${MYCALL}>[^:]*:\}" || true)"
-  brep="$(printf '%s\n' "$all"   | grep -acE "^\[0\.[0-9]+\] ${MYCALL}>[^:]*\*[^:]*:!" || true)"
-  grep_="$(printf '%s\n' "$all"  | grep -acE "^\[0\.[0-9]+\] ${MYCALL}>[^:]*\*[^:]*:\}" || true)"
+  # `[^]]*` absorbs direwolf's -T timestamp, which sits INSIDE the bracket:
+  # "[0L]" became "[0L 2026-11-14T13:49:16-0500]" on 2026-11-08 and these four
+  # counters silently read zero afterwards. Found 2026-11-14 by mixing both
+  # bracket shapes into test_archive.sh's fixtures, which is the only reason
+  # the suite caught it.
+  beacons="$(printf '%s\n' "$all" | grep -acE "^\[0L[^]]*\] ${MYCALL}>[^:]*:!" || true)"
+  gated="$(printf '%s\n' "$all"  | grep -acE "^\[0L[^]]*\] ${MYCALL}>[^:]*:\}" || true)"
+  brep="$(printf '%s\n' "$all"   | grep -acE "^\[0\.[0-9]+[^]]*\] ${MYCALL}>[^:]*\*[^:]*:!" || true)"
+  grep_="$(printf '%s\n' "$all"  | grep -acE "^\[0\.[0-9]+[^]]*\] ${MYCALL}>[^:]*\*[^:]*:\}" || true)"
   printf '%s' "${frames:-0} ${beacons:-0} ${brep:-0} ${gated:-0} ${grep_:-0}"
 }
 

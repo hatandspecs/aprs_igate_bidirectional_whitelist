@@ -221,36 +221,41 @@ All functional requirements met.
 **The baseline window ran unbroken from 2026-10-04 16:25 EDT to 2026-10-12,
 eight days and three hours**, on the configuration of the time: slim jim on the
 **fifteen-foot** mast, 50 ft of RG-8X, station in the spare room, no UPS. The
-mast is about twenty-eight feet as of 2026-10-30 (below), so every figure here
+mast is twenty-seven feet as of 2026-10-30 (below), so every figure here
 is a fifteen-foot measurement and is not comparable to anything taken after
 that date. `run/` is tmpfs, so any reboot restarts it — check `uptime -s`
 against that timestamp before trusting a sample. Everything below was measured in that one window and
 supersedes the 09-27/09-28 pair, which was a different antenna and position and
 was never comparable.
 
-**The mast is about twenty-eight feet as of 2026-10-30**, up from fifteen. A
+**The mast is twenty-seven feet as of 2026-10-30**, up from fifteen. A
 33 ft Spiderbeam telescoping mast with the thinnest top segments left out --
-so the figure is the erected height, not the catalog one, and it is
-approximate. Nothing else changed: same N9TAX monoband 2 m slim jim, same
-coax, same configuration. By the two-ray model 15 -> 28 ft is worth about
-**+5.4 dB**, and the radio horizon goes from 5.5 to about 7.5 miles -- but the
+so the figure is the erected height, not the catalog one. It was "about 28" by
+segment count until a tape measure settled it at 27 on 2026-11-15; every
+document written before that date carries the old figure. Nothing else changed: same N9TAX monoband 2 m slim jim, same
+coax, same configuration. By the two-ray model 15 -> 27 ft is worth about
+**+5.1 dB**, and the radio horizon goes from 5.5 to about 7.4 miles -- but the
 ridges here set the limit more often than the horizon does, so the gain should
 show on marginal paths rather than on stations already solid.
 
   **Do not write "doubled" or "thirty feet".** Both were said in passing on
   10-30 before the segments were counted, and both are in this file's history.
 
-  **The figure is weaker than "approximate" as of 2026-11-06.** Two taped
-  joints slipped between 10-30 and 11-05, so the erected height inside that
-  window was not a constant. The 15-to-28-foot contrast is large enough that
-  its direction survives; the number itself should be treated as an upper
-  bound until somebody measures the rebuilt mast.
+  **Measured at 27 ft on 2026-11-15**, by tape on the rebuilt mast, closing
+  the open item this section used to carry. Everything written before that date
+  says "about 28"; the direction of every conclusion is unaffected, and the
+  two-ray figure drops from +5.4 to +5.1 dB.
 
-  **November 2026 is the first clean twenty-eight-foot month**, and aprs.fi resets
+  **The height was not constant inside the 10-30 to 11-05 window.** Two taped
+  joints slipped during it, so the 27 ft figure describes the rebuilt mast
+  rather than that window. The 15-to-27-foot contrast is large enough that its
+  direction survives either way.
+
+  **November 2026 is the first clean twenty-seven-foot month**, and aprs.fi resets
   its per-station statistics on the 1st. October is therefore the fifteen-foot
   baseline, with three caveats to carry into any comparison:
 
-  * **Oct 30-31 are already at twenty-eight feet** -- two of thirty-one.
+  * **Oct 30-31 are already at twenty-seven feet** -- two of thirty-one.
   * **Oct 13-18 ran the `BEACON_VIA` two-hop experiment**, about 15% of the
     month's ~1,490 beacons. Two-hop beacons are digipeated further, so more
     stations heard and gated them, which inflates October's "stations which
@@ -269,7 +274,7 @@ show on marginal paths rather than on stations already solid.
     `OPERATIONS.md`, recovered from the dated packet log -- which is the point.
     What the edges do **not** fix is the height inside the 10-30 to 11-05
     window: two joints are known to have let go in it, so the mast was
-    somewhere at or below its nominal twenty-eight feet and drifting. **A contaminated window with a known start and end is
+    somewhere at or below its nominal twenty-seven feet and drifting. **A contaminated window with a known start and end is
     excisable; a contaminated month is not.** Use `OPERATIONS.md`'s
     data-quality table as the exclusion list and compare matched windows
     between the holes. What cannot be sliced is the aprs.fi monthly page,
@@ -287,8 +292,8 @@ show on marginal paths rather than on stations already solid.
 
 ### Measure height per station, not in aggregate (2026-11-05)
 
-The mast falling on 11-05 ran the experiment the whole 15-to-28-foot exercise
-has been trying to run: the same antenna, same radio, same feedline, at 28 feet
+The mast falling on 11-05 ran the experiment the whole 15-to-27-foot exercise
+has been trying to run: the same antenna, same radio, same feedline, at 27 feet
 and then at ground level, with the change timed to the minute. Direct packets
 over matched 2 h 26 m windows either side of it, by station:
 
@@ -516,6 +521,135 @@ KE4MHE-10 taking the second hop afterward. Those two never heard the handheld
 directly, they heard W3YA-1's repeat. Treat second-hop digipeaters in this
 log as evidence about W3YA-1's coverage, not the handheld's.
 
+### W3YA-1: the whole-archive audit (2026-11-15) supersedes the 97-byte ceiling
+
+**Run `./digi_relay_audit.py <logdir>` before re-deriving any of this.** It
+parses every Dire Wolf log, with and without `-T` timestamps, and reports who
+relayed what at which length. Pull the logs first:
+
+```bash
+scp 'igate@aprs-igate.local:/opt/aprs-igate/archive/frames/*.log.gz' ./logs/
+```
+
+**The archives are disjoint, contiguous windows, so do not deduplicate.** The
+11-11 file ends 2026-11-10T22:04:18 and the 11-12 file starts 22:04:23. But
+`run/direwolf.log.1.gz` and `.2.gz` are **byte-identical** to two of the
+archives, and `logfiles()` drops them; counting both double-counts two days.
+Timestamps exist only from 2026-11-08T22:05 on, so earlier frames can be dated
+only to their file's window.
+
+Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
+
+| Fact | Value |
+|---|---|
+| W3YA-1 max frame **emitted** | **102 B** (not 97; 220 copies above 97) |
+| W3YA-1 max **decoded** | 95 B |
+| W3YA-1 max **as sent** by another station | 91 B (K3ARL-6) |
+| KD3CCO-10 relayed by W3YA-1, ≤82 B as sent | **556 of 2,250** |
+| KD3CCO-10 relayed by W3YA-1, >82 B as sent | **0 of 304** |
+| KD3CCO-1 as an RF source | **never appears**; it is a message addressee only |
+
+- **The published 97-byte ceiling was wrong and both articles are corrected.**
+  It came from one day of this archive. The real ceiling is 102, and it does
+  **not** explain the downlink failure: a 91-byte gated message would be
+  relayed at 98, under it. **Do not reinstate the 97 figure or the "capped at
+  90 bytes for anybody" argument.**
+- **W3YA-1 is still a genuine outlier on emission.** Max emitted per digipeater:
+  N3DXC-2 251, KE4MHE-10 228, WO3T-1 224, **K3DNA 224**, N3SNN-3 224, W3VO-1
+  202, W3TM-10 121, **W3YA-1 102**. K3DNA announces the same `APN391`
+  Kantronics KPC-3+ firmware, so 102 is a property of that site, not the TNC.
+- **The real effect is a cliff at 82/83 bytes as sent, for this station only.**
+  Controlled three ways: it holds inside **every** transmit path (`W3YA-1` alone
+  0/52, `W3YA-1,WIDE2-1` 0/15, `WIDE1-1` 0/28, `WIDE1-1,WIDE2-2` 0/91, against
+  20-59% below 82); inside the same log window and antenna era (0/135 against
+  43-50%); and across data types, since `}` and `>` frames appear on both sides.
+- **`PACLEN` is ruled out by measurement.** Holding the information field at 55
+  bytes and changing only the digipeater count, on-air 82 was relayed 6 of 15
+  and on-air 89 was relayed 0 of 15. The **whole frame** is the variable, not
+  the field `PACLEN` governs.
+- **Other digipeaters carry my long frames fine.** Max of mine relayed:
+  KE4MHE-10 150, WO3T-1 150, N3SNN-3 123, N3DXC-2 116, W3VO-1 91, **K3DNA 91**,
+  NJ3T-4 91, **W3YA-1 82**, W3TM-10 69. K3DNA relayed 12 of the >82 B frames
+  W3YA-1 relayed none of, from 26 km against W3YA-1's 10.
+- **The cap is on the whole frame and the hop count does not move it.** W3YA-1
+  emitted length by its own hop position, max emitted / max info field: hop 1
+  98/64, hop 2 **102/61**, hop 3 100/51, hop 4 97/42, hop 5 94/25, hop 6 94/25,
+  hop 7 89/13. **Max emitted stays flat while the field that fits under it
+  falls 7 bytes per added path entry**, which is a second independent
+  refutation of `PACLEN`. The taper below 96 at six-plus entries tracks sample
+  size (320, 68, 18), not a tighter rule. `hop_report()` in the audit script
+  reproduces this.
+- **The cap belongs to W3YA-1, not to the hop count.** Max emitted at the same
+  path-entry count, W3YA-1 against neighbours: 2 entries 98 vs 143-185;
+  3 entries 102 vs 149-157; 4 entries 99 vs 167-217; 5 entries 100 vs 224;
+  7 entries 94 vs 148-228. It never passes 102 anywhere on 20,000 copies.
+- **My blocked frames are inside W3YA-1's own envelope, which kills every
+  length explanation.** A 91-byte gated message is 2 path entries and a 57-byte
+  info field; W3YA-1 would emit it as 98 bytes with 3 entries and the same
+  field. At 3 path entries it has emitted **68 copies at exactly 98 bytes, 200
+  at 98 or longer, all with fields of 57 bytes or more**, max 102 and 61. So do
+  not re-open frame length as the cause of the 82-byte cliff.
+- **Byte counting is exact and two traps make that non-trivial.** Read logs as
+  **Latin-1, never UTF-8**: 199 frames carry valid multi-byte UTF-8 sequences
+  and a text decode counts two bytes as one character. And Dire Wolf renders
+  unprintable bytes as `<0xNN>`, six logged characters for one on-air byte,
+  **including spaces** -- `<0x20>` occurs 10,241 times, `<0x0d>` 38,826,
+  Mic-E `<0x1c>` 10,849. The 11 `(Not AX.25)` lines have no address field and
+  are skipped. Verified against hand-counted frames: the Sheetz `{16}` frame is
+  44 info bytes and 78 on-air.
+- **Power is ruled out across 5 to 75 W, about 12 dB (2026-11-15).** On the
+  single-entry `W3YA-1` path at **Low1, 5 W**: 74 B control 5 of 15, 86 B
+  **0 of 15**, 90 B **0 of 15**. At Low3, 30 W: 74 B 10 of 22, 86 B 0 of 12,
+  90 B 0 of 15. Pooled, **0 of 57 above the cliff at a 41% control rate**,
+  p about 1 in 70,000. **Receiver overload at W3YA-1 is dead**, and so is any
+  mechanism that eases with less drive, supply sag pulling the transmitter
+  during a long frame included. Do not propose power, a Yagi, or a stronger
+  signal again.
+- **The 5 W handheld matches the 30 W station.** In the 69-82 B overlap where
+  both transmitted, W3YA-1 relayed 6 of 14 of KD3CCO-7 and 42 of 95 of
+  KD3CCO-10: 43% against 44%. The handheld never exceeded 80 B, so it says
+  nothing about the cliff, but the link is plainly not signal-limited.
+
+### Traps when running a length sweep
+
+- **`w3ya_length_sweep.py` had `AX25_OVERHEAD = 27` hardcoded**, which is right
+  only for a ONE-entry path. With `TX_VIA = WIDE1-1,WIDE2-2` it understates
+  every frame by 7 bytes: the first 2026-11-15 run labelled 74/82/90 actually
+  transmitted **81/89/97**. Now fixed, `ax25_overhead()` derives it from
+  `TX_VIA`, there is a `--tx-via` override for driving the Pi from a
+  workstation, and it refuses a length below the real floor.
+- **Sweep on `TX_VIA = W3YA-1`, not the default path.** On
+  `WIDE1-1,WIDE2-2` the W3YA-1 control rate is only ~20%, so most cycles carry
+  no information about it by the script's own rule; the explicit path gives
+  ~41%. Changing it means editing `igate.conf`, `deploy_igate.sh config` and a
+  restart. **Restore it afterwards** and confirm `IGTXVIA 0 WIDE1-1,WIDE2-2`
+  in `run/direwolf.conf`. A backup `igate.conf.bak-txvia-2026-11-15` is on the
+  Pi.
+- **The script's `sent_at` only means APRS-IS accepted the injection.** Confirm
+  each frame against a `[0L` line in `run/direwolf.log` before counting it.
+- **Other gateways gate the same APRS-IS message to RF.** A single test message
+  showed up transmitted by K2ZRO-1, N3DXC-2, N3TJJ-13 and KB2WAC-1 within
+  seconds. Filter on `f.src == "KD3CCO-10"` or they read as relays of our own
+  frame, which is the same class of error the self-test echo check once made.
+- **Do not name a pulled log `direwolf.log.gz`.** `logfiles()` skips the
+  `direwolf.log.` prefix to drop the rotated copies that duplicate two
+  archives, so a pull with that name parses to zero frames silently. Name it
+  something else, as `pulled-low1-explicit.log.gz`.
+
+- **Equipment comes free from the tocall**, and Dire Wolf prints its own decode
+  on the line after each frame. `APN3xx`/`APNU` = Kantronics, `APMI` = PLXDigi,
+  `APDW` = Dire Wolf, `APY05D` = Yaesu FT5D, `APK1xx` = Kenwood.
+- **Pairing caveat in the audit.** A transmission is keyed on (source,
+  information field). W3YA-1 pairs at 99% (608/613), but some relayed copies
+  carry a trailing newline the TX-side record lacks, which is why W3TM-10 shows
+  384 copies and no matched transmissions. Strip trailing whitespace before
+  trusting a per-digipeater zero.
+- **The handheld's uplink messages are 74 to 80 on-air bytes**, so they clear
+  the 82-byte cliff by 2 to 8 bytes. The 2026-11-07 Sheetz message `{16}` is
+  **78 bytes**: info `:SMS      :@self sheetz  ht to my phone!{16` plus a
+  trailing CR the FT5D appends, 44 bytes, and W3YA-1 relayed it at 85. Its
+  four-for-four uplink record is not margin, it is brevity.
+
 ### W3YA-1 repeats the beacons and none of the gated traffic (2026-11-07)
 
 Counted over the text log's window, from echoes of this station's own
@@ -691,7 +825,10 @@ cliff, so W3YA-1 repeats it. A gated message is about 120 bytes, far over, so
 W3YA-1 never does. That is the whole of it: not `TCPIP`, not hop count, not
 power.
 
-**A configured length limit is ruled out (2026-11-08).** In
+**A configured length limit is ruled out (2026-11-08), and that is now only
+half true: see the 97-byte emission ceiling below (2026-11-14).** What the
+paragraph that follows establishes is that W3YA-1 has no cap at 82 to 90 bytes
+decoded, which stands. It does have one at 97 bytes emitted. In
 `archive-2026-10/frames-15ft-2026-10-30.log.gz`,
 counting only frames where W3YA-1 was the first hop, so it heard them off air
 directly, it repeated **2,269 frames with a median decoded length of 84 bytes,
@@ -752,9 +889,11 @@ ordinary-traffic evidence.
 reported. It reads `archive/frames/frames-*.log.gz` or `run/direwolf.log`, not
 `LOG_DIR`, whose dated CSV carries no digipeater path.
 
-So the cliff is a property of this station's signal at W3YA-1, not of W3YA-1's
-configuration. The 9 stations that get long frames through are fixed digipeater
-sites, which is what a margin explanation predicts.
+So the cliff **below 90 bytes** is a property of this station's signal at
+W3YA-1 rather than of its configuration. The 9 stations that get long frames
+through are fixed digipeater sites, which is what a margin explanation
+predicts. Above 90 bytes sent there is a separate and absolute limit in W3YA-1
+itself, measured 2026-11-14 and recorded below.
 
 **W3YA-1 is a Kantronics KPC-3, and K3DNA is the matched control (2026-11-08).**
 Both send with tocall `APN391`; the aprs.org tocall registry maps `APN3xx` to
@@ -781,6 +920,28 @@ and a marginal signal from this station at that receiver, since 29% of 75-byte
 beacons in October and 32% in November is poor in absolute terms for 5.4 miles
 to a mountaintop.
 
+**Corrected 2026-11-14: the third one cannot be the explanation for the
+cliff.** Margin is graded and the cliff is a step. AX.25 has no error
+correction, so frame survival is `(1 - BER)` to the bit count, and the rate
+fitting 44% at 82 bytes predicts about 40% at 86 rather than 0. No single bit
+error rate fits both cells. Margin explains the 29%, not the zero. A step needs
+a deterministic cause: a cap in that receiver, or something in this station's
+signal that worsens with frame duration until it crosses that receiver's decode
+threshold. Do not re-list margin as a candidate for the cliff.
+
+**And the long frames are decodable, which rules out gross corruption.** On
+2026-10-30 this station sent 50 frames at 91 bytes. W3YA-1 repeated 0, **K3DNA
+repeated 3 and WO3T-1 repeated 1**. Per-digipeater, by the length this station
+sent: W3TM-10 only ever 76, W3YA-1 max 75, WO3T-1 75 and 91, K3DNA 75, 91 and
+98.
+
+**Confound to respect in any beacon-against-message comparison.** Beacons go out
+on `BEACON_VIA = WIDE1-1` and gated messages on `TX_VIA = WIDE1-1,WIDE2-2`, so
+the two offer different aliases and draw different responders. K3DNA repeats 6%
+of the long frames and 0.8% of the short ones, which is an alias effect and not
+a length effect. The 2026-11-14 sweep held the path fixed and is the cleaner
+evidence.
+
 **A transmit fault is not a candidate, structurally.** Anything wrong at this
 end reaches every receiver identically, so it cannot single out one digipeater.
 A corruption-type fault would also cost every receiver the same frames, and it
@@ -794,7 +955,7 @@ worth doing as a margin test, not as a fault test.
 **Height insensitivity is geometry, not evidence about margin (2026-11-08).**
 This was got wrong once in the same session and then corrected, so do not
 re-derive it. W3YA-1's pickup barely moves with this station's antenna height:
-29% at 15 ft, 32% at 28 ft, and 11 to 7 across the mast fall while WO3T-1 and
+29% at 15 ft, 32% at 27 ft, and 11 to 7 across the mast fall while WO3T-1 and
 KE4MHE-10 both went to zero. The tempting reading is "the link is not
 margin-limited". **It does not follow.** Height buys clearance, the path to a
 mountaintop is already clear line of sight, and a ridge station can still see
@@ -955,9 +1116,20 @@ What was silently dead for six days:
 Fixed in `deploy_igate.sh` (patterns given `[^]]*`; the three attribution
 `sed`s given a leading-bracket strip; monitor's `[0L]` branch given a
 `sub()`-based body extraction in place of `substr($0, 6)`) and in
-`heard_spatial.py`'s `RX_FRAME`. **`test_archive.sh`'s fixtures still emit the
-pre-`-T` format, which is why the test suite passed throughout.** Fix the
-fixtures or the next log format change does this again.
+`heard_spatial.py`'s `RX_FRAME`.
+
+**A thirteenth site turned up once the fixtures were fixed: `igate-archive.sh`.**
+Its four transmit counters, for beacons sent, gated frames sent, beacon repeats
+and gated repeats, had all been reading zero since 2026-11-08, so every archive
+summary written in that window understates them. The daily TSVs from
+2026-11-08 to 2026-11-14 are wrong in those four columns and nothing else.
+
+**The fixtures are now deliberately mixed.** `test_archive.sh` emits both
+bracket shapes and `test_heard_spatial.py` asserts that a line parses
+identically with and without a `-T` timestamp. Every fixture used the old shape
+before, which is the whole reason six days of broken parsing passed its own
+tests. Keep both shapes in any new fixture: the archive holds logs from either
+side of the change.
 
 Two more faults surfaced once steps 3 and 4 fired again:
 
@@ -986,6 +1158,61 @@ Also wrong in that section: condition 1, that the gateway "must have heard the
 addressed station on RF recently". This station gated messages to KD3CCO-7
 through six days of that radio being switched off, and gated test frames to
 KD3CCO-9, an SSID it has never heard at all.
+
+### W3YA-1 emits nothing above 97 on-air bytes, which caps every sender at 90 (2026-11-14)
+
+**This is the fact that closes the downlink question, and it is a limit in the
+digipeater.** Measured from `archive-2026-10/frames-15ft-2026-10-30.log.gz`,
+reconstructing what W3YA-1 emitted by removing 7 bytes for each digipeater that
+acted after it:
+
+| population | n | min | median | max |
+|---|---|---|---|---|
+| frames W3YA-1 originated | 931 | 86 | 93 | **107** |
+| frames W3YA-1 relayed | 8,218 | 42 | 79 | **97** |
+
+The tail of the relayed set is 93 (887 frames), 94 (49), 95 (2), 96 (22),
+97 (90), **and zero at 98 and above.** Restricting to frames where W3YA-1 was
+the last used hop gives the same 97, so the filter did not manufacture it.
+
+**It is not a supply artifact.** The same log holds 9,519 received frames of
+98 bytes or more, to a maximum of 231. **It is not the transmitter either**: its
+own beacons reach 107.
+
+**The 7-byte insertion converts the ceiling into a limit on senders.** W3YA-1
+inserts its callsign ahead of the alias it consumed, so
+`KD3CCO-10>APDW17,WIDE1-1` comes back as `KD3CCO-10>APDW17,W3YA-1,WIDE1*`. A
+frame of 90 bytes as sent is relayed as 97; 91 becomes 98 and has never been
+observed. **So 90 bytes sent is the hard limit for any station, and a gated
+message on this station is 91 to 150.** No `TX_VIA`, power or antenna change
+reaches it. Stop treating the downlink through W3YA-1 as a margin problem.
+
+**The station-selective effect is real and separate, and sits below the
+ceiling.** At 92 to 94 bytes emitted, under the 97 limit, W3YA-1 relayed for
+NJ3T-4 885 times, WV8MT-4 45, W3VLG-14 4, WD4ITN-4 3, WW0N-7 2, KA2NDW-1 once,
+and for KD3CCO-10 not once. The 2026-11-14 sweep sent 12 frames at 86 on-air,
+which would be relayed as 93, and got 0 against a 44% baseline, p = 0.001.
+W3YA-1 emitted 887 frames at exactly 93 bytes in the archive. So two distinct
+things are going on and only the ceiling is explained.
+
+**What the ceiling is remains open.** A configured or firmware cap on relayed
+length fits, and so does a site condition that spoils transmissions past about
+0.65 seconds of airtime, since length and airtime are the same variable at 1200
+baud. No documented KPC-3 parameter caps relayed frame length, so if it is
+configuration it is not a setting in the manual. The useful thing to send the
+manager is the measurement, not a guess at a parameter.
+
+**Reproduce it with `digi_emission_ceiling.py --digi W3YA-1 <log>`**, added
+2026-11-14 because the figures above came from a throwaway script and nothing
+in the repo could re-derive them. It reports both cuts, the supply column that
+makes the ceiling meaningful, and refuses to call a ceiling a ceiling when no
+longer frames existed to relay.
+
+**`digi_length_profile.py` used to fail silently on a compressed log**, reading
+the gzip stream as text, matching nothing and printing "none" as though that
+were an answer. That nearly inverted the conclusion above. Fixed 2026-11-14 by
+sniffing the gzip magic, so a `.log.gz` path now works directly as well as
+through `zcat`.
 
 ### The length sweep exists, was paused for channel courtesy (2026-11-07)
 
@@ -1647,15 +1874,14 @@ filtering or frame length, and the next test is a long beacon on a short path).
   costs the same to record. At ~1,400 beacons a month this is not a setting to
   leave on an experiment.
 
-**1b. Confirm the erected mast height, and write it down.** NEW 2026-11-01,
-and more pressing after the 2026-11-06 rebuild: the mast has now been
-re-erected by hand twice without the segments being counted
-(`OPERATIONS.md`). Until somebody counts them, "about twenty-eight feet" is an
-assumption carried over from 10-30 through two joint failures, and the +5.4 dB
-two-ray figure and the whole November-against-October comparison rest on it.
-**No ladder is needed** -- the pole lowers and redeploys in a few minutes, so
-this is ground-level work. It blocks the only clean twenty-eight-foot month
-there will be, and it costs minutes of data.
+**1b. DONE 2026-11-15: the erected mast height is twenty-seven feet**, by tape
+measure on the pole. This was the longest-standing open item in this file,
+raised 2026-11-01 and carried through two joint failures and a rebuild. The
+figure it replaces is "about twenty-eight", a segment-count assumption from
+10-30. Consequences: the two-ray gain over the fifteen-foot baseline is
+**+5.1 dB**, not +5.4, and the radio horizon runs 5.5 to about 7.4 miles. No
+conclusion changes direction. Every article and note written before 2026-11-15
+says 28; the five published iGate articles were corrected in place.
 
   **The takedown happened on 2026-11-13 and this did not get done.** The pole
   came down, the collars were fitted and the mast went back up

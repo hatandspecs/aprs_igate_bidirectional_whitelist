@@ -105,6 +105,29 @@ def main():
     check("a used digipeater in the path means not direct",
           len(recs) == 1 and recs[0][1] is False, recs)
 
+    # Direwolf's -T flag puts a timestamp INSIDE the existing bracket, so
+    # "[0.3]" becomes "[0.3 2026-11-14T13:49:16-0500]". That change on
+    # 2026-11-08 silently broke twelve log-parsing sites across this project
+    # for six days, including this reader, and every test kept passing because
+    # every fixture used the old shape. Both shapes have to parse, because the
+    # archive holds logs from before the flag and after it.
+    print("\nboth log formats parse the same, with and without -T")
+    def stamped(line):
+        head, rest = line.split("]", 1)
+        return head + " 2026-11-14T13:49:16-0500]" + rest
+    for label, line, tail in (
+        ("a direct reception", "[0.3] W3YA-1>APN391:!4043.04NS07753.53W#PHG7680/W3,WPAn digi", POS_W3YA),
+        ("a digipeated reception",
+         "[0.5] NJ3T-4>APN382,W3YA-1*,WIDE2-1:!3948.42NS07910.33W#PHG7870",
+         "N 39 48.4200, W 079 10.3300"),
+        ("this station transmitting",
+         "[0L] KD3CCO-10>APDW17,WIDE1-1:!4046.25N/07747.50W#own beacon",
+         "N 40 46.2500, W 077 47.5000"),
+    ):
+        plain, ts = console([line, tail]), console([stamped(line), tail])
+        check(f"{label} parses identically with a -T timestamp", plain == ts,
+              f"plain={plain} stamped={ts}")
+
     print("\npositions that belong to somebody else are not this sender's")
     for dti, label, line in (
         (";", "an object report",
