@@ -68,6 +68,35 @@ WRAP_OVERHEAD = 46          # }SRC>APRS,TCPIP,GATE*::ADDRESSEE_:  plus {nn
 # 27 is right only for a single-entry path. With TX_VIA = WIDE1-1,WIDE2-2 it
 # understates every frame by 7 bytes, which silently puts a whole run on a
 # scale of its own. That happened on 2026-11-15.
+# Padding patterns. The question they separate is whether the cliff is a
+# property of the frame's DURATION alone, or of the BIT PATTERN inside it.
+# A data slicer holds a running mark/space midpoint; an unbalanced or strongly
+# periodic pattern can walk that estimate until the eye closes, which would be
+# a threshold crossed at an elapsed time and would look exactly like a length
+# cliff. Three pads, interleaved within every cycle so pad never co-varies
+# with time:
+#   dots    '.' repeated. 0x2E, the original pad, and the pattern every earlier
+#           result was taken with.
+#   toggle  'U' repeated. 0x55 is 01010101, so it toggles on every other bit
+#           and spends equal time in mark and space.
+#   mixed   a fixed pseudo-random printable sequence: balanced on average and
+#           aperiodic, so it has neither a standing offset nor a spectral line.
+PAD_MARKER = {"dots": "D", "toggle": "U", "mixed": "M"}
+_MIXED_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+def pad_body(kind, n):
+    if n <= 0:
+        return ""
+    if kind == "dots":
+        return "." * n
+    if kind == "toggle":
+        return "U" * n
+    if kind == "mixed":
+        rnd = random.Random(20261115)       # fixed, so runs are comparable
+        return "".join(rnd.choice(_MIXED_ALPHABET) for _ in range(n))
+    raise ValueError(kind)
+
+
 def ax25_overhead(tx_via):
     ndigis = len([p for p in tx_via.replace(","," ").split() if p])
     return 7 * (2 + ndigis) + 1 + 1 + 4
@@ -99,6 +128,10 @@ def main():
     ap.add_argument("--dir", default=os.path.join(os.path.expanduser("~"), "aprs-igate"))
     ap.add_argument("--marker", default="L",
                     help="first character of the text, so runs at different\n                         power or antenna are separable in the log without\n                         changing any frame length")
+    ap.add_argument("--pads", default="dots",
+                    help="comma list of padding patterns to interleave: "
+                         "dots, toggle, mixed. Each (length, pad) is its own "
+                         "cell and the marker character records which.")
     ap.add_argument("--tx-via", default=None,
                     help="path to assume for the on-air arithmetic. Defaults "
                          "to TX_VIA from igate.conf. Set it when the station "
@@ -133,30 +166,38 @@ def main():
                 "SELFTEST_LOGIN": a.src, "SELFTEST_PASS": passcode,
                 "SELFTEST_FROM": a.src, "SELFTEST_TO": a.to})
 
-    ids = random.sample(range(10, 100), len(lengths) * a.cycles + a.cycles)
-    print("id\tbytes\trole\tsent_at")
+    pads = [p.strip() for p in a.pads.split(",") if p.strip()]
+    for p in pads:
+        if p not in PAD_MARKER:
+            sys.exit("unknown pad %r, want one of %s" % (p, ",".join(PAD_MARKER)))
+
+    # one cell per (length, pad), plus one control per cycle
+    cells = [(a.control, pads[0], "control")] + \
+            [(n, p, "test") for n in lengths for p in pads]
+    ids = random.sample(range(10, 100), len(cells) * a.cycles)
+    print("id\tbytes\tpad\trole\tsent_at")
     k = 0
     for cycle in range(a.cycles):
-        order = [a.control] + lengths[:]
+        order = cells[:]
         random.shuffle(order)
-        for n in order:
-            text = a.marker + "." * (n - FLOOR - 1)
+        for n, pad, role in order:
+            marker = a.marker if a.marker != "L" else PAD_MARKER[pad]
+            text = marker + pad_body(pad, n - FLOOR - 1)
             env["SELFTEST_TEXT"] = text
             env["SELFTEST_ID"] = "%02d" % ids[k]
-            role = "control" if n == a.control else "test"
             if a.dry_run:
                 info = "}%s>APRS,TCPIP,KD3CCO-10*::%-9s:%s{%02d" % (
                     a.src, a.to, text, ids[k])
-                print("%02d\t%d\t%s\tDRY len(info)=%d total=%d" % (
-                    ids[k], n, role, len(info), len(info) + OVERHEAD))
+                print("%02d\t%d\t%s\t%s\tDRY len(info)=%d total=%d" % (
+                    ids[k], n, pad, role, len(info), len(info) + OVERHEAD))
             else:
                 r = subprocess.run([sys.executable, "selftest_inject.py"],
                                    env=env, capture_output=True, text=True)
                 stamp = time.strftime("%H:%M:%S")
                 if r.returncode:
-                    print("%02d\t%d\t%s\tFAILED" % (ids[k], n, role), flush=True)
+                    print("%02d\t%d\t%s\t%s\tFAILED" % (ids[k], n, pad, role), flush=True)
                 else:
-                    print("%02d\t%d\t%s\t%s" % (ids[k], n, role, stamp), flush=True)
+                    print("%02d\t%d\t%s\t%s\t%s" % (ids[k], n, pad, role, stamp), flush=True)
             k += 1
             if not a.dry_run and k < len(ids):
                 time.sleep(a.interval)

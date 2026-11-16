@@ -610,6 +610,23 @@ Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
   KD3CCO-10: 43% against 44%. The handheld never exceeded 80 B, so it says
   nothing about the cliff, but the link is plainly not signal-limited.
 
+- **The bit pattern is not the variable either (2026-11-15).** Three paddings
+  at the same 90 bytes, interleaved within every cycle on the explicit
+  `W3YA-1` path at Low1: `.` repeated **0 of 12**, `U` (0x55, DC balanced)
+  **0 of 12**, pseudo-random printable **0 of 12**, control 74 B **4 of 12**.
+  `0 of 36` at a 33% control rate, p about 1 in 800,000. So a standing offset
+  or a spectral line walking the slicer is out. What survives of the
+  transmitted-signal family is only what no bit pattern touches: carrier
+  frequency error, deviation asymmetry and sound-card clock drift. **All three
+  are in turn hard to reconcile with K3DNA**, which decodes this station at 91
+  bytes on the same `APN391` firmware from 2.6x the distance, so the cause
+  points at W3YA-1's installation rather than its firmware.
+- **Next test, agreed with the author: swap the FT-2900R for the VX-6R** and
+  re-run the identical 48-frame matrix at Low1 on `TX_VIA = W3YA-1`. It swaps
+  modulator, PLL and PA in one move. **Void condition: if the 74 B control
+  stops coming back, the VX-6R is mis-deviated at Direwolf's audio level and
+  the long-frame zeros mean nothing.**
+
 ### Traps when running a length sweep
 
 - **`w3ya_length_sweep.py` had `AX25_OVERHEAD = 27` hardcoded**, which is right
@@ -631,6 +648,12 @@ Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
   showed up transmitted by K2ZRO-1, N3DXC-2, N3TJJ-13 and KB2WAC-1 within
   seconds. Filter on `f.src == "KD3CCO-10"` or they read as relays of our own
   frame, which is the same class of error the self-test echo check once made.
+- **Logrotate can fire mid-sweep and split the evidence.** It ran at 15:04 on
+  2026-11-15, 28 minutes into a 32-minute sweep, leaving 6 minutes in
+  `run/direwolf.log` and the rest in `run/direwolf.log.1.gz`. Analysing only
+  the current log found 9 of 48 frames and a 0% control, which looked like a
+  dead link and was missing data. **Pull both whenever a sweep spans a
+  rotation.**
 - **Do not name a pulled log `direwolf.log.gz`.** `logfiles()` skips the
   `direwolf.log.` prefix to drop the rotated copies that duplicate two
   archives, so a pull with that name parses to zero frames silently. Name it
