@@ -47,14 +47,56 @@
   .chip.bad { color:var(--drop); border-color:color-mix(in srgb,var(--drop) 45%,transparent); }
   .chip.live { color:var(--accent); border-color:color-mix(in srgb,var(--accent) 45%,transparent); }
 
-  #summary { overflow-x:auto; margin-top:.5rem; }
-  #summary table { border-collapse:collapse; font-size:.78rem; width:100%; }
-  #summary th, #summary td {
+  .tsv { overflow-x:auto; margin-top:.5rem; padding:0 .9rem .3rem; }
+  .tsv table { border-collapse:collapse; font-size:.78rem; width:100%; }
+  .tsv th, .tsv td {
     padding:.2rem .45rem; text-align:right; white-space:nowrap;
     border-bottom:1px solid color-mix(in srgb,var(--fg) 12%,transparent);
+    /* Equal-width digits, so a column of counts lines up. Deliberately NOT
+       on the stat-tile values, where they make a short number look loose. */
+    font-variant-numeric:tabular-nums;
   }
-  #summary th { color:var(--muted); font-weight:500; }
-  #summary td:first-child, #summary th:first-child { text-align:left; }
+  .tsv th { color:var(--dim); font-weight:500; }
+  .tsv td:first-child, .tsv th:first-child { text-align:left; }
+  .tsv td.gap { color:var(--warn); }
+
+  /* --- stat tiles with a 7-day sparkline ------------------------------- */
+  .tiles {
+    display:grid; gap:.5rem .9rem; padding:0 .9rem .5rem;
+    grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+  }
+  .tile { min-width:0; }
+  .tile .lbl {
+    color:var(--dim); font-size:.7rem; text-transform:uppercase;
+    letter-spacing:.06em; margin-bottom:.1rem;
+  }
+  /* Proportional figures on the value: tabular-nums makes a standalone
+     number read loose at this size. Same sans as the rest of the page. */
+  .tile .val { font-size:1.35rem; font-weight:650; line-height:1.1; }
+  .tile .sub { color:var(--dim); font-size:.68rem; margin-top:.1rem; }
+  .tile .sub b { color:var(--warn); font-weight:600; }
+  .tile svg { display:block; margin:.25rem 0 .1rem; width:100%; height:26px; }
+
+  /* Live counters. One row, the same hue per metric as the feed below, so
+     color follows the metric and not its position. */
+  .live { display:flex; flex-wrap:wrap; gap:.4rem; padding:0 .9rem .6rem; }
+  .live .c {
+    font:600 11px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    padding:.34rem .5rem; border-radius:999px; white-space:nowrap;
+    border:1px solid var(--line); color:var(--dim);
+  }
+  .live .c b { font-weight:700; font-variant-numeric:tabular-nums; }
+  .live .c.rx     { color:var(--rx);    border-color:color-mix(in srgb,var(--rx) 40%,transparent); }
+  .live .c.up     { color:var(--up);    border-color:color-mix(in srgb,var(--up) 40%,transparent); }
+  .live .c.gated  { color:var(--gated); border-color:color-mix(in srgb,var(--gated) 40%,transparent); }
+  .live .c.drop   { color:var(--drop);  border-color:color-mix(in srgb,var(--drop) 40%,transparent); }
+  .live .c.tx     { color:var(--tx);    border-color:color-mix(in srgb,var(--tx) 40%,transparent); }
+
+  .caveat {
+    color:var(--dim); font-size:.7rem; padding:0 .9rem .7rem;
+    max-width:62ch;
+  }
+  .caveat b { color:var(--warn); font-weight:600; }
   details.info {
     background:var(--panel); border-bottom:1px solid var(--line);
   }
@@ -122,6 +164,9 @@
     .row .t { font-size:11px; }
     #log { padding:.4rem .5rem 3.5rem; font-size:12px; }
     .grid { grid-template-columns:1fr; }
+    /* Two tiles across rather than one: the whole point is comparing them. */
+    .tiles { grid-template-columns:repeat(2,1fr); gap:.5rem .6rem; }
+    .tile .val { font-size:1.15rem; }
   }
 </style>
 </head>
@@ -142,10 +187,18 @@
   <div class="grid" id="settings"></div>
 </details>
 
+<details class="info" id="trafficpanel" open>
+  <summary>Traffic <small id="trafficchip"></small></summary>
+  <div class="live" id="live"></div>
+  <div class="tiles" id="tiles"></div>
+  <div class="caveat" id="trafficnote"></div>
+  <div class="tsv" id="daily"></div>
+</details>
+
 <details class="info" id="logpanel">
   <summary>Logging and archive <small id="logchip"></small></summary>
   <div class="grid" id="logging"></div>
-  <div id="summary"></div>
+  <div class="tsv" id="windowsnap"></div>
 </details>
 
 <div id="log" aria-live="polite">
@@ -185,10 +238,26 @@
     ["IGTXLIMIT", "TX rate limit"]
   ];
 
+  // The header chips only. Each has a <b> holding its value; the panel
+  // headlines are bare <small> elements and go through headline() instead.
+  //
+  // The guard is not defensive clutter. renderLogging used to call this on
+  // #logchip, which has no <b>, so `querySelector("b").textContent = v` threw
+  // on the one path it was written for -- a logging panel reporting itself
+  // unavailable. The throw propagated out of renderStatus into the fetch's
+  // .catch, which set the state chip to "unreachable", so a readable station
+  // with an unreadable archive directory displayed as an unreachable gateway.
   function chip(id, value, cls) {
     var el = document.getElementById(id);
-    el.querySelector("b").textContent = value;
+    if (!el) { return; }
+    var b = el.querySelector("b");
+    if (b) { b.textContent = value; } else { el.textContent = value; }
     el.className = "chip" + (cls ? " " + cls : "");
+  }
+
+  function headline(id, text) {
+    var el = document.getElementById(id);
+    if (el) { el.textContent = text || ""; }
   }
 
   function renderStatus(s) {
@@ -228,7 +297,15 @@
       dl2.appendChild(dt2); dl2.appendChild(dd2); grid.appendChild(dl2);
     }
 
-    renderLogging(s.logging);
+    // Order matters only for readability: traffic first, because that is the
+    // panel left open. Each guards its own input, so neither can stop the
+    // other from rendering.
+    try {
+      renderTraffic(s);
+    } catch (e) {
+      headline("trafficchip", "· unavailable");
+    }
+    renderLogging(s.logging, s.today);
 
     // Whatever "is-running" reported: container status in docker mode, pids in
     // bare-metal. The page does not need to know which mode it is looking at.
@@ -257,6 +334,432 @@
     return Math.round(sec / 3600) + " h ago";
   }
 
+  // --- numbers -------------------------------------------------------------
+
+  // Thousands separators up to 5 figures, then compact. "—" for a number that
+  // was not measured, which is never the same thing as zero.
+  function num(n) {
+    if (n === null || n === undefined || n === "") { return "—"; }
+    n = Number(n);
+    if (!isFinite(n)) { return "—"; }
+    if (Math.abs(n) < 100000) { return n.toLocaleString(); }
+    if (Math.abs(n) < 1e6) { return (n / 1000).toFixed(1) + "K"; }
+    return (n / 1e6).toFixed(2) + "M";
+  }
+
+  function clock(epochSeconds) {
+    if (!epochSeconds) { return "—"; }
+    var d = new Date(epochSeconds * 1000);
+    return d.toTimeString().slice(0, 8);
+  }
+
+  // --- sparkline -----------------------------------------------------------
+
+  var SVGNS = "http://www.w3.org/2000/svg";
+
+  /**
+   * A seven-day bar sparkline.
+   *
+   * points: [{day, value, state}], oldest first. `state` is "ok",
+   * "partial" or "absent".
+   *
+   * Two decisions worth keeping:
+   *
+   *   A day that was NOT MEASURED is never drawn as a bar. A reboot clears
+   *   the tmpfs the console log lives in, so the gated counts for that day
+   *   are an undercount; drawn to scale it would read as a quiet day, which
+   *   is the single most misleading thing this panel could do. Those days get
+   *   a hairline track at the baseline and say so on hover, and the tile
+   *   prints how many of the seven were measured.
+   *
+   *   The bars are a dimmed step of the metric's own hue with the newest day
+   *   at full strength, so identity comes from the hue the same metric wears
+   *   in the live feed and in its chip, never from position.
+   */
+  function spark(points, hue) {
+    var W = 112, H = 26, BASE = H - 1, GAP = 2;
+    var svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("role", "img");
+    var n = points.length || 1;
+    var bw = Math.max(2, (W - GAP * (n - 1)) / n);
+    var measured = points.filter(function (p) {
+      return p.state !== "absent" && p.value !== null && p.value !== undefined;
+    });
+    var max = 0;
+    measured.forEach(function (p) { if (p.value > max) { max = p.value; } });
+
+    var names = points.map(function (p) {
+      if (p.state === "absent") { return p.day + ": no row"; }
+      if (p.state === "partial") {
+        return p.day + ": " + num(p.value) + " (partial, log did not span the day)";
+      }
+      return p.day + ": " + num(p.value);
+    });
+    svg.setAttribute("aria-label", names.join("; "));
+
+    // Baseline: a solid hairline one shade off the surface, no gridlines.
+    var base = document.createElementNS(SVGNS, "line");
+    base.setAttribute("x1", 0); base.setAttribute("x2", W);
+    base.setAttribute("y1", BASE + 0.5); base.setAttribute("y2", BASE + 0.5);
+    base.setAttribute("stroke", "currentColor");
+    base.setAttribute("stroke-opacity", ".22");
+    svg.appendChild(base);
+
+    points.forEach(function (p, i) {
+      var x = i * (bw + GAP);
+      var newest = i === points.length - 1;
+      var g = document.createElementNS(SVGNS, "g");
+      var title = document.createElementNS(SVGNS, "title");
+      title.textContent = names[i];
+      g.appendChild(title);
+
+      if (p.state === "absent" || p.value === null || p.value === undefined) {
+        // Not measured: a stub at the baseline, not a zero-height bar at it.
+        var stub = document.createElementNS(SVGNS, "rect");
+        stub.setAttribute("x", x); stub.setAttribute("y", BASE - 1);
+        stub.setAttribute("width", bw); stub.setAttribute("height", 2);
+        stub.setAttribute("rx", 1);
+        stub.setAttribute("fill", "currentColor");
+        stub.setAttribute("fill-opacity", ".28");
+        g.appendChild(stub);
+      } else {
+        var h = max > 0 ? Math.max(2, (p.value / max) * (BASE - 3)) : 2;
+        var r = document.createElementNS(SVGNS, "rect");
+        r.setAttribute("x", x); r.setAttribute("y", BASE - h);
+        r.setAttribute("width", bw); r.setAttribute("height", h);
+        r.setAttribute("rx", Math.min(2, bw / 2));
+        r.setAttribute("fill", hue);
+        r.setAttribute("fill-opacity",
+                       newest ? "1" : (p.state === "partial" ? ".3" : ".55"));
+        g.appendChild(r);
+      }
+      // A hit target the full height of the chart, including the gap, so a
+      // 14px bar is not a 14px target.
+      var hit = document.createElementNS(SVGNS, "rect");
+      hit.setAttribute("x", x - GAP / 2); hit.setAttribute("y", 0);
+      hit.setAttribute("width", bw + GAP); hit.setAttribute("height", H);
+      hit.setAttribute("fill", "transparent");
+      g.appendChild(hit);
+      svg.appendChild(g);
+    });
+    return svg;
+  }
+
+  /** label · value · sparkline · sub. Sentence case, no trailing colon. */
+  function tile(parent, spec) {
+    var d = document.createElement("div");
+    d.className = "tile";
+    var l = document.createElement("div");
+    l.className = "lbl"; l.textContent = spec.label;
+    var v = document.createElement("div");
+    v.className = "val"; v.textContent = spec.value;
+    v.style.color = spec.hue || "inherit";
+    d.appendChild(l); d.appendChild(v);
+    if (spec.points && spec.points.length) {
+      d.appendChild(spark(spec.points, spec.hue || "currentColor"));
+    }
+    if (spec.sub) {
+      var s = document.createElement("div");
+      s.className = "sub";
+      // One bolded fragment at most, for the "not all days measured" case.
+      if (spec.warn) {
+        s.appendChild(document.createTextNode(spec.sub + " · "));
+        var b = document.createElement("b");
+        b.textContent = spec.warn;
+        s.appendChild(b);
+      } else {
+        s.textContent = spec.sub;
+      }
+      d.appendChild(s);
+    }
+    parent.appendChild(d);
+    return d;
+  }
+
+  // --- traffic -------------------------------------------------------------
+
+  var CSSVAR = function (name) {
+    return getComputedStyle(document.documentElement)
+      .getPropertyValue(name).trim() || "currentColor";
+  };
+
+  /**
+   * Row lookup by column NAME, never by index.
+   *
+   * daily-summary.tsv gains columns over time -- it went from 11 to 25 on
+   * 2026-11-17 -- and rows written before a column existed are short. An
+   * absent field is `null` here and prints as "—": it means the figure was
+   * not measured, and must not be read, summed, or averaged as a zero.
+   */
+  function rowReader(header) {
+    var idx = {};
+    (header || []).forEach(function (name, i) { idx[name] = i; });
+    return function (row, name) {
+      var i = idx[name];
+      if (i === undefined || !row || i >= row.length) { return null; }
+      var t = (row[i] || "").trim();
+      if (t === "") { return null; }
+      var n = Number(t);
+      return isFinite(n) ? n : null;
+    };
+  }
+
+  /** The last `want` days ending at the newest row, with gaps made explicit. */
+  function series(header, rows, column, want) {
+    var get = rowReader(header);
+    var dated = (rows || []).filter(function (r) {
+      return r && /^\d{4}-\d{2}-\d{2}$/.test(r[0]);
+    });
+    if (!dated.length) { return []; }
+    var byDay = {};
+    dated.forEach(function (r) { byDay[r[0]] = r; });
+    var last = dated[dated.length - 1][0];
+    var out = [];
+    var end = new Date(last + "T00:00:00Z");
+    for (var i = want - 1; i >= 0; i--) {
+      var d = new Date(end.getTime() - i * 86400000)
+                .toISOString().slice(0, 10);
+      var r = byDay[d];
+      if (!r) {
+        out.push({ day: d, value: null, state: "absent" });
+        continue;
+      }
+      out.push({
+        day: d,
+        value: get(r, column),
+        state: get(r, "day_partial") === 1 ? "partial" : "ok"
+      });
+    }
+    return out;
+  }
+
+  function renderTraffic(s) {
+    var L = s.logging || {};
+    var W = L.window || null;
+    var days = L.window_days || 7;
+    var header = L.summary_header || [];
+    var rows = L.summary_rows || [];
+    var today = s.today || null;
+    var live = s.live || null;
+
+    // --- live counters ---
+    var liveEl = document.getElementById("live");
+    liveEl.textContent = "";
+    if (live) {
+      [["rx", "heard", "rx_frames"],
+       ["up", "gated up", "gated_up"],
+       ["gated", "gated down", "gated_down"],
+       ["drop", "not whitelisted", "is_dropped"],
+       ["tx", "own tx", "tx_local"]].forEach(function (m) {
+        var c = document.createElement("span");
+        c.className = "c " + m[0];
+        c.appendChild(document.createTextNode(m[1] + " "));
+        var b = document.createElement("b");
+        b.textContent = num(live[m[2]] || 0);
+        c.appendChild(b);
+        liveEl.appendChild(c);
+      });
+      var since = document.createElement("span");
+      since.className = "c";
+      since.textContent = "live since " + clock(live.since);
+      liveEl.appendChild(since);
+    }
+
+    // --- the four tiles ---
+    var tilesEl = document.getElementById("tiles");
+    tilesEl.textContent = "";
+    var note = [];
+
+    function windowSub() {
+      return W ? days + " days to " + W.last : "";
+    }
+
+    // The sub-line's bolded half: how much of the window actually stands
+    // behind the number above it. Blank when all of it does.
+    function shortfall(countedField) {
+      if (!W) { return ""; }
+      var have = W[countedField];
+      if (have === undefined || have === null) { return ""; }
+      if (have < days) { return have + " of " + days + " days measured"; }
+      if (W.days_partial) { return W.days_partial + " partial"; }
+      return "";
+    }
+
+    tile(tilesEl, {
+      label: "Packets heard",
+      value: W ? num(W.rx_packets) : "—",
+      hue: CSSVAR("--rx"),
+      points: series(header, rows, "rx_packets", days),
+      sub: windowSub(),
+      warn: shortfall("rx_packets_days")
+    });
+
+    // The union, not the sum. Seven days of ~300 stations is not 2,100
+    // distinct stations, and the bars below are per-day counts, so the big
+    // number is deliberately smaller than they add up to.
+    tile(tilesEl, {
+      label: "Stations heard",
+      value: W ? num(W.stations) : "—",
+      hue: CSSVAR("--up"),
+      points: series(header, rows, "rx_stations", days),
+      sub: "distinct over " + days + " days, a union",
+      warn: W && W.stations_new ? ("+" + W.stations_new + " first-time") : ""
+    });
+
+    tile(tilesEl, {
+      label: "Gated to APRS-IS",
+      value: W ? num(W.day_gated_up) : "—",
+      hue: CSSVAR("--gated"),
+      points: series(header, rows, "day_gated_up", days),
+      sub: windowSub(),
+      warn: shortfall("day_gated_up_days")
+    });
+
+    tile(tilesEl, {
+      label: "Gated to RF",
+      value: W ? num(W.day_gated_down) : "—",
+      hue: CSSVAR("--tx"),
+      points: series(header, rows, "day_gated_down", days),
+      sub: W && W.day_is_offered !== null && W.day_is_offered !== undefined
+             ? "of " + num(W.day_is_offered) + " offered by the server"
+             : windowSub(),
+      warn: shortfall("day_gated_down_days")
+    });
+
+    // --- today so far, and the honest caveats ---
+    if (today && today.present) {
+      note.push("Today " + today.day + " so far: " + num(today.packets)
+                + " heard from " + num(today.stations) + " stations, "
+                + num(today.direct) + " copied direct.");
+    } else if (today) {
+      note.push("No dated log for today yet.");
+    }
+    if (W) {
+      if (W.days_present < days) {
+        note.push("Only " + W.days_present + " of the last " + days
+                  + " days have a summary row, so every total above is a sum "
+                  + "over the days that do.");
+      }
+      if (W.days_partial) {
+        note.push(W.days_partial + " of those days are flagged partial: the "
+                  + "console log did not span the whole UTC day, usually a "
+                  + "reboot, so the gated counts for them are an undercount. "
+                  + "The heard counts come from the card and are unaffected.");
+      }
+      if (W.undated) {
+        note.push(num(W.undated) + " log lines carried no timestamp and were "
+                  + "counted toward no day.");
+      }
+    }
+    note.push("Heard counts include this station's own beacons returning off "
+              + "the air after a digipeater repeats them; those are broken "
+              + "out as rx_own and excluded from the station counts.");
+    var noteEl = document.getElementById("trafficnote");
+    noteEl.textContent = "";
+    note.forEach(function (t, i) {
+      var p = document.createElement("div");
+      if (i) { p.style.marginTop = ".25rem"; }
+      p.textContent = t;
+      noteEl.appendChild(p);
+    });
+
+    // --- headline beside the panel title ---
+    if (today && today.present) {
+      headline("trafficchip", "· " + num(today.packets) + " heard today");
+    } else if (W) {
+      headline("trafficchip", "· " + num(W.rx_packets) + " in "
+                              + W.days_present + " days");
+    } else {
+      headline("trafficchip", "");
+    }
+
+    // --- the per-day table: exact columns only ---
+    var dailyEl = document.getElementById("daily");
+    dailyEl.textContent = "";
+    if (!rows.length || !header.length) { return; }
+    var WANT = [
+      ["date", "day"],
+      ["rx_packets", "heard"],
+      ["rx_direct", "direct"],
+      ["rx_stations", "stns"],
+      ["day_gated_up", "up"],
+      ["day_gated_down", "down"],
+      ["day_is_offered", "offered"],
+      ["day_beacons", "beacons"],
+      ["day_beacon_repeats", "repeats"],
+      ["day_partial", "part"]
+    ];
+    var idx = {};
+    header.forEach(function (name, i) { idx[name] = i; });
+    var present = WANT.filter(function (c) { return idx[c[0]] !== undefined; });
+    var table = document.createElement("table");
+    var thead = document.createElement("tr");
+    present.forEach(function (c) {
+      var th = document.createElement("th");
+      th.textContent = c[1];
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+
+    // A day the station did not run has no row at all, and a table that
+    // simply skips it hides an outage behind a date sequence nobody reads
+    // closely. Fill the window's missing days in explicitly.
+    var byDay = {};
+    rows.forEach(function (r) { if (r && r[0]) { byDay[r[0]] = r; } });
+    var ordered = [];
+    if (W && W.last) {
+      var end = new Date(W.last + "T00:00:00Z");
+      for (var k = 0; k < days; k++) {
+        var dstr = new Date(end.getTime() - k * 86400000)
+                     .toISOString().slice(0, 10);
+        ordered.push(byDay[dstr] || { missing: dstr });
+      }
+    } else {
+      ordered = rows.slice().reverse();
+    }
+
+    ordered.forEach(function (r) {
+      var tr = document.createElement("tr");
+      if (r.missing) {
+        var td0 = document.createElement("td");
+        td0.textContent = r.missing;
+        td0.className = "gap";
+        tr.appendChild(td0);
+        var rest = document.createElement("td");
+        rest.colSpan = present.length - 1;
+        rest.className = "gap";
+        rest.style.textAlign = "left";
+        // Short on purpose: this cell sits in a horizontally scrolling
+        // container on a phone, and the note above the table already says
+        // how many days of the window are missing and what that means.
+        rest.textContent = "no summary row";
+        tr.appendChild(rest);
+        table.appendChild(tr);
+        return;
+      }
+      present.forEach(function (c) {
+        var td = document.createElement("td");
+        var raw = r[idx[c[0]]];
+        if (c[0] === "date") {
+          td.textContent = raw === undefined ? "—" : raw;
+        } else if (c[0] === "day_partial") {
+          // A flag, not a count. "yes" earns the eye; blank is the quiet case.
+          td.textContent = raw === "1" ? "yes" : (raw === "0" ? "" : "—");
+          if (raw === "1") { td.className = "gap"; }
+        } else {
+          var t = (raw === undefined || raw === null) ? "" : String(raw).trim();
+          td.textContent = t === "" ? "—" : num(t);
+          if (t === "") { td.className = "gap"; }
+        }
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    dailyEl.appendChild(table);
+  }
+
   function kv(grid, label, value, cls) {
     var dl = document.createElement("dl");
     dl.className = "kv";
@@ -271,45 +774,62 @@
 
   // The morning check, without an ssh session: is today's dated log filling,
   // did the timer fire, and is rotation outpacing the archiver.
-  function renderLogging(L) {
+  //
+  // Traffic figures are NOT here any more. They are in renderTraffic, which
+  // shows only columns that are exact for the day they sit beside; the
+  // rolling-window columns appear below under their own heading, because a
+  // window total in a dated row is read as that day's and is not.
+  function renderLogging(L, today) {
     var grid = document.getElementById("logging");
-    var sumEl = document.getElementById("summary");
-    grid.textContent = ""; sumEl.textContent = "";
+    var snapEl = document.getElementById("windowsnap");
+    grid.textContent = ""; snapEl.textContent = "";
     if (!L || L.error) {
       kv(grid, "Status", L ? "unavailable" : "not reported");
-      chip("logchip", "", "");
-      document.getElementById("logchip").textContent = "";
+      headline("logchip", "· unavailable");
       return;
     }
 
     var t = L.today || {};
-    var head = document.getElementById("logchip");
 
-    // One word in the summary line, so the panel does not have to be opened
-    // to know whether anything is wrong.
+    // One phrase beside the title, so the panel does not have to be opened to
+    // know whether anything is wrong.
     if (!t.present) {
-      head.textContent = "· no log today";
+      headline("logchip", "· no log today");
     } else if (t.age_s !== null && t.age_s > 3600) {
-      head.textContent = "· stale " + since(t.age_s);
+      headline("logchip", "· stale " + since(t.age_s));
     } else {
-      head.textContent = "· " + bytes(t.bytes) + " today";
+      headline("logchip", "· " + bytes(t.bytes) + " today");
     }
 
+    // The packet count comes from the incremental reader rather than from
+    // _day_file's line count, which is skipped above 2 MB -- and a real day
+    // here runs 1 to 2.3 MB, so the count used to disappear from the panel
+    // partway through the busiest days.
+    var rowText = "";
+    if (today && today.present && today.packets !== null) {
+      rowText = " · " + num(today.packets) + " packets";
+    } else if (t.rows !== null && t.rows !== undefined) {
+      rowText = " · " + num(t.rows) + " rows";
+    }
     kv(grid, "Today (UTC)",
-       t.present ? bytes(t.bytes) + (t.rows !== null ? " · " + t.rows + " rows" : "")
-                 + " · written " + since(t.age_s)
+       t.present ? bytes(t.bytes) + rowText + " · written " + since(t.age_s)
                  : "not created yet",
        t.present ? "" : "mark");
 
     var y = L.yesterday || {};
     kv(grid, "Yesterday",
-       y.present ? bytes(y.bytes) + (y.rows !== null ? " · " + y.rows + " rows" : "")
-                 : "absent");
+       y.present ? bytes(y.bytes) + (y.rows !== null ? " · " + num(y.rows) + " rows" : "")
+                 : "absent",
+       y.present ? "" : "mark");
 
+    // "not installed" is a different problem from "installed and stopped",
+    // and systemctl reports both as inactive without LoadState. A Docker
+    // deployment has no timer at all and should not be nagged about one.
     var timer = L.timer || {};
+    var tstate = timer.state || "unknown";
     kv(grid, "Archive timer",
-       (timer.state || "unknown") + (timer.next ? " · next " + timer.next : ""),
-       timer.state === "active" ? "" : "mark");
+       tstate + (timer.next ? " · next " + timer.next : ""),
+       tstate === "active" ? "" : (tstate === "unknown" ? "" : "mark"));
     if (timer.last) { kv(grid, "Last run", timer.last); }
 
     kv(grid, "Archived chunks",
@@ -340,40 +860,56 @@
       kv(grid, "Daily summary", "no rows yet");
       return;
     }
-    // Only the columns worth reading on a phone.
-    var WANT = ["date", "rx_packets", "rx_direct", "rx_stations",
-                "rx_stations_direct", "win_beacons", "win_beacon_repeats",
-                "chunks_saved"];
-    var SHORT = { date: "day", rx_packets: "rx", rx_direct: "direct",
-                  rx_stations: "stns", rx_stations_direct: "direct stns",
-                  win_beacons: "beacons", win_beacon_repeats: "repeats",
-                  chunks_saved: "chunks" };
-    var idx = WANT.map(function (k) { return hdr.indexOf(k); });
-    var table = document.createElement("table");
-    var thead = document.createElement("tr");
-    WANT.forEach(function (k, i) {
-      if (idx[i] < 0) { return; }
+
+    // chunks_saved is a per-day count and belongs with the health fields.
+    // Above one means the log rotated twice between archiver runs; at two
+    // generations kept, a third rotation inside a day loses one.
+    var get = rowReader(hdr);
+    var newest = rows[rows.length - 1];
+    var chunks = get(newest, "chunks_saved");
+    if (chunks !== null) {
+      kv(grid, "Chunks captured (" + newest[0] + ")", String(chunks),
+         chunks > 1 ? "mark" : "");
+    }
+
+    // --- the window snapshot, under a heading that says what it is ---------
+    //
+    // These are the win_* columns. Each is a count over whatever the console
+    // log held when the archiver ran, about eight days, NOT over the day in
+    // the row. They were previously rendered in the dated table with the
+    // prefix stripped, where win_beacons read as that day's beacon count: at
+    // BEACON_EVERY = 2:00:00 that is twelve a day against a window figure
+    // near ninety-six, so the table read about eight times high.
+    var WIN = [["win_frames", "frames"], ["win_beacons", "beacons"],
+               ["win_beacon_repeats", "repeats"], ["win_gated", "gated"],
+               ["win_gated_repeats", "gated repeats"]];
+    var have = WIN.filter(function (c) { return get(newest, c[0]) !== null; });
+    if (!have.length) { return; }
+
+    var cap = document.createElement("div");
+    cap.className = "caveat";
+    cap.style.padding = "0";
+    cap.appendChild(document.createTextNode(
+      "Rolling window as of " + newest[0] + ": each number counts the whole "
+      + "console log, about eight days, and is not a figure for that day. "));
+    var b = document.createElement("b");
+    b.textContent = "Difference consecutive runs for a rate.";
+    cap.appendChild(b);
+    snapEl.appendChild(cap);
+
+    var wt = document.createElement("table");
+    var wh = document.createElement("tr");
+    var wv = document.createElement("tr");
+    have.forEach(function (c) {
       var th = document.createElement("th");
-      th.textContent = SHORT[k] || k;
-      thead.appendChild(th);
+      th.textContent = c[1];
+      wh.appendChild(th);
+      var td = document.createElement("td");
+      td.textContent = num(get(newest, c[0]));
+      wv.appendChild(td);
     });
-    table.appendChild(thead);
-    rows.slice().reverse().forEach(function (r) {
-      var tr = document.createElement("tr");
-      WANT.forEach(function (k, i) {
-        if (idx[i] < 0) { return; }
-        var td = document.createElement("td");
-        var v = r[idx[i]];
-        td.textContent = v === undefined ? "—" : v;
-        // More than one chunk captured in a day means the log rotated twice
-        // between runs; at two generations kept, a third rotation would lose
-        // one. This is the number to raise the timer frequency on.
-        if (k === "chunks_saved" && Number(v) > 1) { td.className = "mark"; }
-        tr.appendChild(td);
-      });
-      table.appendChild(tr);
-    });
-    sumEl.appendChild(table);
+    wt.appendChild(wh); wt.appendChild(wv);
+    snapEl.appendChild(wt);
   }
 
   function pollStatus() {

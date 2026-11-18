@@ -33,7 +33,12 @@ trap 'rm -rf "$WORK"' EXIT
 mkstation() {
   local d="$1"
   mkdir -p "$d/run" "$d/logs"
-  cp "$HERE/igate-archive.sh" "$d/"
+  # igate_counts.py too: the archiver asks it for the day_* and rx_stations_*
+  # columns, and without it those fields come out EMPTY rather than wrong.
+  # A station missing the helper is a case worth having covered -- see
+  # "the row survives a missing helper" below -- so it is copied here and
+  # removed there, rather than being absent everywhere by accident.
+  cp "$HERE/igate-archive.sh" "$HERE/igate_counts.py" "$d/"
   cat > "$d/igate.conf" <<EOF
 MYCALL = KD3CCO-10
 LOG_DIR = $d/logs
@@ -143,6 +148,166 @@ IGATE_ARCHIVE_DAY=2026-11-01 "$V/igate-archive.sh" "$V/igate.conf" >/dev/null
 ROW="$(grep '^2026-11-01' "$V/archive/daily-summary.tsv")"
 is "the sent frame is counted once" "$(cut -f9 <<<"$ROW")"  "1"
 is "and no repeat is invented"      "$(cut -f10 <<<"$ROW")" "0"
+
+echo
+echo "the day_* columns are exact for the UTC day, unlike the win_* ones"
+# The distinction the whole feature rests on. One console log, two column
+# groups: win_* counts everything in the file, day_* counts only 2026-11-16.
+# 19:30 Eastern on the 16th is 00:30 UTC on the 17th and belongs to the 17th.
+DAYS="$WORK/f"; mkstation "$DAYS"
+mklog "$DAYS/logs/2026-11-16.log" "WO3T-1,WO3T-1" "W3YA-1,W3YA-1" "KD3CCO-10,W3YA-1"
+mklog "$DAYS/logs/2026-11-15.log" "WO3T-1,WO3T-1" "N3DXC,N3DXC"
+{
+  echo '[0.3 2026-11-15T18:50:00-0500] WO3T-1>APNU3B,WIDE1-1*:!4029.80NS07807.92W#'
+  echo '[0.3 2026-11-16T09:00:00-0500] WO3T-1>APNU3B,WIDE1-1*:!4029.80NS07807.92W#'
+  echo '[rx>ig] WO3T-1>APNU3B,qAR,KD3CCO-10:!4029.80NS07807.92W#'
+  echo '[rx>ig] #'
+  echo '[ig>tx] N8GD-1>APRS,TCPIP*,qAC,T2NALA:!4100.00N/08000.00W#'
+  echo '[0L 2026-11-16T09:30:00-0500] KD3CCO-10>APDW17,WIDE1-1:!4046.25NR07747.50W&'
+  echo '[0L 2026-11-16T10:00:00-0500] KD3CCO-10>APDW17,WIDE1-1:}KD3CCO-1>APRS,TCPIP,KD3CCO-10*::KD3CCO-7 :hi'
+  echo '[0.1 2026-11-16T10:00:05-0500] KD3CCO-10>APDW17,W3YA-1*:!4046.25NR07747.50W&'
+  echo '[0.3 2026-11-16T19:30:00-0500] WO3T-1>APNU3B,WIDE1-1*:!x'
+} > "$DAYS/run/direwolf.log"
+IGATE_ARCHIVE_DAY=2026-11-16 "$DAYS/igate-archive.sh" "$DAYS/igate.conf" >/dev/null
+SUM="$DAYS/archive/daily-summary.tsv"
+# Read by NAME, which is how the monitor reads it and the only safe way once
+# the header can widen.
+val() { python3 - "$SUM" "$1" "$2" <<'PY'
+import sys
+rows=[l.rstrip("\n").split("\t") for l in open(sys.argv[1]) if not l.startswith("#")]
+hdr=rows[0]
+for r in rows[1:]:
+    if r[0]==sys.argv[2]:
+        d=dict(zip(hdr,r)); print(d.get(sys.argv[3],"<absent>")); break
+else: print("<no row>")
+PY
+}
+is "win_frames counts the whole log"      "$(val 2026-11-16 win_frames)" "6"
+is "day_frames counts only that UTC day"  "$(val 2026-11-16 day_frames)" "4"
+is "and matches rx plus tx for the day"   "$(val 2026-11-16 day_rx_frames)/$(val 2026-11-16 day_tx_frames)" "2/2"
+is "one beacon that day"                  "$(val 2026-11-16 day_beacons)" "1"
+is "one gated UP to APRS-IS"              "$(val 2026-11-16 day_gated_up)" "1"
+is "the keepalive is not gated traffic"   "$(val 2026-11-16 day_is_offered)" "1"
+is "one gated DOWN to RF"                 "$(val 2026-11-16 day_gated_down)" "1"
+is "nothing undated"                      "$(val 2026-11-16 day_undated)" "0"
+is "the log spanned the day"              "$(val 2026-11-16 day_partial)" "0"
+is "own beacon returns are broken out"    "$(val 2026-11-16 rx_own)" "1"
+# 11-16 has WO3T-1, W3YA-1, KD3CCO-10; 11-15 has WO3T-1, N3DXC. Excluding
+# MYCALL the union is WO3T-1, W3YA-1, N3DXC = 3, while the daily counts sum
+# to 5. Summing them is the error this column exists to prevent.
+is "the station union is a union, not a sum" "$(val 2026-11-16 rx_stations_win)" "3"
+is "rx_stations still includes MYCALL, unchanged" "$(val 2026-11-16 rx_stations)" "3"
+
+echo
+echo "a log that does not span the day says so"
+# The reboot case. run/ is a tmpfs, so a reboot starts the console log from
+# empty and that day's day_* columns are an undercount -- while the rx_*
+# columns, which come from the card, are intact for the same day. A row that
+# cannot tell those apart is unusable.
+PART="$WORK/g"; mkstation "$PART"
+mklog "$PART/logs/2026-11-16.log" "WO3T-1,WO3T-1"
+{
+  echo '[0.3 2026-11-16T08:00:00-0500] WO3T-1>APNU3B,WIDE1-1*:!x'
+  echo '[0.3 2026-11-16T19:00:00-0500] WO3T-1>APNU3B,WIDE1-1*:!x'
+} > "$PART/run/direwolf.log"
+IGATE_ARCHIVE_DAY=2026-11-16 "$PART/igate-archive.sh" "$PART/igate.conf" >/dev/null
+SUM="$PART/archive/daily-summary.tsv"
+is "partial is set when the log starts mid-day" "$(val 2026-11-16 day_partial)" "1"
+is "but the receive column is still exact"      "$(val 2026-11-16 rx_packets)"  "1"
+
+echo
+echo "a pre-2026-11-08 log reports undated rather than zero"
+# Logs from before -T carry no stamps at all. Crediting their whole contents
+# to one day would be wrong by about eight times; reporting zero would read as
+# a quiet day. Neither: undated, and partial.
+OLD="$WORK/h"; mkstation "$OLD"
+mklog "$OLD/logs/2026-11-16.log" "WO3T-1,WO3T-1"
+{
+  echo '[0L] KD3CCO-10>APDW17,WIDE1-1:!4046.25NR07747.50W&'
+  echo '[0.3] WO3T-1>APNU3B,WIDE1-1*:!x'
+  echo '[rx>ig] WO3T-1>APNU3B,qAR,KD3CCO-10:!x'
+} > "$OLD/run/direwolf.log"
+IGATE_ARCHIVE_DAY=2026-11-16 "$OLD/igate-archive.sh" "$OLD/igate.conf" >/dev/null
+SUM="$OLD/archive/daily-summary.tsv"
+is "three unstamped lines are undated" "$(val 2026-11-16 day_undated)" "3"
+is "none of them is credited to the day" "$(val 2026-11-16 day_frames)" "0"
+is "and the row is flagged partial"      "$(val 2026-11-16 day_partial)" "1"
+is "while win_* still counts them"       "$(val 2026-11-16 win_frames)" "2"
+
+echo
+echo "an older summary file is widened, not corrupted"
+MIG="$WORK/i"; mkstation "$MIG"
+mklog "$MIG/logs/2026-11-16.log" "WO3T-1,WO3T-1"
+{
+  echo '[0.3 2026-11-15T18:50:00-0500] WO3T-1>APNU3B,WIDE1-1*:!x'
+  echo '[0L 2026-11-16T09:30:00-0500] KD3CCO-10>APDW17,WIDE1-1:!x'
+  echo '[0.3 2026-11-16T19:30:00-0500] WO3T-1>APNU3B,WIDE1-1*:!x'
+} > "$MIG/run/direwolf.log"
+mkdir -p "$MIG/archive"
+{
+  printf '# Receive columns are EXACT for the named UTC day, from Direwolf LOGDIR.\n'
+  printf '# Transmit columns are a ROLLING WINDOW over whatever the packet log still\n'
+  printf '# holds (about 8 days) -- the console log has no per-line timestamps.\n'
+  printf 'date\trx_packets\trx_direct\trx_stations\trx_stations_direct\twin_frames\twin_beacons\twin_beacon_repeats\twin_gated\twin_gated_repeats\tchunks_saved\n'
+  printf '2026-11-10\t9047\t2100\t310\t14\t30247\t394\t160\t50\t2\t1\n'
+} > "$MIG/archive/daily-summary.tsv"
+IGATE_ARCHIVE_DAY=2026-11-16 "$MIG/igate-archive.sh" "$MIG/igate.conf" >/dev/null
+SUM="$MIG/archive/daily-summary.tsv"
+is "exactly one header line remains"   "$(grep -c '^date	' "$SUM")" "1"
+is "the old row's own columns survive" "$(val 2026-11-10 rx_packets)" "9047"
+is "and its win_beacons is untouched"  "$(val 2026-11-10 win_beacons)" "394"
+# Left SHORT on purpose: an empty field says "not measured", a zero would
+# claim the traffic was counted and was nil.
+is "the old row has no day_* values invented for it" \
+   "$(val 2026-11-10 day_beacons)" "<absent>"
+is "the new row does have them"        "$(val 2026-11-16 day_beacons)" "1"
+is "the stale no-timestamps caveat is gone" \
+   "$(grep -c 'no per-line timestamps' "$SUM")" "0"
+# Running again must not widen a second time or duplicate anything.
+IGATE_ARCHIVE_DAY=2026-11-16 "$MIG/igate-archive.sh" "$MIG/igate.conf" >/dev/null
+is "a second run leaves one header"   "$(grep -c '^date	' "$SUM")" "1"
+is "and one row for the day"          "$(grep -c '^2026-11-16	' "$SUM")" "1"
+
+echo
+echo "the row survives a missing helper"
+# python3 or igate_counts.py absent must not cost the rx_* columns, which are
+# the ones that cannot be recomputed later from anything else.
+NOH="$WORK/j"; mkstation "$NOH"
+rm -f "$NOH/igate_counts.py"
+mklog "$NOH/logs/2026-11-16.log" "WO3T-1,WO3T-1" "W3YA-1,W3YA-1"
+echo '[0L] KD3CCO-10>APDW17,WIDE1-1:!x' > "$NOH/run/direwolf.log"
+IGATE_ARCHIVE_DAY=2026-11-16 "$NOH/igate-archive.sh" "$NOH/igate.conf" >/dev/null
+SUM="$NOH/archive/daily-summary.tsv"
+is "the receive columns are still written" "$(val 2026-11-16 rx_packets)" "2"
+is "the win_ columns are still written"    "$(val 2026-11-16 win_beacons)" "1"
+# On a station that never had the helper the columns are not declared at all,
+# which is honest: the file does not promise a figure it cannot produce.
+is "the day_ columns are not declared"     "$(val 2026-11-16 day_frames)" "<absent>"
+is "and the file is self-consistent" \
+   "$(awk -F'\t' '/^2026-11-16\t/{print NF}' "$SUM")" \
+   "$(awk -F'\t' '/^date\t/{print NF}' "$SUM")"
+
+echo
+echo "a helper that disappears after the header is wide leaves empty fields"
+# The order that matters on a real station: the columns exist from earlier
+# runs, and one night python3 is missing or the file is not executable. The
+# row must stay the declared width with those fields EMPTY. A zero there
+# would read as a measured quiet day and would be averaged in as one.
+GON="$WORK/k"; mkstation "$GON"
+mklog "$GON/logs/2026-11-16.log" "WO3T-1,WO3T-1" "W3YA-1,W3YA-1"
+echo '[0L 2026-11-16T09:30:00-0500] KD3CCO-10>APDW17,WIDE1-1:!x' > "$GON/run/direwolf.log"
+IGATE_ARCHIVE_DAY=2026-11-16 "$GON/igate-archive.sh" "$GON/igate.conf" >/dev/null
+SUM="$GON/archive/daily-summary.tsv"
+is "the first run fills them"  "$(val 2026-11-16 day_beacons)" "1"
+rm -f "$GON/igate_counts.py"
+IGATE_ARCHIVE_DAY=2026-11-17 "$GON/igate-archive.sh" "$GON/igate.conf" >/dev/null
+is "the next row is still the declared width" \
+   "$(awk -F'\t' '/^2026-11-17\t/{print NF}' "$SUM")" \
+   "$(awk -F'\t' '/^date\t/{print NF}' "$SUM")"
+is "with the day_ field empty rather than zero" \
+   "$(val 2026-11-17 day_beacons)" ""
+is "and the header not narrowed behind it" \
+   "$(val 2026-11-16 day_beacons)" "1"
 
 echo
 echo "LOG_DIR becomes a command-line flag, not a config directive"

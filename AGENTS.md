@@ -103,6 +103,11 @@ The design doc separates **Specification** (what it must do) from **Findings**
   `except ValueError` will swallow it and look like a clean shutdown.
 - **In the monitor's logs, `rc=None` means the pipeline is still running**, not
   that it ended. A reader that stops must kill its pipeline or it orphans one.
+- **Count console-log lines with `igate_counts.py`, never with a fresh grep.**
+  It owns the bracket shapes (both, stamped and bare), the UTC bucketing of
+  direwolf's local `-T` stamps, the keepalive exclusion, and the used-hop test
+  that stops a third-party payload making the gateway its own digipeater. A
+  second copy of that logic is how `reach` and the monitor disagreed twice.
 - **Card-durability settings live outside the repo's own config.**
   `rootflags=data=journal` is on the kernel command line, because `data=` cannot
   be changed by the remount `fstab` drives. The swap writeback file is disabled
@@ -161,9 +166,11 @@ The design doc separates **Specification** (what it must do) from **Findings**
 
 ./igate-archive.sh            # daily archive + summary row; safe to run by hand
 ./heard_spatial.py CAPTURE    # receive coverage per 2 km cell; safe, reads only
-./test_archive.sh             # 29 checks, incl. replay against archive-2026-10/
-./test_web_logging.py         # 21 checks: the monitor panel's bounds
-./test_heard_spatial.py       # 48 checks, incl. replay against archive-2026-10/
+./igate_counts.py --day D LOG # exact per-UTC-day traffic counts; safe, reads only
+./test_archive.sh             # 63 checks, incl. replay against archive-2026-10/
+./test_web_logging.py         # 55 checks: the monitor panel's bounds and window
+./test_igate_counts.py        # 37 checks: line classification and day bucketing
+./test_heard_spatial.py       # 51 checks, incl. replay against archive-2026-10/
 ```
 
 **`igate-archive.sh` is a separate script, not a subcommand**, run by
@@ -173,11 +180,21 @@ packet log onto the card by content hash, appends one row to
 transmits nothing and restarts nothing, so unlike `selftest` and `reach` it is
 safe for an assistant to run.
 
-  **Receive columns are exact for the named day; transmit columns are a
-  ROLLING WINDOW** over whatever the console log still holds, because that log
-  has no per-line timestamp. Difference consecutive rows for a rate. The
-  `chunks_saved` column is the health signal: above 1 on a routine day means
-  rotation is outpacing the timer.
+  **Three groups of columns, and mixing them up is the trap this file used to
+  set.** `rx_*` are exact for the named UTC day, from the dated CSV on the
+  card. `day_*` are exact for the named UTC day, from the console log's `-T`
+  timestamps, computed by `igate_counts.py`. `win_*` are a ROLLING WINDOW over
+  whatever the console log still held when the archiver ran, about eight days;
+  they are superseded but still written, because months of history sit behind
+  them. Difference consecutive `win_*` rows for a rate. The `chunks_saved`
+  column is the health signal: above 1 on a routine day means rotation is
+  outpacing the timer.
+
+  **An empty field means not measured. It is not a zero.** Rows written before
+  a column existed are short, and the archiver pads with empty fields rather
+  than zeros so nothing can average a day that was never counted as a quiet
+  one. Read the file by column NAME; the header widened from 11 columns to 25
+  on 2026-11-17 and will widen again.
 
 **`heard_spatial.py` answers "how much better does the antenna hear", and the
 answer does NOT come from comparing against another station.** APRS-IS keeps
@@ -486,6 +503,125 @@ day it could not be recovered.
   `PI-SETUP.md` says no complaint about them means the version parsed them.
   That reasoning is wrong for 1.7. They are believed because their EFFECTS
   have been observed, not because the parser stayed quiet.
+
+### The monitor's traffic numbers, and what each one is worth (2026-11-17)
+
+The logging panel used to show five figures that were not what their column
+headings said, and omitted the two most useful numbers in the log. Rebuilt in
+three layers, each with a different guarantee. **Do not flatten them back into
+one table.**
+
+**`igate_counts.py` is the single owner of what a console-log line means.**
+`igate-archive.sh` shells out to it for the `day_*` and `rx_stations_*`
+columns; `igate_web.py` imports `LABEL_METRIC` from it for the live counters.
+Two copies of that classification is how `reach` and the monitor disagreed
+twice before. If a new tool needs to count frames, import it.
+
+**The window columns were being read as daily figures.** The old panel mapped
+`win_beacons` to a column headed `beacons` in a table keyed by date.
+`win_beacons` counts the whole console log, which on 2026-11-17 held about
+26 hours, not the eight days this file long assumed -- 720 beacons a day fills
+8 MB faster than 48 a day did. Either way a window total in a dated row is not
+that day's figure. The `win_*` columns now sit under their own heading that
+says what they are, and the dated table carries only `day_*` and `rx_*`.
+
+**Gating was not counted at all.** `tx_stats` deliberately excludes `[rx>ig]`
+so its frame count stays comparable with `reach`, which discarded the biggest
+number in the log: in the October capture, 28,757 uplink gatings in eight days
+against 29,803 frames heard, a 96.5% gating rate. `day_gated_up` is that
+number per day. The keepalive `[rx>ig] #` is not a packet -- 23,663 of that
+capture's 52,420 `rx>ig` lines are keepalives, so counting them overstates the
+uplink by 82%.
+
+**`[ig>tx]` is the server's firehose, not near-misses on the whitelist.** The
+live feed labels every unmatched one "IS DROP -- did NOT match the whitelist",
+which is literally true and gives a false impression: October holds 69,900 in
+eight days, about 8,700 a day, and they are N8GD-1 position beacons and N3DXC
+weather telemetry. APRS-IS sends traffic for stations this gateway has heard
+recently on top of the `IGFILTER g/` subscription. The useful statement is the
+ratio -- 69,900 offered, 50 transmitted -- so the panel prints `day_is_offered`
+beside `day_gated_down` and calls the chip "not whitelisted" rather than
+"dropped".
+
+**`day_partial` is the column that keeps the rest honest.** `run/` is a tmpfs,
+so a reboot erases the console log and that day's `day_*` counts are an
+undercount while the `rx_*` counts for the same day are intact. The sparklines
+draw such a day as a stub at the baseline, never as a short bar: drawn to
+scale a reboot reads as a quiet day.
+
+**A log with no stamps reports `day_undated`, never zero.** Everything before
+2026-11-08 predates `-T`. Against the October capture `igate_counts.py`
+reports 128,904 undated lines and no day at all, which is exactly rx 29,803 +
+tx 444 + gated up 28,757 + offered 69,900. Reading zero as "quiet" is how the
+`-T` regression went unnoticed for six days.
+
+**Unique stations over a window is a union and cannot be summed.** Seven daily
+counts of ~300 is not 2,100 distinct stations. `rx_stations_win` is computed
+by the archiver from the seven dated CSVs and the panel reads it rather than
+adding anything up. It excludes MYCALL; the older `rx_stations` includes it,
+because this station's own beacons come back off the air after a digipeater
+repeats them -- 319 frames in the October capture -- and that column has
+history behind it. `rx_own` carries the own-call count separately.
+
+**The live counters are "since the service started", not a day.** They come
+off the annotated event feed, so they cost nothing and read no files -- which
+keeps `igate_web.py`'s invariant that it never reads the raw Direwolf log,
+the file that carries the APRS-IS passcode. `tail -F` replays its last ten
+lines on restart and `docker logs --tail 30` thirty, so the first forty lines
+after a pipeline restart are dropped if they match a recently published event.
+Verified against five forced restarts of a six-frame feed: the counters stay
+at six rather than reaching thirty.
+
+**Two display bugs fixed at the same time.** `systemctl show` prints
+`ActiveState=inactive` for a unit that does not exist and exits 0, so the
+archive timer reported as installed-and-stopped on every Docker deployment;
+`LoadState` tells them apart. And `chip("logchip", ...)` called
+`querySelector("b").textContent` on a `<small>` with no `<b>`, so the one path
+written for a logging panel reporting itself unavailable threw a TypeError
+that propagated into the fetch's `.catch` and set the state chip to
+**"unreachable" while the server was answering normally**. That path was
+latent rather than active -- `_collect` catches `OSError` at every call site
+-- but it is a third entry for the list under "the web monitor is down is
+usually the client".
+
+### The station is beaconing every 2 minutes, not every 2 hours (found 2026-11-17)
+
+**Measured on the Pi, not inferred.** `day_beacons` for 2026-11-17 is **720**,
+against an intended 12. The live log's own position beacons sit 120 s apart
+(309 gaps of exactly 120 s, 702 beacons in 23.4 h, 30 per hour every hour).
+The status beacon is 240 s apart, 351 a day against an intended 6.
+
+**Cause: `every=` takes `MM:SS`, and `2:00:00` is not two hours.** Commit
+`205f646` (2026-11-14) changed `igate.conf` from `BEACON_EVERY = 30:00` to
+`BEACON_EVERY = 2:00:00`, which looks like a tidy-up and is not. Direwolf
+renders it into `PBEACON ... every=2:00:00` and reads it as 2 minutes; `30:00`
+meant 30 minutes and `120:00` means 120 minutes. This file's own entry for
+2026-11-07 says the value *became* `120:00`, which is the correct spelling and
+is not what is in `igate.conf`. `STATUS_EVERY = 4:00:00` has the same fault.
+
+**The fix is two lines and a gateway restart**, which is an on-air change and
+so the operator's:
+
+    BEACON_EVERY = 120:00      # 120 minutes. NOT 2:00:00, which is 2 minutes.
+    STATUS_EVERY = 240:00      # 240 minutes. NOT 4:00:00, which is 4 minutes.
+
+then `./deploy_igate.sh restart` and confirm with `grep -E '^[CP]BEACON'
+run/direwolf.conf`.
+
+**What this invalidates.** It ran from 2026-11-14 to whenever it is fixed, so
+any beacon-rate or channel-share figure from that window is wrong, including
+"an 8-day November window holds roughly 98 beacons" above and the channel
+share section dated 2026-11-07. The W3YA-1 repeat-rate denominators are
+measured per-beacon and survive, but **do not pool pre-11-14 and post-11-14
+beacons**: they are different populations at 60x the rate.
+
+**It also shortened the log's reach.** 720 beacons and 907 beacon repeats a
+day fill the 8 MB rotation far faster than 48 a day did, so "the log holds
+about eight days" was down to about 26 hours on 2026-11-17. Any retrospective
+question asked of `run/direwolf.log` during this window reaches back roughly
+a day, not a week.
+
+**The new `day_beacons` column is what found it**, on the first night it ran.
 
 ### The web monitor cannot answer a path question (2026-11-07)
 
@@ -1455,8 +1591,13 @@ that, not by the uptime.
   one-hop `BEACON_VIA`. **The mast is no longer the only difference:**
   `BEACON_EVERY` went from `30:00` to `120:00` on 2026-11-07 to cut this
   station's channel footprint, so an 8-day November window holds roughly 98
-  beacons where October held 394. **Compare the rates, never the counts.** The
-  table above is already in rates for exactly this reason, and quartering n
+  beacons where October held 394. **Only true for 11-07 to 11-14.** Commit
+  `205f646` rewrote the value to `2:00:00` on 2026-11-14, which direwolf reads
+  as 2 minutes, and the station has beaconed 720 a day since -- see "The
+  station is beaconing every 2 minutes" above. An 8-day window after that date
+  holds about 5,760 beacons, and the log no longer reaches 8 days anyway.
+
+  **Compare the rates, never the counts.** The table above is already in rates for exactly this reason, and quartering n
   widens the 95% interval on the 77% figure from about +/-4 to +/-8 points. The
   gated-message row is unaffected, because it comes from the four-hourly
   selftest timer and gated traffic, not the beacon timer.

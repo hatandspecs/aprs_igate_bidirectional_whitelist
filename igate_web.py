@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +82,17 @@ LOG_FILE = os.environ.get("IGATE_LOG_FILE", os.path.join(HERE, "run", "direwolf.
 # before it is treated as stalled and restarted.
 STALL_SECONDS = int(os.environ.get("IGATE_STALL_SECONDS", "600"))
 
+# The label-to-metric map lives in igate_counts.py so the page's live
+# counters and the archiver's nightly columns cannot come to mean different
+# things. A deployment missing the helper still serves the page; it just has
+# no live counters, which is better than a second copy of the mapping here
+# quietly drifting from the first.
+try:
+    sys.path.insert(0, HERE)
+    from igate_counts import LABEL_METRIC
+except Exception:                                    # pragma: no cover
+    LABEL_METRIC = {}
+
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # "17:23:49  RF RX      AA3BR>SYRV6V,...:`h@dl#GYY"
 EVENT = re.compile(r"^(\d\d:\d\d:\d\d)\s\s(\S.*?)\s\s+(.*)$")
@@ -123,6 +135,11 @@ class MonitorStream:
     not mean five `tail -f | gawk` pipelines on a single-board computer.
     """
 
+    # How many lines after a pipeline restart are checked against recently
+    # published events. Larger than `docker logs --tail 30`, which is the
+    # bigger of the two replay windows.
+    REPLAY_GUARD = 40
+
     def __init__(self, cmd, is_running):
         self.cmd = cmd
         self.is_running = is_running
@@ -141,8 +158,64 @@ class MonitorStream:
         self.proc = None
         # Monotonic timestamps for the stall check; see _supervise.
         self.last_line_at = time.monotonic()
+        # Live counters, by the metric each monitor label belongs to. These
+        # are the only numbers on the page that are not read from a file, and
+        # they are honest about one thing only: traffic seen since this
+        # process started following the log. They are NOT a day. See counts().
+        self._counts = dict.fromkeys(set(LABEL_METRIC.values()), 0)
+        self._counts_since = time.time()
+        self._counted = 0
+        # `tail -F` with no -n starts at the last 10 lines and `docker logs
+        # -f --tail 30` at the last 30, so every pipeline restart re-reads
+        # frames that have already been counted. Signatures of the most
+        # recent events, consulted only in the first REPLAY_GUARD lines after
+        # a restart, so a genuinely repeated beacon later in the day still
+        # counts.
+        self._recent = deque(maxlen=self.REPLAY_GUARD)
+        self._recent_set = set()
+        self._since_restart = None
         threading.Thread(target=self._run, daemon=True).start()
         threading.Thread(target=self._supervise, daemon=True).start()
+
+    def counts(self):
+        """The live counters, with the one caveat they need, as data.
+
+        `since` is a wall-clock time rather than a day on purpose. These reset
+        when the service restarts and they begin at whatever `tail -F` was
+        following, so they are a figure for "while this page's feed has been
+        up" and nothing else. The exact per-day numbers come from the archive
+        and are the ones to quote.
+        """
+        with self.lock:
+            out = dict(self._counts)
+            out["since"] = self._counts_since
+            out["events"] = self._counted
+            return out
+
+    def _count(self, event):
+        """Fold one event into the live counters. Caller holds the lock.
+
+        Returns False if this event is a replayed line already counted, in
+        which case it is not published either: a viewer should not see the
+        same frame twice because the pipeline restarted.
+        """
+        metric = LABEL_METRIC.get(event.get("label", "").strip())
+        sig = (event.get("time"), event.get("label"), event.get("text"))
+        if self._since_restart is not None:
+            if self._since_restart >= self.REPLAY_GUARD:
+                self._since_restart = None
+            else:
+                self._since_restart += 1
+                if sig in self._recent_set:
+                    return False
+        if len(self._recent) == self._recent.maxlen and self._recent:
+            self._recent_set.discard(self._recent[0])
+        self._recent.append(sig)
+        self._recent_set.add(sig)
+        if metric:
+            self._counts[metric] = self._counts.get(metric, 0) + 1
+            self._counted += 1
+        return True
 
     def _publish(self, event):
         with self.lock:
@@ -150,6 +223,8 @@ class MonitorStream:
             # nothing new, and repeated it would push real packets out of the
             # bounded history.
             if event.get("kind") == "note" and self.history and self.history[-1] == event:
+                return
+            if event.get("kind") == "event" and not self._count(event):
                 return
             self.history.append(event)
             dead = []
@@ -229,6 +304,11 @@ class MonitorStream:
                 continue
 
             _log(f"monitor pipeline started, pid {self.proc.pid}")
+            # Arm the replay guard: the first REPLAY_GUARD lines of a fresh
+            # pipeline are whatever tail was told to start with, and those
+            # frames have already been counted and shown.
+            with self.lock:
+                self._since_restart = 0
             # The supervisor closes this stdout to break the deadlock described
             # in _supervise. That raises here, which is the intended escape and
             # not a fault: it is the only way to leave a blocking read on a
@@ -543,8 +623,10 @@ class LoggingStatus:
 
     TTL = 60.0                 # the morning check does not need 15-second news
     ROW_COUNT_LIMIT = 2 << 20  # 2 MB: above this, report bytes and not rows
-    TAIL_BYTES = 8192          # enough for the last several summary rows
+    TAIL_BYTES = 16384          # enough for the last several summary rows
     SCAN_LIMIT = 5000          # frames/ entries examined before giving up
+    SUMMARY_ROWS = 8           # a 7-day window, plus the day before it
+    WINDOW_DAYS = 7            # must match SUMMARY_WINDOW_DAYS in the archiver
 
     def __init__(self, script_dir):
         self.script_dir = script_dir
@@ -628,7 +710,89 @@ class LoggingStatus:
                             break
         except OSError:
             pass
-        return header, rows[-3:]
+        return header, rows[-cls.SUMMARY_ROWS:]
+
+    @classmethod
+    def _window(cls, header, rows):
+        """The last WINDOW_DAYS complete days, summed where summing is valid.
+
+        Three rules this follows, each of which is a way of being wrong that
+        is easy to reach:
+
+        **Unique stations are not summable.** Seven daily counts added up is
+        not the number of stations heard in a week, because most stations are
+        heard on more than one day, and the sum cannot be corrected afterwards
+        without the callsigns. The union is computed by the archiver, which
+        has the dated logs, and arrives as `rx_stations_win` on the most
+        recent row; this reads that number rather than adding anything up.
+
+        **A sum over an incomplete window is an undercount, not a total.** So
+        the result carries how many days were found, how many carry the
+        console-log columns at all, and how many of those are flagged partial.
+        A caller that shows the sum without those is reporting a reboot as a
+        quiet week.
+
+        **Only days inside the window count.** The tail may hold more rows
+        than that, and may be missing days entirely if the station was down.
+        """
+        idx = {name: i for i, name in enumerate(header)}
+
+        def val(row, name):
+            i = idx.get(name)
+            if i is None or i >= len(row):
+                return None
+            text = row[i].strip()
+            if not text:
+                return None
+            try:
+                return int(text)
+            except ValueError:
+                return None
+
+        # The window is the WINDOW_DAYS days ending with the most recent row,
+        # which is the last COMPLETE day. Today is not in the summary at all.
+        dated = [r for r in rows if r and re.fullmatch(r"\d{4}-\d\d-\d\d", r[0])]
+        if not dated:
+            return None
+        last = dated[-1][0]
+        try:
+            end = date.fromisoformat(last)
+        except ValueError:
+            return None
+        # Date arithmetic, not seconds. Stepping back six times 86400 from a
+        # local midnight lands at 23:00 of the day before across a DST
+        # boundary, which moves the window edge by a day twice a year.
+        first = (end - timedelta(days=cls.WINDOW_DAYS - 1)).isoformat()
+        inside = [r for r in dated if first <= r[0] <= last]
+
+        sums = {}
+        for name in ("rx_packets", "rx_direct", "day_gated_up",
+                     "day_gated_down", "day_is_offered", "day_beacons",
+                     "day_beacon_repeats", "day_frames"):
+            got = [val(r, name) for r in inside]
+            got = [g for g in got if g is not None]
+            sums[name] = sum(got) if got else None
+            sums[name + "_days"] = len(got)
+
+        partial = sum(1 for r in inside if (val(r, "day_partial") or 0) == 1)
+        undated = sum(val(r, "day_undated") or 0 for r in inside)
+        # The union as of the newest row. Taken from the row rather than
+        # summed, for the reason in the docstring.
+        stations = val(inside[-1], "rx_stations_win") if inside else None
+        new_stations = [val(r, "rx_stations_new") for r in inside]
+        new_stations = [n for n in new_stations if n is not None]
+
+        return {
+            "first": first,
+            "last": last,
+            "days_expected": cls.WINDOW_DAYS,
+            "days_present": len(inside),
+            "days_partial": partial,
+            "undated": undated,
+            "stations": stations,
+            "stations_new": sum(new_stations) if new_stations else None,
+            **sums,
+        }
 
     @classmethod
     def _frames(cls, frames_dir):
@@ -657,12 +821,21 @@ class LoggingStatus:
         return chunks, total, newest, truncated
 
     def _timer(self):
+        """State of the archive timer, with 'never installed' told apart.
+
+        `LoadState` is not decoration. `systemctl show` on a unit that does
+        not exist prints `ActiveState=inactive` and exits 0, so without it a
+        timer that was never installed -- every Docker deployment, and any Pi
+        where the unit was not enabled -- reports as installed and stopped.
+        Those want opposite actions from whoever is reading the page.
+        """
         try:
             p = subprocess.run(
                 ["systemctl", "show", "igate-archive.timer",
                  "--property=LastTriggerUSec",
                  "--property=NextElapseUSecRealtime",
-                 "--property=ActiveState"],
+                 "--property=ActiveState",
+                 "--property=LoadState"],
                 capture_output=True, text=True, timeout=10,
             )
             out = {}
@@ -670,11 +843,18 @@ class LoggingStatus:
                 if "=" in line:
                     k, v = line.split("=", 1)
                     out[k.strip()] = v.strip()
+            load = out.get("LoadState", "")
+            if load in ("not-found", "bad-setting", "error"):
+                return {"state": "not installed", "load": load,
+                        "last": "", "next": ""}
             return {"state": out.get("ActiveState", "unknown"),
+                    "load": load,
                     "last": out.get("LastTriggerUSec", "") or "never",
                     "next": out.get("NextElapseUSecRealtime", "") or "unknown"}
         except (OSError, subprocess.SubprocessError):
-            return {"state": "unknown", "last": "", "next": ""}
+            # No systemctl at all: a container, or a non-systemd host. Not the
+            # same as a timer that is installed and broken.
+            return {"state": "unknown", "load": "", "last": "", "next": ""}
 
     def get(self):
         with self.lock:
@@ -688,19 +868,30 @@ class LoggingStatus:
             self.at = time.time()
             return self.cache
 
+    def _resolve(self, key, default):
+        """A config path, resolved the way the station resolves it.
+
+        A relative path in the config is resolved against the install
+        directory. That is the only form that works from here: on the Pi
+        `~/aprs-igate` is a symlink to `/opt/aprs-igate`, this unit runs from
+        /opt with ProtectHome=yes, and an absolute /home/... path in the
+        config is simply not visible. Found 2026-10-30, when every count read
+        zero while the station was writing normally.
+        """
+        val = os.path.expanduser(self._conf(key, default))
+        return val if os.path.isabs(val) else os.path.join(self.script_dir, val)
+
+    def log_dir(self):
+        return self._resolve("LOG_DIR", "logs")
+
+    def mycall(self):
+        return self._conf("MYCALL", "KD3CCO-10")
+
     def _collect(self):
         here = self.script_dir
-        # A relative path in the config is resolved against the install
-        # directory. That is the only form that works from here: on the Pi
-        # `~/aprs-igate` is a symlink to `/opt/aprs-igate`, this unit runs
-        # from /opt with ProtectHome=yes, and an absolute /home/... path in
-        # the config is simply not visible. Found 2026-10-30, when every
-        # count read zero while the station was writing normally.
-        def resolve(key, default):
-            val = os.path.expanduser(self._conf(key, default))
-            return val if os.path.isabs(val) else os.path.join(here, val)
+        resolve = self._resolve
 
-        log_dir = resolve("LOG_DIR", "logs")
+        log_dir = self.log_dir()
         arch_dir = resolve("ARCHIVE_DIR", "archive")
 
         today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -735,10 +926,153 @@ class LoggingStatus:
             "newest_chunk_age_s": int(time.time() - newest) if newest else None,
             "summary_header": header,
             "summary_rows": rows,
+            "window": self._window(header, rows),
+            "window_days": self.WINDOW_DAYS,
             "live_log_bytes": live,
             "rotations_held": gens,
             "timer": self._timer(),
         }
+
+
+class TodayTraffic:
+    """Packets and distinct stations heard so far today, read incrementally.
+
+    Two problems with doing this the obvious way. Counting rows in the dated
+    CSV on every poll is linear in the day, which is the shape of work that
+    has taken this page down before; and `LoggingStatus` therefore refuses to
+    line-count above 2 MB, which at this station's ~9,000 packets a day means
+    the count vanishes from the panel late in the busiest days -- exactly when
+    somebody is looking.
+
+    So this remembers a byte offset and reads only what has been appended
+    since the last poll. A day's work costs one pass in total however often
+    the page is refreshed, and distinct stations become possible at all: a set
+    of a few hundred callsigns is cheap to hold and impossible to get from a
+    row count.
+
+    **The file is parsed by splitting on commas, not with the csv module**, and
+    that is safe here rather than sloppy. Direwolf's comment field can contain
+    commas and quotes, but `source` and `heard` are columns 4 and 5, ahead of
+    every free-text field, so nothing in a stranger's comment text can shift
+    them. The csv module would also need the whole logical row, which is the
+    one thing an incremental reader of a file being appended to does not have.
+
+    Resets when the UTC day rolls over, and when the file shrinks or its inode
+    changes, which covers rotation, a hand-edit, and a card remount.
+    """
+
+    TTL = 20.0
+    # A single appended line that never terminates would otherwise grow this
+    # without limit. Longer than any real CSV row; a fragment past it is
+    # dropped and the offset advanced, so one malformed write costs one line.
+    MAX_FRAGMENT = 64 * 1024
+
+    def __init__(self, script_dir, log_dir_fn, mycall_fn):
+        self.script_dir = script_dir
+        self._log_dir = log_dir_fn
+        self._mycall = mycall_fn
+        self.lock = threading.Lock()
+        self.at = 0.0
+        self.cache = {}
+        self._reset(None)
+
+    def _reset(self, day):
+        self.day = day
+        self.offset = 0
+        self.inode = None
+        self.frag = ""
+        self.packets = 0
+        self.direct = 0
+        self.own = 0
+        self.stations = set()
+        self.stations_direct = set()
+        self.header_seen = False
+
+    def get(self):
+        with self.lock:
+            if time.time() - self.at < self.TTL and self.cache:
+                return self.cache
+            try:
+                self.cache = self._collect()
+            except Exception as exc:
+                _log(f"today traffic unavailable: {exc!r}")
+                self.cache = {"error": "unavailable"}
+            self.at = time.time()
+            return self.cache
+
+    def _collect(self):
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        if day != self.day:
+            self._reset(day)
+        path = os.path.join(self._log_dir(), day + ".log")
+        try:
+            st = os.stat(path)
+        except OSError:
+            return {"day": day, "present": False, "packets": None,
+                    "stations": None, "stations_direct": None,
+                    "direct": None, "own": None}
+        if self.inode is not None and (st.st_ino != self.inode
+                                       or st.st_size < self.offset):
+            # A different file, or the same one truncated. Everything counted
+            # so far may belong to bytes that are gone; start over rather than
+            # carry a total that cannot be checked.
+            keep = self.day
+            self._reset(keep)
+            try:
+                st = os.stat(path)
+            except OSError:
+                return {"day": day, "present": False, "packets": None,
+                        "stations": None, "stations_direct": None,
+                        "direct": None, "own": None}
+        self.inode = st.st_ino
+
+        if st.st_size > self.offset:
+            mycall = self._mycall()
+            with open(path, "rb") as fh:
+                fh.seek(self.offset)
+                chunk = fh.read(st.st_size - self.offset)
+            self.offset += len(chunk)
+            text = self.frag + chunk.decode("utf-8", "replace")
+            # Only whole lines. The tail of the read is almost always a
+            # partial row, because direwolf is appending while this runs.
+            lines = text.split("\n")
+            self.frag = lines.pop()
+            if len(self.frag) > self.MAX_FRAGMENT:
+                self.frag = ""
+            for line in lines:
+                if not line:
+                    continue
+                parts = line.split(",", 5)
+                if len(parts) < 5:
+                    continue
+                if parts[0] == "chan":
+                    self.header_seen = True
+                    continue
+                src = parts[3].strip().rstrip("?")
+                heard = parts[4].strip().rstrip("?")
+                if not src:
+                    continue
+                self.packets += 1
+                if src == mycall:
+                    # Own beacons returning off the air after a digipeater
+                    # repeats them. Counted, but not a station this receiver
+                    # reached: see igate_counts.sources().
+                    self.own += 1
+                else:
+                    self.stations.add(src)
+                if heard == src or heard == "":
+                    self.direct += 1
+                    if src != mycall:
+                        self.stations_direct.add(src)
+
+        return {"day": day, "present": True,
+                "packets": self.packets,
+                "direct": self.direct,
+                "own": self.own,
+                "stations": len(self.stations),
+                "stations_direct": len(self.stations_direct),
+                "bytes": st.st_size,
+                "age_s": max(0, int(time.time() - st.st_mtime))}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -801,12 +1135,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _status(self):
         payload = dict(SETTINGS.get())
-        # Separate cache and TTL: the logging view is filesystem reads and is
-        # cheap, but it has no reason to be refreshed as often as liveness.
+        # Separate caches and TTLs. Liveness is wanted every 15 s; the logging
+        # view is filesystem reads and is not; today's traffic is an
+        # incremental read and sits between the two. Each is guarded on its
+        # own so one bad directory cannot take /api/status with it.
         try:
             payload["logging"] = LOGGING.get()
         except Exception:                      # never let the panel break /api
             payload["logging"] = None
+        try:
+            payload["today"] = TODAY.get()
+        except Exception:
+            payload["today"] = None
+        try:
+            payload["live"] = STREAM.counts()
+        except Exception:
+            payload["live"] = None
         self._send(200, "application/json; charset=utf-8",
                    json.dumps(payload).encode())
 
@@ -876,7 +1220,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global STREAM, SETTINGS, LOGGING
+    global STREAM, SETTINGS, LOGGING, TODAY
     script_dir = HERE
     cmd = os.environ.get("IGATE_MONITOR_CMD")
     cmd = shlex.split(cmd) if cmd else [
@@ -912,6 +1256,10 @@ def main():
 
     SETTINGS = Settings(script_dir)
     LOGGING = LoggingStatus(script_dir)
+    # Shares LoggingStatus's config reader, so LOG_DIR and MYCALL are resolved
+    # in exactly one place and the two panels cannot disagree about which file
+    # today's traffic is in.
+    TODAY = TodayTraffic(script_dir, LOGGING.log_dir, LOGGING.mycall)
 
     liveness_cmd = os.environ.get("IGATE_LIVENESS_CMD")
     if liveness_cmd:

@@ -611,6 +611,33 @@ appends one row to `archive/daily-summary.tsv`, and prunes both to
 `ARCHIVE_KEEP_DAYS`. Nothing it does transmits or restarts anything, so it is
 safe to run by hand at any time.
 
+**`igate_counts.py`** is the one place that decides what a line in the console
+log means. `igate-archive.sh` calls it for the exact per-day `day_*` and
+`rx_stations_*` columns, and `igate_web.py` imports its label map for the live
+counters, so the page and the archive cannot come to mean different things by
+"gated up". It reads nothing but logs, writes nothing, and is safe to run by
+hand:
+
+```
+python3 igate_counts.py --day 2026-11-16 run/direwolf.log       # one day
+python3 igate_counts.py --all-days archive/frames/*.log.gz      # the archive
+python3 igate_counts.py --fields                                # the columns
+```
+
+`--all-days` over the archived chunks **prints** a row per day for every day
+still held, which is how to recover those figures for days that predate the
+columns. It does not write them into `daily-summary.tsv`; merging them back is
+a hand job for now. Pass the chunks oldest first: an unstamped `[rx>ig]` line
+is attributed to the stamp of the frame above it.
+
+**A log with no `-T` timestamps reports `day_undated` and zeros, not traffic.**
+Captures from before 2026-11-08 carry no stamps, and crediting such a chunk's
+whole contents to the day it was asked about would be wrong by about eight
+times. Against `archive-2026-10/frames-15ft-2026-10-30.log.gz` it reports
+128,904 undated lines and no day at all — which is 29,803 received plus 444
+transmitted plus 28,757 gated up plus 69,900 offered, the four counts `grep -c`
+gives on the same file.
+
 All take an optional config-file argument: `./deploy_igate.sh up field.conf`.
 
 ### Recovering by itself
@@ -1069,22 +1096,50 @@ curl -s http://aprs-igate.local:8080/api/status | python3 -m json.tool
 
 It returns `running`, a `detail` line carrying the Direwolf pid, the resolved
 IS-side `filter`, the whole effective `settings` block with every "not used
-because" spelled out, and a `logging` block with today's and yesterday's row
-counts, the archive chunk state, the timer's last and next fire, and the last
-three rows of the daily summary CSV **with its header**, which is the
-authoritative definition of those columns:
+because" spelled out, a `logging` block, a `today` block, and a `live` block.
+
+`logging` holds today's and yesterday's file state, the archive chunk state,
+the timer's state and last and next fire, a `window` aggregate over the last
+seven days, and the last eight rows of the daily summary CSV **with its
+header**, which is the authoritative definition of those columns:
 
 | Column | Meaning |
 |---|---|
 | `rx_packets` | Frames received on RF that UTC day |
 | `rx_direct` | Of those, copied with no digipeater hop |
-| `rx_stations` | Distinct source callsigns heard, any path |
+| `rx_stations` | Distinct source callsigns heard, any path, **including MYCALL** |
 | `rx_stations_direct` | Distinct source callsigns copied directly |
-| `win_*` | Counted over the Direwolf text log's rolling window, **not** the UTC day. Confirm the window before comparing a `win_*` figure to an `rx_*` one |
+| `day_frames` | `^[0` frames that UTC day: the same definition `reach` uses |
+| `day_rx_frames` / `day_tx_frames` | That day's receive / transmit split |
+| `day_beacons` / `day_beacon_repeats` | Own beacons sent / heard back after a digipeater, that day |
+| `day_gated_up` | Frames gated TO APRS-IS that day, keepalives excluded |
+| `day_gated_down` | Frames gated FROM APRS-IS to RF that day |
+| `day_is_offered` | Frames APRS-IS sent this gateway that day, before filtering |
+| `day_undated` | Log lines with no timestamp to place them. Not zero traffic: traffic that could not be dated |
+| `day_partial` | 1 when the console log did not span the whole UTC day. The `day_*` counts are then an undercount and the `rx_*` ones are not |
+| `rx_own` | Own call as a source: beacons returning off the air |
+| `rx_stations_win` | Distinct stations over the seven-day window, a **union**, excluding MYCALL |
+| `rx_stations_new` | Stations on that day absent from the rest of the window |
+| `win_*` | Counted over the Direwolf text log's rolling window, about eight days, **not** the UTC day. Superseded by the `day_*` columns; kept so the historical series does not break |
 | `chunks_saved` | Archive chunks written that day |
 
+**An empty field means not measured and must never be read as a zero.** Rows
+written before a column existed are short — the file went from 11 columns to
+25 on 2026-11-17 — and the archiver leaves the missing fields empty rather
+than padding them with zeros, which would claim the traffic was counted and
+was nil. Read this file by column NAME, never by index.
+
 `rx_stations` is the count inflated by third-party traffic arriving on RF --
-see AGENTS.md. `/events` is the live server-sent-event feed the page consumes.
+see AGENTS.md -- and it also counts this station itself, because its own
+beacons come back off the air after a digipeater repeats them. The
+`rx_stations_win` and `rx_stations_new` columns exclude MYCALL; `rx_stations`
+was left alone because months of history sit behind it.
+
+`today` is an incremental read of today's dated CSV: `packets`, `direct`,
+`own`, `stations` and `stations_direct` so far this UTC day. `live` is the
+monitor feed's own counters since the service started, with `since` as a Unix
+time — not a day, and reset by a restart. `/events` is the live
+server-sent-event feed the page consumes.
 
 `http://aprs-igate.local:8080/` is the stable name. The Pi answered at
 `http://192.168.68.66:8080/` on 2026-11-06, but that is DHCP and will move.
@@ -1160,25 +1215,94 @@ than inspecting the gateway itself: `monitor` for the packet stream and
 `is-running` for liveness, each of which already knows whether it is looking at a
 container or at pidfiles.
 
+### The traffic panel
+
+The panel that is open by default, **Traffic**, answers how much the station
+is doing. It has four parts, and they come from three different sources with
+three different guarantees, which the panel states rather than blends.
+
+**Live counters**, the chip row at the top. These increment off the same
+annotated event feed the packet log below shows, so `heard`, `gated up`,
+`gated down`, `not whitelisted` and `own tx` are the five labels in the feed's
+legend. They are labeled `live since HH:MM:SS` and that is exactly what they
+are: they reset when the service restarts, and they begin wherever `tail -F`
+was when the feed attached. **They are not a day.** The per-day numbers come
+from the archive.
+
+  A restart used to be worse than a reset. `tail -F` with no `-n` starts at
+  the last ten lines and `docker logs -f --tail 30` at the last thirty, so
+  every pipeline restart replays frames that have already been counted and
+  shown. The first forty lines after a restart are checked against recently
+  published events and dropped if they match. Measured against five forced
+  restarts replaying six frames each, the counters stay at six rather than
+  reaching thirty.
+
+**Four stat tiles** with a seven-day sparkline each: packets heard, stations
+heard, packets gated to APRS-IS, packets gated to RF. The bars are one day
+each, oldest at the left, the newest at full strength. Under each tile is the
+window it covers and, in amber when it matters, how much of that window was
+actually measured.
+
+  **Stations heard is a union, not a sum.** Seven days of about 300 stations
+  is not 2,100 distinct stations, because most of them are heard on more than
+  one day, and the sum cannot be corrected afterwards without the callsigns.
+  `igate-archive.sh` computes the union over the window from the dated logs
+  and writes it as `rx_stations_win`; the panel reads that number and adds
+  nothing up. The bars below it are per-day counts, so the headline figure is
+  deliberately smaller than the bars appear to total.
+
+  **A day that was not measured is never drawn as a bar.** `run/` is a tmpfs,
+  so a reboot erases the console log and that day's gated counts are an
+  undercount — while the heard counts, which come from the card, are intact
+  for the same day. Those days are flagged `day_partial` by the archiver,
+  drawn as a hairline stub at the baseline, and counted in the tile's "6 of 7
+  days measured". Drawn to scale a reboot would read as a quiet day, which is
+  the most misleading thing this panel could do.
+
+**A per-day table** of the columns that are exact for the day they sit beside.
+A day in the window with no summary row at all is printed with its date and
+`no summary row`, rather than left out of a date sequence nobody reads
+closely.
+
+**Today so far**, and the caveats, as text under the tiles. Today's packet and
+station counts come from an incremental read of the dated CSV: the panel
+remembers a byte offset and reads only what has been appended since the last
+poll, so a day costs one pass however often the page is refreshed, and distinct
+stations become possible at all. That also retires the old 2 MB row-count
+cliff, which used to make the count vanish partway through the busiest days.
+
 ### The logging panel
 
-A second collapsible section, **Logging and archive**, answers the morning
-question without an ssh session: whether today's dated log is filling, when the
-archive timer last fired and when it fires next, how many chunks are held, and
-the last three rows of `daily-summary.tsv`. The line beside the title carries
-the headline unopened — `· 14 kB today`, or `· no log today`, or `· stale 3 h
-ago`.
+**Logging and archive** is now health only: whether today's dated log is
+filling, when the archive timer last fired and when it fires next, how many
+chunks are held, how many chunks were captured on the newest day, and the
+rolling-window snapshot. The line beside the title carries the headline
+unopened — `· 14 kB today`, or `· no log today`, or `· stale 3 h ago`.
+
+**The window snapshot is under its own heading, and says what it is.** The
+`win_*` columns count the whole console log, not the day in the row, and how
+long that is depends on how fast the log fills — about 26 hours on
+2026-11-17, not the eight days this project assumed for a long time. Until
+2026-11-17 they were rendered in the dated table with the prefix stripped, so
+`win_beacons` sat under a column headed `beacons` beside a date. The exact
+per-day equivalents are the `day_*` columns.
+
+**The archive timer tells "not installed" from "inactive".** `systemctl show`
+on a unit that does not exist prints `ActiveState=inactive` and exits 0, so
+without `LoadState` a timer that was never installed — every Docker
+deployment — reported as installed and stopped. Those want opposite actions.
 
 **It is bounded on purpose.** This page has been brought down before by work
 that was cheap when it was written and grew with the data, so: the dated CSV is
-line-counted only below 2 MB and reported by size above that, the summary is
-read from the end of the file in a fixed 8 KB, the archive directory is walked
-with `scandir` and a hard stop, and the whole collection is cached for 60 s.
+line-counted only below 2 MB and reported by size above that, today's traffic
+is read incrementally from a remembered offset, the summary is read from the
+end of the file in a fixed 16 KB, the archive directory is walked with
+`scandir` and a hard stop, and each collection is cached on its own TTL.
 Against a deliberately oversized station — a 40 MB daily log, three years of
-summary rows, four thousand chunks — it collects in 0.022 s and produces under
-a kilobyte of JSON. `test_web_logging.py` asserts all of that.
+summary rows, four thousand chunks — it collects in 0.03 s and produces about
+3 KB of JSON. `test_web_logging.py` asserts all of that.
 
-The one highlighted field is `chunks` in the summary table when it exceeds one:
+The one highlighted field is `chunks captured` when it exceeds one:
 one captured chunk a day is routine, two means the log rotated twice between
 runs, and at two generations kept a third rotation inside a day loses one. That
 is the number to raise the timer frequency on. The rotated-generation count is
