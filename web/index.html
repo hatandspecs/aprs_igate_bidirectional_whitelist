@@ -198,7 +198,6 @@
 <details class="info" id="logpanel">
   <summary>Logging and archive <small id="logchip"></small></summary>
   <div class="grid" id="logging"></div>
-  <div class="tsv" id="windowsnap"></div>
 </details>
 
 <div id="log" aria-live="polite">
@@ -351,6 +350,21 @@
     if (!epochSeconds) { return "—"; }
     var d = new Date(epochSeconds * 1000);
     return d.toTimeString().slice(0, 8);
+  }
+
+  // A DURATION, not an age. `since()` says "24 h ago" for when something
+  // last happened; this says "24 h" for how long a counter has been running,
+  // which is what the live row needs in front of it. The live counters and
+  // the tiles below them cover different spans, and on 2026-11-18 that read
+  // as a contradiction: the live row said 6 gated to RF over its 24 hours
+  // and the tile said 12 over the two days it had, which is the same 6 a day
+  // twice. Neither number was wrong and nothing on the page said so.
+  function dur(sec) {
+    if (sec === null || sec === undefined || !isFinite(sec)) { return "—"; }
+    if (sec < 90) { return Math.round(sec) + " s"; }
+    if (sec < 5400) { return Math.round(sec / 60) + " min"; }
+    if (sec < 172800) { return (sec / 3600).toFixed(1) + " h"; }
+    return (sec / 86400).toFixed(1) + " days";
   }
 
   // --- sparkline -----------------------------------------------------------
@@ -548,9 +562,27 @@
     var liveEl = document.getElementById("live");
     liveEl.textContent = "";
     if (live) {
+      // The scope comes FIRST and names itself. It used to be a trailing
+      // chip reading "live since 20:32", a wall clock that gave no span and
+      // did not look like it governed the five counters to its left.
+      var lead = document.createElement("span");
+      lead.className = "c";
+      var lb = document.createElement("b");
+      lb.textContent = dur((Date.now() / 1000) - live.since);
+      lead.appendChild(lb);
+      lead.appendChild(document.createTextNode(" since the monitor restarted"));
+      lead.title = "Monitor started " + clock(live.since) + ". These five "
+                 + "counters cover only that span. The tiles below cover the "
+                 + "last " + days + " UTC days, so the same "
+                 + "metric reads differently in the two places.";
+      liveEl.appendChild(lead);
+
+      // Labels match the tile labels exactly, so a reader can see that the
+      // live number and the tile number are the same metric over different
+      // spans rather than two different quantities.
       [["rx", "heard", "rx_frames"],
-       ["up", "gated up", "gated_up"],
-       ["gated", "gated down", "gated_down"],
+       ["up", "gated to APRS-IS", "gated_up"],
+       ["gated", "gated to RF", "gated_down"],
        ["drop", "not whitelisted", "is_dropped"],
        ["tx", "own tx", "tx_local"]].forEach(function (m) {
         var c = document.createElement("span");
@@ -561,10 +593,6 @@
         c.appendChild(b);
         liveEl.appendChild(c);
       });
-      var since = document.createElement("span");
-      since.className = "c";
-      since.textContent = "live since " + clock(live.since);
-      liveEl.appendChild(since);
     }
 
     // --- the four tiles ---
@@ -573,7 +601,7 @@
     var note = [];
 
     function windowSub() {
-      return W ? days + " days to " + W.last : "";
+      return W ? days + " UTC days to " + W.last : "";
     }
 
     // The sub-line's bolded half: how much of the window actually stands
@@ -604,7 +632,7 @@
       value: W ? num(W.stations) : "—",
       hue: CSSVAR("--up"),
       points: series(header, rows, "rx_stations", days),
-      sub: "distinct over " + days + " days, a union",
+      sub: "distinct over " + days + " UTC days, a union",
       warn: W && W.stations_new ? ("+" + W.stations_new + " first-time") : ""
     });
 
@@ -622,20 +650,33 @@
       value: W ? num(W.day_gated_down) : "—",
       hue: CSSVAR("--tx"),
       points: series(header, rows, "day_gated_down", days),
+      // The span stays on the sub-line even when the offered count is
+      // available. Without it this tile lost its window as soon as all
+      // seven days were measured and `shortfall` fell silent, which is
+      // the one tile where the window being invisible already caused a
+      // misread against the live counter.
       sub: W && W.day_is_offered !== null && W.day_is_offered !== undefined
-             ? "of " + num(W.day_is_offered) + " offered by the server"
+             ? windowSub() + ", of " + num(W.day_is_offered) + " offered"
              : windowSub(),
       warn: shortfall("day_gated_down_days")
     });
 
     // --- today so far, and the honest caveats ---
     if (today && today.present) {
-      note.push("Today " + today.day + " so far: " + num(today.packets)
+      note.push("UTC day " + today.day + " so far: " + num(today.packets)
                 + " heard from " + num(today.stations) + " stations, "
                 + num(today.direct) + " copied direct.");
     } else if (today) {
-      note.push("No dated log for today yet.");
+      note.push("No dated log for the current UTC day yet.");
     }
+    // Every date on this panel is a UTC day, because that is how direwolf
+    // names the dated logs and the only reason rx_packets off the card and
+    // day_rx_frames off the console log can be compared at all. Unlabeled it
+    // reads as a fault: at 20:27 local on 2026-11-18 the panel showed
+    // 2026-11-19 with a few hours of traffic under it.
+    note.push("Dates here are UTC days, which is how the dated logs are "
+              + "named. Through the local evening the UTC date reads one day "
+              + "ahead and its counts are only a few hours old.");
     if (W) {
       if (W.days_present < days) {
         note.push("Only " + W.days_present + " of the last " + days
@@ -667,7 +708,8 @@
 
     // --- headline beside the panel title ---
     if (today && today.present) {
-      headline("trafficchip", "· " + num(today.packets) + " heard today");
+      headline("trafficchip", "· " + num(today.packets) + " heard "
+                              + today.day + " UTC");
     } else if (W) {
       headline("trafficchip", "· " + num(W.rx_packets) + " in "
                               + W.days_present + " days");
@@ -680,7 +722,7 @@
     dailyEl.textContent = "";
     if (!rows.length || !header.length) { return; }
     var WANT = [
-      ["date", "day"],
+      ["date", "day (UTC)"],
       ["rx_packets", "heard"],
       ["rx_direct", "direct"],
       ["rx_stations", "stns"],
@@ -776,13 +818,20 @@
   // did the timer fire, and is rotation outpacing the archiver.
   //
   // Traffic figures are NOT here any more. They are in renderTraffic, which
-  // shows only columns that are exact for the day they sit beside; the
-  // rolling-window columns appear below under their own heading, because a
-  // window total in a dated row is read as that day's and is not.
+  // shows only columns that are exact for the UTC day they sit beside. This
+  // panel is health only: units, timer, log sizes, chunk capture.
+  //
+  // The win_* columns are no longer rendered anywhere. They count whatever
+  // the console log held when the archiver ran, and that span is not a
+  // constant: it was 8 days at 48 beacons a day and 3.2 days at 720, so
+  // win_gated read 316 on the 2026-11-17 row and 28 on 2026-11-18 with the
+  // underlying rate steady at 6 a day. A rolling count over a window that
+  // moves on its own does not belong beside exact per-day numbers, and
+  // day_gated_down measures the same thing against a stated day. The
+  // columns stay in the TSV so the historical series does not break.
   function renderLogging(L, today) {
     var grid = document.getElementById("logging");
-    var snapEl = document.getElementById("windowsnap");
-    grid.textContent = ""; snapEl.textContent = "";
+    grid.textContent = "";
     if (!L || L.error) {
       kv(grid, "Status", L ? "unavailable" : "not reported");
       headline("logchip", "· unavailable");
@@ -871,45 +920,6 @@
       kv(grid, "Chunks captured (" + newest[0] + ")", String(chunks),
          chunks > 1 ? "mark" : "");
     }
-
-    // --- the window snapshot, under a heading that says what it is ---------
-    //
-    // These are the win_* columns. Each is a count over whatever the console
-    // log held when the archiver ran, about eight days, NOT over the day in
-    // the row. They were previously rendered in the dated table with the
-    // prefix stripped, where win_beacons read as that day's beacon count: at
-    // BEACON_EVERY = 2:00:00 that is twelve a day against a window figure
-    // near ninety-six, so the table read about eight times high.
-    var WIN = [["win_frames", "frames"], ["win_beacons", "beacons"],
-               ["win_beacon_repeats", "repeats"], ["win_gated", "gated"],
-               ["win_gated_repeats", "gated repeats"]];
-    var have = WIN.filter(function (c) { return get(newest, c[0]) !== null; });
-    if (!have.length) { return; }
-
-    var cap = document.createElement("div");
-    cap.className = "caveat";
-    cap.style.padding = "0";
-    cap.appendChild(document.createTextNode(
-      "Rolling window as of " + newest[0] + ": each number counts the whole "
-      + "console log, about eight days, and is not a figure for that day. "));
-    var b = document.createElement("b");
-    b.textContent = "Difference consecutive runs for a rate.";
-    cap.appendChild(b);
-    snapEl.appendChild(cap);
-
-    var wt = document.createElement("table");
-    var wh = document.createElement("tr");
-    var wv = document.createElement("tr");
-    have.forEach(function (c) {
-      var th = document.createElement("th");
-      th.textContent = c[1];
-      wh.appendChild(th);
-      var td = document.createElement("td");
-      td.textContent = num(get(newest, c[0]));
-      wv.appendChild(td);
-    });
-    wt.appendChild(wh); wt.appendChild(wv);
-    snapEl.appendChild(wt);
   }
 
   function pollStatus() {

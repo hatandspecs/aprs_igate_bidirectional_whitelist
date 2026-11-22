@@ -405,6 +405,50 @@ def main():
         check("a real repeat later in the day does count",
               stream.counts()["rx_frames"] == 6, stream.counts())
 
+        # --- the page's own wording, checked as text --------------------
+        #
+        # There is no JS engine in this suite, so these are static checks on
+        # web/index.html. They exist because on 2026-11-18 the page showed
+        # "gated down 6" in the live row and "Gated to RF 12" in the tile,
+        # read as a contradiction, and reported as the monitor miscounting.
+        # Both numbers were right: 6 over the monitor's 24 hours and 12 over
+        # the two UTC days the window had, the same 6 a day. The defect was
+        # that one metric wore two names over two unstated spans.
+        print("\nthe page names one metric one way")
+        page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "web", "index.html")
+        html = open(page, encoding="utf-8").read()
+
+        for metric in ("gated to RF", "gated to APRS-IS"):
+            check(f"the live chip says {metric!r}",
+                  f'"{metric}"' in html, metric)
+            tile_label = metric[0].upper() + metric[1:]
+            check(f"and the tile says {tile_label!r}",
+                  f'"{tile_label}"' in html, metric)
+        check("the old divergent live labels are gone",
+              '"gated down"' not in html and '"gated up"' not in html, "")
+
+        check("the live row leads with its span, not a trailing wall clock",
+              "since the monitor restarted" in html
+              and '"live since " + clock(' not in html, "")
+        check("and dur() exists to state that span as a duration",
+              "function dur(sec)" in html, "")
+
+        check("every window sub-line says the days are UTC",
+              html.count("UTC days") >= 3, html.count("UTC days"))
+        check("the per-day table names its date column UTC",
+              '["date", "day (UTC)"]' in html, "")
+
+        # win_* counts whatever the console log held when the archiver ran.
+        # That span is not a constant: 8 days at 48 beacons a day, 3.2 days
+        # at 720. win_gated read 316 on the 2026-11-17 row and 28 on
+        # 2026-11-18 with the rate steady at 6 a day. The columns stay in the
+        # TSV; nothing renders them.
+        check("no win_* column is rendered anywhere",
+              '"win_frames"' not in html and '"win_gated"' not in html, "")
+        check("and the element that held them is gone",
+              "windowsnap" not in html, "")
+
         print()
         print(f"{PASS} passed, {FAIL} failed")
         if FAIL == 0:

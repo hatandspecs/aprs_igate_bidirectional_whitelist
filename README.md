@@ -1044,8 +1044,8 @@ rate sets how large a change a comparison against it can resolve.
 **Not from this log.** Dire Wolf parses the weather fields out of a packet when
 it writes the CSV, so the raw APRS `ddd/sssgGGGtTTT` string is in no column of
 the dated log. The decoded values reach the annotated text output, which is
-where the web monitor gets them, but that log holds about eight days and is not
-per-UTC-day.
+where the web monitor gets them, but that log's reach depends on traffic, 3.2
+days as measured on 2026-11-18, and it is not per-UTC-day.
 
 Use the regional ASOS archive. It runs from any machine, needs nothing
 from the Pi, reaches back years, and comes from an instrument built for the
@@ -1120,7 +1120,7 @@ header**, which is the authoritative definition of those columns:
 | `rx_own` | Own call as a source: beacons returning off the air |
 | `rx_stations_win` | Distinct stations over the seven-day window, a **union**, excluding MYCALL |
 | `rx_stations_new` | Stations on that day absent from the rest of the window |
-| `win_*` | Counted over the Direwolf text log's rolling window, about eight days, **not** the UTC day. Superseded by the `day_*` columns; kept so the historical series does not break |
+| `win_*` | Counted over the Direwolf text log's rolling window, **not** the UTC day, and that window is not a fixed span: 8 days at 48 beacons a day, 3.2 days at 720. Superseded by the `day_*` columns, still written so the historical series does not break, and rendered nowhere since 2026-11-18 |
 | `chunks_saved` | Archive chunks written that day |
 
 **An empty field means not measured and must never be read as a zero.** Rows
@@ -1222,12 +1222,19 @@ is doing. It has four parts, and they come from three different sources with
 three different guarantees, which the panel states rather than blends.
 
 **Live counters**, the chip row at the top. These increment off the same
-annotated event feed the packet log below shows, so `heard`, `gated up`,
-`gated down`, `not whitelisted` and `own tx` are the five labels in the feed's
-legend. They are labeled `live since HH:MM:SS` and that is exactly what they
-are: they reset when the service restarts, and they begin wherever `tail -F`
-was when the feed attached. **They are not a day.** The per-day numbers come
-from the archive.
+annotated event feed the packet log below shows: `heard`, `gated to APRS-IS`,
+`gated to RF`, `not whitelisted` and `own tx`. **The labels match the tile
+labels below them on purpose**, because the live chip and the tile read the
+same metric over different spans, and until 2026-11-18 the two wore different
+words and were reported as the monitor miscounting.
+
+  The row leads with its own span as a duration, `24.7 h since the monitor
+  restarted`, and the chip's tooltip names the restart time and the tiles'
+  window. It used to end with a trailing `live since 20:32`, a wall clock that
+  gave no duration and did not look like it governed the five counters to its
+  left. These counters reset when the service restarts and begin wherever
+  `tail -F` was when the feed attached. **They are not a day.** The per-day
+  numbers come from the archive.
 
   A restart used to be worse than a reset. `tail -F` with no `-n` starts at
   the last ten lines and `docker logs -f --tail 30` at the last thirty, so
@@ -1279,13 +1286,17 @@ chunks are held, how many chunks were captured on the newest day, and the
 rolling-window snapshot. The line beside the title carries the headline
 unopened — `· 14 kB today`, or `· no log today`, or `· stale 3 h ago`.
 
-**The window snapshot is under its own heading, and says what it is.** The
-`win_*` columns count the whole console log, not the day in the row, and how
-long that is depends on how fast the log fills — about 26 hours on
-2026-11-17, not the eight days this project assumed for a long time. Until
-2026-11-17 they were rendered in the dated table with the prefix stripped, so
-`win_beacons` sat under a column headed `beacons` beside a date. The exact
-per-day equivalents are the `day_*` columns.
+**The `win_*` columns are not rendered at all, since 2026-11-18.** They count
+the whole console log rather than the day in the row, and how long that is
+depends on how fast the log fills: 8 days at 48 beacons a day, and a measured
+3.2 days at 720. `win_gated` read 316 on the 2026-11-17 row and 28 on
+2026-11-18 while the underlying rate held steady at 6 a day, which is what a
+rolling count over a window that moves on its own looks like. Until 2026-11-17
+they were rendered in the dated table with the prefix stripped, so
+`win_beacons` sat under a column headed `beacons` beside a date; from
+2026-11-17 to 11-18 they had their own heading; now the exact per-day
+equivalents in the `day_*` columns are the only traffic figures the panel
+shows.
 
 **The archive timer tells "not installed" from "inactive".** `systemctl show`
 on a unit that does not exist prints `ActiveState=inactive` and exits 0, so
@@ -1935,6 +1946,17 @@ it only reaches aprs.fi if a neighboring iGate hears and gates it. `BOTH` does
 each, which is the combination to use if you want local visibility *and*
 guaranteed presence on the map.
 
+**`BEACON_EVERY` is `MM:SS`, and has no hours field.** It becomes Direwolf's
+`every=` verbatim, so `120:00` is 120 minutes and `2:00:00` is **two minutes,
+not two hours**. The wrong spelling is accepted silently and beacons 60 times
+too often: it ran here from 2026-11-14 to 2026-11-20, and what caught it was
+aprs.fi reporting 45 packets an hour. `STATUS_EVERY` is the same. After
+changing either, check what was rendered rather than what was written:
+
+```
+grep -E '^[CP]BEACON' run/direwolf.conf
+```
+
 **Give the position as a grid square.** A 6-character Maidenhead locator is
 2.5′ of latitude by 5′ of longitude — about 4.6 km north-south, and 7 km
 east-west at 40° N (the east-west width narrows toward the poles). It is
@@ -2177,9 +2199,9 @@ the risk of an unclean shutdown, not the question of write endurance.
 
 The trade is that nothing in `run/` survives a reboot — the console packet log
 starts empty and `journalctl` cannot show a previous boot. That log also holds
-only about **eight days** at a busy station's traffic whatever `uptime` says,
-which is the real limit on any question asked of it later and the reason the
-daily archive exists. The remaining risk is the
+only a few days at a busy station's traffic whatever `uptime` says: **8 days at
+48 beacons a day, and a measured 3.2 days at 720**. That is the real limit on
+any question asked of it later and the reason the daily archive exists. The remaining risk is the
 radio rather than the card: with the FTX-1, PTT is a CAT command over USB, so
 power lost mid-transmission leaves the radio keyed with only its time-out timer to
 end it.

@@ -26,6 +26,14 @@ The design doc separates **Specification** (what it must do) from **Findings**
   messages (`IGTXVIA`); `BEACON_VIA` is the beacon's (`PBEACON via=`). Blank
   `BEACON_VIA` inherits `TX_VIA`. They differ because the beacon goes out ~1,400
   times a month and a gated message a handful of times.
+- **This station cannot hear a digipeater that answers within about 2
+  seconds of a frame it is still following with another frame.** It is half
+  duplex. When `BEACON_EVERY` and `STATUS_EVERY` share a factor the two go out
+  in the same second, and the echo of the first lands while the radio is keyed
+  for the second. That produced a published claim that W3YA-1 suppresses
+  duplicates, retracted 2026-11-22. **Never measure a repeat rate from beacons
+  that go out in pairs**, and check for two `[0L` lines in one second before
+  trusting any such figure.
 - **Never send test traffic as `MYCALL`** — Direwolf drops frames it originated.
   `selftest` sends as `IGLOGIN_CALL-1` and refuses if that equals `MYCALL`.
 - **`IS GATED` in the monitor is not proof of transmission.** `[0L]` means the
@@ -167,10 +175,15 @@ The design doc separates **Specification** (what it must do) from **Findings**
 ./igate-archive.sh            # daily archive + summary row; safe to run by hand
 ./heard_spatial.py CAPTURE    # receive coverage per 2 km cell; safe, reads only
 ./igate_counts.py --day D LOG # exact per-UTC-day traffic counts; safe, reads only
+./digi_relay_audit.py LOGDIR  # who relayed what, at what length; safe, reads only
+./beacon_repeat_rate.py LOGDIR# how often each digi repeats us; safe, reads only
+./message_site_map.py OUTDIR  # 2026-11-21 site map, PNG + folium; needs the
+                              # repeater_monitoring env and plain python
 ./test_archive.sh             # 63 checks, incl. replay against archive-2026-10/
-./test_web_logging.py         # 55 checks: the monitor panel's bounds and window
+./test_web_logging.py         # 66 checks: the monitor panel's bounds and window
 ./test_igate_counts.py        # 37 checks: line classification and day bucketing
 ./test_heard_spatial.py       # 51 checks, incl. replay against archive-2026-10/
+./test_beacon_repeat_rate.py  # 32 checks: pairing, dedup, UTC bucketing, CIs
 ```
 
 **`igate-archive.sh` is a separate script, not a subcommand**, run by
@@ -184,11 +197,12 @@ safe for an assistant to run.
   set.** `rx_*` are exact for the named UTC day, from the dated CSV on the
   card. `day_*` are exact for the named UTC day, from the console log's `-T`
   timestamps, computed by `igate_counts.py`. `win_*` are a ROLLING WINDOW over
-  whatever the console log still held when the archiver ran, about eight days;
-  they are superseded but still written, because months of history sit behind
-  them. Difference consecutive `win_*` rows for a rate. The `chunks_saved`
-  column is the health signal: above 1 on a routine day means rotation is
-  outpacing the timer.
+  whatever the console log still held when the archiver ran, which is **not a
+  constant span**: 8 days at 48 beacons a day, 3.2 days at 720. They are
+  superseded, still written because months of history sit behind them, and
+  **no longer rendered anywhere** (2026-11-18). The `chunks_saved` column is
+  the health signal: above 1 on a routine day means rotation is outpacing the
+  timer.
 
   **An empty field means not measured. It is not a zero.** Rows written before
   a column existed are short, and the archiver pads with empty fields rather
@@ -280,7 +294,7 @@ show on marginal paths rather than on stations already solid.
     biases the aprs.fi month-to-month comparison AGAINST November**: the list
     can shrink while transmit genuinely improved. The window cannot be sliced
     out of the aprs.fi page, and the frame log does not reach back that far
-    (see "The log holds about eight days"), so it cannot be corrected for
+    (see "The log's reach is set by traffic"), so it cannot be corrected for
     either -- **use the measured baseline below instead of the monthly page**
     for anything about reach.
   * **November has holes, but they have known edges, so slice it rather than
@@ -519,11 +533,13 @@ twice before. If a new tool needs to count frames, import it.
 
 **The window columns were being read as daily figures.** The old panel mapped
 `win_beacons` to a column headed `beacons` in a table keyed by date.
-`win_beacons` counts the whole console log, which on 2026-11-17 held about
-26 hours, not the eight days this file long assumed -- 720 beacons a day fills
-8 MB faster than 48 a day did. Either way a window total in a dated row is not
-that day's figure. The `win_*` columns now sit under their own heading that
-says what they are, and the dated table carries only `day_*` and `rx_*`.
+`win_beacons` counts the whole console log, and that span is not eight days
+any more: 720 beacons a day fills 8 MB far faster than 48 a day did. Measured
+on 2026-11-18, the live file covered 20 hours and the whole retained set, live
+plus two compressed rotations, covered **3.2 days**. Either way a window total
+in a dated row is not that day's figure. **The `win_*` columns are no longer
+rendered at all** (2026-11-18); the dated table carries only `day_*` and
+`rx_*`.
 
 **Gating was not counted at all.** `tx_stats` deliberately excludes `[rx>ig]`
 so its frame count stays comparable with `reach`, which discarded the biggest
@@ -599,17 +615,25 @@ meant 30 minutes and `120:00` means 120 minutes. This file's own entry for
 2026-11-07 says the value *became* `120:00`, which is the correct spelling and
 is not what is in `igate.conf`. `STATUS_EVERY = 4:00:00` has the same fault.
 
-**The fix is two lines and a gateway restart**, which is an on-air change and
-so the operator's:
+**Confirmed from outside the station on 2026-11-20.** aprs.fi reported
+roughly **45 packets an hour**, which is 30 position plus 15 status exactly.
+A third measurement, independent of both the console log and the card CSV,
+of the same fault.
 
-    BEACON_EVERY = 120:00      # 120 minutes. NOT 2:00:00, which is 2 minutes.
-    STATUS_EVERY = 240:00      # 240 minutes. NOT 4:00:00, which is 4 minutes.
+**`igate.conf` was corrected on 2026-11-20** to `BEACON_EVERY = 120:00` and
+`STATUS_EVERY = 240:00`, each with a comment naming the `MM:SS` trap.
+`./deploy_igate.sh config` renders `every 120:00` and `every 240:00`, and all
+217 tests pass against the new values.
 
-then `./deploy_igate.sh restart` and confirm with `grep -E '^[CP]BEACON'
-run/direwolf.conf`.
+**The gateway has not been restarted**, because that is an on-air change and
+so the operator's. Until `./deploy_igate.sh restart` runs on the Pi, the
+station is still beaconing at 45 an hour whatever this repository says.
+Confirm after the restart with `grep -E '^[CP]BEACON' run/direwolf.conf`,
+which should show `every=120:00` and `every=240:00`.
 
-**What this invalidates.** It ran from 2026-11-14 to whenever it is fixed, so
-any beacon-rate or channel-share figure from that window is wrong, including
+**What this invalidates.** It ran from 2026-11-14 to whenever the gateway is
+restarted, so any beacon-rate or channel-share figure from that window is
+wrong, including
 "an 8-day November window holds roughly 98 beacons" above and the channel
 share section dated 2026-11-07. The W3YA-1 repeat-rate denominators are
 measured per-beacon and survive, but **do not pool pre-11-14 and post-11-14
@@ -617,11 +641,153 @@ beacons**: they are different populations at 60x the rate.
 
 **It also shortened the log's reach.** 720 beacons and 907 beacon repeats a
 day fill the 8 MB rotation far faster than 48 a day did, so "the log holds
-about eight days" was down to about 26 hours on 2026-11-17. Any retrospective
-question asked of `run/direwolf.log` during this window reaches back roughly
-a day, not a week.
+about eight days" is false while the fault stands. Measured on 2026-11-18:
+`run/direwolf.log` itself spanned 20 hours, 00:04 to 20:27, and the whole
+retained set including `.1.gz` and `.2.gz` spanned **3.2 days** back to
+2026-11-15T15:04. An earlier note in this file said 26 hours, which was the
+live file alone and not the retained reach.
 
 **The new `day_beacons` column is what found it**, on the first night it ran.
+
+**Fixed on the Pi 2026-11-20 at 19:15 EST.** `systemctl restart
+aprs-igate.service`, not `deploy_igate.sh restart` over ssh: direwolf runs
+inside the unit's cgroup, and starting it from a login shell would put it
+outside. Verified on the air -- the 120 s cadence runs to 19:14:56, then one
+position beacon at 19:16:47 (`delay=1:00`) and one status at 19:18:47
+(`delay=3:00`), where the fault would have put five in that span. The faulty
+file is kept on the Pi as `igate.conf.bak-20261120`.
+
+### The station goes deaf to its own echo when it sends two frames at once (corrected 2026-11-22)
+
+**This section claimed on 2026-11-20 that W3YA-1 suppresses a repeated
+identical payload. That was wrong.** The even-gap evidence measured this
+station's own transmit pattern, not the digipeater. The correction came from
+the 2026-11-21 message session, where the handheld sent byte-identical copies
+with no second frame behind them. Keep reading before quoting any repeat rate
+measured at a short beacon interval.
+
+**The mechanism.** During the fault window `BEACON_EVERY` was 120 s and
+`STATUS_EVERY` 240 s, and **197 of 204 status beacons went out in the same
+second as a position beacon**. A digipeater answers 1 to 2 seconds later. The
+station is half duplex, so while it keys the second frame of the pair it
+cannot hear the echo of the first. Every fourth minute, by the clock, the
+position beacon's echo arrived while the radio was transmitting.
+
+That alone produces gaps between heard repeats that are all even multiples of
+120 s, with no digipeater behavior involved.
+
+**The effect is graded by how fast each digipeater answers, which is what
+settles it.** Over 11-20 06:05 to 11-21 19:01, 407 position beacons, of which
+198 shared their second with a status beacon:
+
+| digipeater | median echo delay | paired slots | solo slots |
+|---|---|---|---|
+| KE4MHE-10 | 6 s | 63.6% | 60.3% |
+| WO3T-1 | 3 s | 23.7% | 51.7% |
+| **W3YA-1** | **2 s** | **0.0%** | **34.0%** |
+| W3TM-10 | 2 s | 11.1% | 15.8% |
+
+KE4MHE-10 answers after the pair has finished and is untouched. WO3T-1 loses
+half. W3YA-1 answers soonest and loses everything. **No duplicate filter
+inside one digipeater can produce a gradient across four independent
+digipeaters keyed to their own answer latency.**
+
+**Two independent counterexamples, from frames this station did not send.**
+On 2026-11-21 the handheld transmitted `@self third{27` three times, byte
+identical, at 10:23:37, 10:24:10 and 10:24:41, and **W3YA-1 repeated all
+three** -- three duplicates inside 64 seconds. `@self garage 3{28` was
+repeated twice, 126 s apart. And the accumulating version of the idea fails
+too: the position beacon has **exactly one distinct payload across all 407
+transmissions**, so if suppression built up with repetition the solo-slot rate
+would decay over 13 hours. It rises, by hour: 38, 33, 27, 33, 27, 33, 7, 27,
+47, 47, 47, 47, 53 percent.
+
+**What is still true.** The 30-minute column below is uncontaminated, because
+at that spacing the position and status beacons rarely share a second.
+
+| digipeater | at 30 min spacing | at 120 s spacing (contaminated) |
+|---|---|---|
+| KE4MHE-10 | 69.2% [53.8-85.6] | 53.1% |
+| WO3T-1 | 59.0% [36.0-83.4] | 37.8% |
+| **W3YA-1** | **52.6% [42.4-63.5]** | 11.5% |
+| W3TM-10 | 8.1% [0.0-16.5] | 12.6% |
+| any of them | 88.9% [84.3-93.8] | 73.0% |
+
+**The 52.6% is the figure to quote**, and it agrees with the 55% in the
+stop-collars article and the 56% from the length test. **Do not quote the
+120 s column for anything.** The old reading of it -- that W3YA-1 was the only
+station whose interval did not overlap -- is an artifact of W3YA-1 having the
+shortest echo delay.
+
+**Consequences, and these are the ones to carry forward.**
+
+- **Never measure a repeat rate from beacons that go out in pairs.** Check
+  first: `grep -c` the `[0L` lines and look for two in the same second. If
+  `BEACON_EVERY` and `STATUS_EVERY` share a factor, every shared slot is
+  unmeasurable for any digipeater answering inside about 3 seconds.
+- **An echo this station does not hear is not an echo the digipeater did not
+  send.** The whole repeat-rate method reads the station's own receiver, which
+  is the right call for path questions and is blind for the 1 to 2 seconds
+  after it keys.
+- **`beacon_repeat_rate.py` is sound; its 120 s input was not.** The tool
+  reports what the receiver heard, which is what it should do. Pass it
+  beacons that went out alone.
+- **`linktest_sweep.py` is unaffected either way.** Its frames are single
+  transmissions and carry a cycle number.
+- The ~20% W3YA-1 control rate on `WIDE1-1,WIDE2-2` recorded below is still
+  open, and duplicate suppression is no longer a candidate explanation.
+
+### One metric with two names over two unstated spans (found 2026-11-18)
+
+Reported as the monitor miscounting: the page said 12 gated to RF over two
+days and 6 gated down. Both numbers were correct and were the same rate.
+
+| Read | Was | Over |
+|---|---|---|
+| `Gated to RF` 12 | tile, `sum(day_gated_down)` | the 7-day window, which held 2 measured days at 6 each |
+| `gated down` 6 | live chip, `live.gated_down` | since the monitor restarted, 23.9 h |
+
+6 a day either way, confirmed three independent ways: the live stream counter
+gave 6 in 23.9 h; `igate_counts.py` recomputed 6 on each of 11-16, 11-17 and
+11-18; the legacy whole-log grep gave 28, which is exactly the per-day counts
+summed over the days the log still covered.
+
+**The defect was wording and scope, not arithmetic.** The live row called it
+`gated down` and the tile called it `Gated to RF`, and the live row's span sat
+in a trailing chip reading `live since 20:32`, a wall clock that gave no
+duration and did not look like it governed the five counters to its left.
+Fixed on 2026-11-18: live labels now match the tile labels exactly, the span
+leads the row as a duration from the new `dur()` helper, and every tile
+sub-line states its own window. `test_web_logging.py` asserts all of it as
+text, because there is no JS engine in the suite.
+
+**Do not reintroduce a second name for a metric that already has one.** The
+live chip and the tile read the same field and must read the same words.
+
+**Every date on that panel is a UTC day** and now says so. UTC bucketing is
+deliberate: it is how direwolf names the dated logs and the only reason
+`rx_packets` off the card and `day_rx_frames` off the console log can be
+compared at all, which is what made them agree to 0.03%. Unlabeled it reads as
+a fault, because through the local evening the UTC date is already tomorrow's:
+at 20:27 local on 2026-11-18 the panel showed `2026-11-19` with a few hours of
+traffic under it.
+
+### Everything gated to RF is this station's own traffic (2026-11-18)
+
+All 28 frames gated down in the retained log were KD3CCO-1 to KD3CCO-7: 19
+four-hourly `selftest` messages and the 9-frame length-sweep burst on 11-15
+between 15:04 and 15:10. Nothing addressed to `KD3CCP*`, `W3EDP*` or `W3TM*`
+was gated down in 3.2 days.
+
+**This is not a fault.** `WHITELIST_CALLS = KD3CCO*, KD3CCP*, W3EDP*, W3TM*`
+and gating down is demand-driven, so the other three prefixes simply had no
+message traffic. Worth knowing before quoting the figure: **"6 gated to RF a
+day" is the station relaying its own heartbeat**, not traffic for anyone else,
+and it will read as a working downlink to anyone who does not check.
+
+The same capture shows 22,786 frames offered by the server against those 6,
+so the `not whitelisted` counter is server firehose, not whitelist
+near-misses.
 
 ### The web monitor cannot answer a path question (2026-11-07)
 
@@ -905,6 +1071,114 @@ needs no Pi access.
 **Do not assume the handheld can hear W3YA-1.** Digipeating is one-way
 evidence. W3YA-1 hears the handheld; the reverse is untested and the whole
 proposed fix depends on it.
+
+### Two complete round trips, and both happened in direct range (2026-11-21)
+
+A two-way SMSGTE session on the morning of 2026-11-21, 09:46 to 10:54 EST.
+Evidence: `run/direwolf.log.1.gz` on the Pi, which spans 11-20 06:05 to 11-21
+19:01 EST and is byte-identical to
+`archive/frames/frames-2026-11-21-8169b789ae.log.gz`, plus eight photographs of
+the FT5D's own message list. **Read the photographs, not the retry count** --
+the 2026-11-07 lesson held again here.
+
+**It is two independent streams, not one conversation.** The handheld sent
+`@self <word>` as its messages 24 through 28; the phone sent
+`@self testing igate <word>` back as SMSGTE's 4719, 4720, 4721, 4723 and 4728.
+They are paired by word, not by protocol, so the downlink for "third" precedes
+the uplink for "third" by two minutes and nothing is wrong. The gaps in
+SMSGTE's numbering are its own global counter, not lost traffic: `[ig>tx]` and
+`[0L]` match at 21 and 21.
+
+**The gateway transmitted everything it was offered: 21 of 21.** No whitelist
+rejection, no modem refusal. Every ack it gated went out 1 to 2 seconds behind
+the uplink that caused it.
+
+**Two round trips are attributable to this station alone, which is new.** Every
+earlier claim carried the caveat that four or five other gateways transmit the
+same message.
+
+- *Uplink.* Handheld keys `@self sheetz{24` at 09:46:33, heard direct. This
+  station puts `ack24` on the air at 09:46:34 and is **the only station to
+  transmit `ack24` anywhere in 37 hours of log**. The handheld never retries.
+- *Downlink.* This station keys `{4719}` at 09:47:01. The handheld's `ack4719`
+  arrives at 09:47:06, heard direct. The next gateway to transmit `{4719}` is
+  N3TJJ-13 at 09:47:19, **13 seconds after the ack**. Nothing else could have
+  delivered it.
+
+**Everything that reached the handheld reached it in direct range, and nothing
+reached it afterward.** The handheld was heard direct at 09:41, 09:46, 09:47
+and 09:48, at 1.2, 2.2 and 2.9 miles. Its position beacons then stop entirely
+-- "garage 3" was a parking garage, so no GPS fix -- and from 09:54 to 10:53 it
+is heard only through W3YA-1. The three downlinks confirmed on the radio
+(4719, 4720, 4721) were all keyed between 09:47:01 and 09:50:46. The two keyed
+after it went indoors (4723 at 10:21, 4728 at 10:48, each transmitted three
+times) do not appear in the photographed message list.
+
+**The cause is the old split, measured a third time on fresh data.** Over the
+same 37-hour log this station transmitted 611 beacons and 30 gated frames:
+
+| first hop | beacons repeated | gated repeated |
+|---|---|---|
+| KE4MHE-10 | 376 | 8 |
+| WO3T-1 | 254 | 3 |
+| **W3YA-1** | **89** | **0** |
+| W3TM-10 | 65 | 0 |
+| K3DNA | 0 | 1 |
+
+W3YA-1 is hearing this station constantly and repeated none of its gated
+traffic. The baseline to compare against is **34.0%**, W3YA-1's repeat rate on
+the beacons that went out alone, because a gated frame is always a single
+transmission; at that rate the chance of 0 in 30 is **4e-6**. Do not use the
+raw 89/611, which mixes in the paired slots the receiver could not hear --
+see the echo section above. **So once the
+handheld was reachable only through W3YA-1, nothing this gateway gated could
+reach it** -- including the acks, which are 75 on-air bytes and clear every
+length ceiling ever proposed for W3YA-1. Gated messages run 99 to 101 bytes.
+
+**One uplink reached nobody at all.** Message 26, `@self alpha`, is in the
+handheld's outbox in the photographs and has **zero trace in 37 hours of log**:
+no RF copy by any path, and no `ack26` ever offered by APRS-IS, which means
+SMSGTE never received it. Message 25 was also missed here on its first
+transmission at 09:48:37 and only copied on a retry at 09:54:56; another
+gateway carried the first one.
+
+**The radio's acks are mostly invisible from here, and aprs.fi is what shows
+them.** This station's log holds `ack4719` and nothing after it, which read at
+first as the radio having stopped acknowledging. It had not: aprs.fi has
+`ack4721` at 09:50:51, gated by W3SWL-2 on an unrepeated path. The radio
+acknowledged 4721 five seconds after this station keyed it, and this receiver
+missed the acknowledgement entirely. **An absent ack in this log is not an
+absent ack.** Pull the aprs.fi raw view for the handheld before concluding
+anything from one. No `ack4720` appears anywhere even so, and 4720 is in the
+radio's inbox, so that one arrived unacknowledged.
+
+**Delivery, confirmed against the photographed message list: 3 of 5
+downlinks.** 4719, 4720 and 4721 arrived; 4723 and 4728 did not. The operator
+confirmed on 2026-11-22 that the photographed inbox is complete.
+
+**The position beacons stop dead at 09:48:46, and that is a GPS story, not a
+path story.** A beacon was sent at or near each of the five sites. This
+station copied three, at 09:41:15, 09:46:55 and 09:48:46, every one of them
+direct AND repeated by W3YA-1. **After 09:48:46 there are none at all**, not
+here and not through any of the eight gateways that were copying the
+handheld's messages. Third Planet Coffee was indoors and the garage was the
+third floor of a concrete structure, so the FT5D had no fix and nothing to
+beacon. Messages from those same two sites did get out through W3YA-1, which
+is how the two are told apart: the radio could transmit, it just had no
+position. Alpha was a moving car under open sky and is the one that does not
+fit, because its beacon and its message `{26}` both vanished while `ack4721`
+from the same minute reached W3SWL-2.
+
+**A fourth beacon at 09:46:46 never reached this receiver**, and K9SDW-1
+gated it on an unrepeated path, as it also did `@self luna{25` at 09:48:37
+which this station missed. Another gateway hearing the handheld direct while
+this one does not is ordinary marginal-copy behavior, worth remembering before
+reading a gap here as a gap on the air.
+
+**`message_site_map.py` draws the sites**, a PNG for the article body and a
+folium page beside it. Run it with the `repeater_monitoring` conda env and
+plain `python`, NOT `python -I`: folium lives in `~/.local`, outside the env,
+and isolated mode cannot see it.
 
 ### What this station's channel share actually is (2026-11-07)
 
@@ -1576,13 +1850,14 @@ undated logs, reporting how many lines were undated.
 day.** Safe at current traffic, where a chunk takes a day and a half. If
 traffic triples, chunks will age out before the archiver sees them.
 
-### The log holds about eight days, not the uptime
+### The log's reach is set by traffic, not by the uptime
 
 `uptime -s` was 2026-10-12 and the log reached back only to 10-22. `run/` is a
-32 MB tmpfs rotated hourly at 8 MB with two generations, so **at this
-station's traffic the readable history is roughly eight days** however long
-the station has been up. `reach` and any retrospective question are bounded by
-that, not by the uptime.
+32 MB tmpfs rotated hourly at 8 MB with two generations, so **the readable
+history is however many days of this station's traffic fit in 8 MB**, not
+however long the station has been up. That was about eight days at 48 beacons
+a day and a measured **3.2 days at 720** (2026-11-18). `reach` and any
+retrospective question are bounded by that, not by the uptime.
 
   **This makes the November comparison easy rather than hard, with one
   caveat added 2026-11-07.** Run `reach`, `config` and the frame-log archive
