@@ -25,3 +25,9 @@ scratch_notes.txt
 # and every position report in them is a real station's coordinates, including
 # this one's. Keep them, do not publish them.
 archive-*/
+
+# heard_both_ways.py output. The PNG aggregates into 4- and 25-mile cells and
+# is safe to publish; rx_frames.tsv and the folium page carry one row per
+# position report, which is where real stations' cars were. Same rule as
+# archive-*/: keep them, do not publish them.
+analysis-out/

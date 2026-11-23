@@ -161,8 +161,12 @@ def static(path):
 def interactive(path):
     import folium
 
+    # CARTO's positron basemap started demanding an API key: without one every
+    # tile renders as an "API KEY REQUIRED" watermark and the map has no
+    # geography at all. OpenStreetMap needs no key. Busier-looking, but the
+    # roads show, which for a map of where mobiles travel is the whole point.
     m = folium.Map(location=[40.783, -77.828], zoom_start=13,
-                   tiles="CartoDB positron", control_scale=True)
+                   tiles="OpenStreetMap", control_scale=True)
     for r in (1, 2, 3, 4):
         folium.Circle(GW, radius=r * 1609.344, color=RING, weight=1,
                       fill=False, interactive=False).add_to(m)

@@ -34,6 +34,15 @@ The design doc separates **Specification** (what it must do) from **Findings**
   duplicates, retracted 2026-11-22. **Never measure a repeat rate from beacons
   that go out in pairs**, and check for two `[0L` lines in one second before
   trusting any such figure.
+- **CARTO's positron basemap now demands an API key, and it broke a page
+  that was already published.** Every tile renders as an "API KEY REQUIRED"
+  watermark and the map loses all geography; markers and rings still draw, so
+  nothing errors and nothing looks wrong in the code. It took out the
+  interactive map shipped with the 2026-11-21 article, which was correct the
+  day it went up. Both map tools now use `tiles="OpenStreetMap"`, which needs
+  no key. **Render any folium page and look at it before trusting it**, and
+  re-check the published ones from time to time: this class of breakage
+  arrives long after the commit.
 - **Never send test traffic as `MYCALL`** — Direwolf drops frames it originated.
   `selftest` sends as `IGLOGIN_CALL-1` and refuses if that equals `MYCALL`.
 - **`IS GATED` in the monitor is not proof of transmission.** `[0L]` means the
@@ -179,6 +188,11 @@ The design doc separates **Specification** (what it must do) from **Findings**
 ./beacon_repeat_rate.py LOGDIR# how often each digi repeats us; safe, reads only
 ./message_site_map.py OUTDIR  # 2026-11-21 site map, PNG + folium; needs the
                               # repeater_monitoring env and plain python
+./heard_both_ways.py analyze LOGS -o DIR   # who we hear and who hears us, four
+./heard_both_ways.py mobiles DIR           # mobile vs fixed density per cell
+./heard_both_ways.py draw DIR              # ways. analyze is stdlib and runs
+                              # under -I; draw needs the repeater_monitoring
+                              # env and plain python. Output is gitignored.
 ./test_archive.sh             # 63 checks, incl. replay against archive-2026-10/
 ./test_web_logging.py         # 66 checks: the monitor panel's bounds and window
 ./test_igate_counts.py        # 37 checks: line classification and day bucketing
@@ -241,6 +255,84 @@ with traffic, 46 with a direct copy, 14 stations with a real direct path.
 Direct capture by ring: 100% of active cells inside 5 miles, 75% at 5-10, then
 **38% at 10-15**. That fall is where the mast should act, and it is the
 prediction to test against a Nov 22-30 capture.
+
+**`heard_both_ways.py` answers "who do I hear, and who hears me", and only
+half of that is a measurement.** Stations this station copied (directly, and
+at all) are rich: 43 and 795 over 16 days, because anything that transmits in
+range leaves a frame. Stations that copied THIS station are 9 and 16, because
+**a station only reveals that it heard us if it acts on the frame.** A
+digipeater repeats it and we copy the repeat, which names it in the path. An
+iGate forwards it to APRS-IS and the q-construct names it when the frame comes
+back down the server stream. An ordinary station that copies the beacon and
+does nothing is invisible here and always will be. **Those two are lower
+bounds, not coverage.**
+
+The bound is loose in a specific way. APRS-IS keeps only the FIRST copy, this
+station gates its own repeats within a second, and the server then discards
+every other iGate's copy -- so the gating counts measure who won a race, not
+who hears better. Only 90 of our frames in 16 days came back gated by somebody
+else, 71 of them by W3TM-10 alone.
+
+| | stations | reach |
+|---|---|---|
+| 1. we copied directly | 43 | frames p90 35 mi, max 99 |
+| 2. we copied at all | 795 | frames p90 144 mi, max 629 |
+| 3. copied us directly | 9 | farthest station 62 mi |
+| 4. copied us at all | 16 | farthest station 150 mi |
+
+Much of that right-hand asymmetry is our own TX path, not the antenna: this
+station beacons `WIDE1-1`, one fill-in hop, while the traffic it receives has
+come through `WIDE2-2` from several states away.
+
+Four things that are easy to get wrong here, two of them found the hard way:
+
+- **Only `qAR` and `qAO` name a station that copied us off the air**, and both
+  do -- `qAO` is a receive-only iGate, not a weaker kind of hearing. `qAC`,
+  `qAS`, `qAU`, `qAX` and `qAZ` name a SERVER. Matching `qA[A-Z]` puts a
+  Tier-2 host on the map as a station that hears this one.
+- **Take positions per frame, never per station.** Applying a station's latest
+  position to all of its frames put N0XGA-9 at 253 miles into the
+  directly-heard set off one frame copied while it was local. Per frame the
+  farthest direct copy is 99 miles and the p90 is 35. Same trap as
+  `heard_spatial.py`, which already had a test for it.
+- **Beacons lie, and the lies are large.** Null island, 23N/113E, 90N/180E and
+  sign-flipped longitudes are all in real traffic. 110 frames from 9 stations
+  are dropped by a North America box, and the count is printed rather than
+  hidden.
+- **The projection is azimuthal equidistant about the gateway**, not flat
+  lat/lon, which is wrong by about 10% at the 500-mile frame and wrong exactly
+  where it matters: the range rings stop meaning what they say. Verified
+  isometric to 0.003 mi at 500 miles.
+
+**Mobiles trace the road network, and that is the clearest spatial result
+this station has produced.** `heard_both_ways.py mobiles` colours 2-mile cells
+by how many DISTINCT mobile stations transmitted from each. Against an
+OpenStreetMap base the lit cells land on I-80, I-99 through Altoona, the
+Turnpike through Bedford and Somerset, I-81 at Harrisburg and Chambersburg,
+and US-322 east. 410 mobiles, 370 fixed, 15 balloons/aircraft/boats; 26,046
+mobile frames in 2,145 occupied cells. The busiest cells are not local: 15
+distinct mobiles in one cell 80 miles out on I-81, 14 at 63 miles on the
+Turnpike, against 13 in the State College cells.
+
+- **"Mobile" needs two tests, because each one alone fails in a known
+  direction.** The SYMBOL is what the operator says the station is, and it is
+  the only evidence for a station heard once -- but 19 stations moved more
+  than a mile while claiming a fixed symbol. The SPAN is what the station
+  actually did, and it is undersampled: a mobile copied twice in one parking
+  lot looks fixed. Either test qualifies. Symbol alone would have found 391,
+  movement alone 285, and the union is 410.
+- **Balloons, aircraft and boats get their own layer.** They move, but they do
+  not trace roads: one balloon drifting 80 miles paints a line through country
+  no car can reach. Folding them in corrupts the pattern and dropping them
+  silently hides 15 stations.
+- **Cells are squared per latitude band.** A constant degree step in longitude
+  makes cells that are square at one latitude and wrong everywhere else; the
+  longitude step is recomputed for each band.
+
+**The output is gitignored and should stay that way.** The PNG aggregates into
+4- and 25-mile cells and is safe to publish. `rx_frames.tsv` and the folium
+page carry one row per position report, which is where real stations' cars
+were -- the same reason `archive-*/` is ignored.
 
 `selftest` and `reach` transmit or read for real, on my hardware — give me the
 command rather than running it.
