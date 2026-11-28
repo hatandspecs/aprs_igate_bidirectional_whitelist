@@ -180,7 +180,7 @@ declare -A CFG_OVERRIDDEN=()
 declare -A PROFILE_KEY_OK=() LOCAL_KEY_OK=()
 for _k in RADIO_DESCRIPTION CAT PTT_METHOD RIG_MODEL CAT_DEVICE CAT_BAUD \
           PTT_DEVICE PTT_TYPE CM108_DEVICE CM108_GPIO USB_ID \
-          ACHANNELS ADEVICE MIXER_TX_CONTROL \
+          ACHANNELS ADEVICE AUDIO_RATE MIXER_TX_CONTROL \
           MIXER_RX_CONTROL MIXER_AGC_CONTROL TX_AUDIO_LEVEL RX_AUDIO_LEVEL \
           DISABLE_AGC RADIO_SET_ON_UP RADIO_FREQ RADIO_MODE RADIO_PASSBAND; do
   PROFILE_KEY_OK[$_k]=1
@@ -842,6 +842,7 @@ CAT              = ${CFG[CAT]}
 PTT_METHOD       = ${CFG[PTT_METHOD]}
 MYCALL           = ${CFG[MYCALL]}
 MODEM            = ${CFG[MODEM]}
+AUDIO_RATE       = ${CFG[AUDIO_RATE]:-48000} Hz$([[ "${CFG[AUDIO_RATE]:-48000}" == 48000 ]] && echo " (40 samples/symbol at 1200 baud)" || echo " (NOT 48000 - non-integer samples/symbol)")
 ACHANNELS        = ${CFG[ACHANNELS]}
 ADEVICE          = $(adevice_desc)
 USB_ID           = $(hw_value USB_ID)
@@ -960,6 +961,18 @@ ADEVICE   ${CFG[ADEVICE]}
 CHANNEL 0
 MYCALL   ${CFG[MYCALL]}
 MODEM    ${CFG[MODEM]}
+
+# Direwolf's default is 44100, which at 1200 baud is 36.75 samples per symbol,
+# a non-integer, so every symbol boundary quantises to a different sample.
+# 48000 gives exactly 40. It is also the native rate of the C-Media codecs in
+# both the Digirig and the FTX-1, so ADEVICE's "plughw" prefix stops
+# resampling the transmit audio on the way out.
+#
+# Measured 2026-11-26: this does NOT fix the W3YA-1 frame-length problem.
+# A 32-frame sweep at 48000 matched 44100 exactly, 0/8 at both 89 and 95
+# bytes and 6/8 at the 76 B control. It is set because it is correct, not
+# because it changed anything.
+ARATE    ${CFG[AUDIO_RATE]:-48000}
 
 $(build_ptt_directive)
 

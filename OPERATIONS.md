@@ -206,6 +206,51 @@ ability wanted on the day a storm is forecast.
 
 ## The log
 
+### 2026-11-28 — handheld transmit path un-pinned; indoor downlink failure localized
+
+**KD3CCO-7 (FT5D) path returned from `W3YA-1` to `WIDE1-1,WIDE2-1`, about 11:42
+EST (16:42 UTC), in the field.** The gateway transmitted nothing by hand all
+day and its configuration was unchanged during the diagnosis; the `TX_VIA`
+edit below was made afterwards and is not deployed as of this entry. The explicit `W3YA-1` path was
+a deliberate test for the W3YA-1 investigation, left in place afterwards: while
+it ran, every copy of the handheld in the log reached this receiver through
+W3YA-1 because nothing else was asked to repeat it. The 2026-11-08 archive has
+the path generic, so the 11-07/11-08 measurement window is unaffected.
+`WIDE1-1,WIDE2-1` is the normal state.
+
+**Effect, immediate.** One beacon at 11:44:43 arrived four ways in seventeen
+seconds: direct at audio level 25, W3YA-1 first hop, then WO3T-1 and KE4MHE-10
+on the second. Previously one copy.
+
+**Downlink, same session.** Six distinct gated messages to the handheld failed
+between 11:21:00 and 11:51:54 EST (5611, 5612, 5613, 5614, 5615, 5617) while it
+sat inside the South Atherton McDonald's, every one transmitted and digipeated
+(WO3T-1, KE4MHE-10, N3SNN-3), none acknowledged. 5616 never reached this
+gateway from APRS-IS; 5618 followed the move outside.
+Bidirectional messaging worked within a minute of the operator walking out to
+the parking lot: `@self McD 8{62` heard direct at 11:56:41, `ack62` back at
+11:56:42. Same radio, same rubber duck, same path, same digipeaters, about
+twenty meters. **Building penetration at the handheld, and nothing in the
+gateway.**
+
+**Also established:** N3TJJ-7 and N3TJJ-13 gate to KD3CCO-7 as well. All three
+igates transmitted `ack62` within eighteen seconds. Measured audio levels into
+this receiver that session: W3YA-1 19-20, KE4MHE-10 34-36, WO3T-1 39-41.
+
+Diagnosis was read-only, over SSH and the web monitor. `selftest` was not run.
+
+**`TX_VIA` corrected from `WIDE1-1,WIDE2-2` to `WIDE1-1,WIDE2-1` in
+`igate.conf`, after the field session. Edited in the repository only, NOT yet
+deployed or restarted.** The third relay was never argued for: the rationale in
+`igate.conf` describes a near digipeater plus one wide hop, and the
+`BEACON_VIA` note has always called `TX_VIA` two hops. Of the 35 echoes of
+gated traffic heard on 2026-11-28, 26 had consumed one hop, 8 two, and one all
+three (`N3SNN-3,WIDE1,K3DNA,WO3T-1,WIDE2*`, 11:26:01 EST), which delivered
+nothing,
+which is a lower bound rather than a count since a distant third-hop relay is
+not heard here. **Every W3YA-1 control rate and gated-repeat figure in AGENTS.md
+predates this change and was measured on three hops.**
+
 ### 2026-11-13 — the collar set completed, 13 of them; 52-minute planned outage
 
 **Radio off 12:31 EST (17:31 UTC), back on 13:23 EST (18:23 UTC). 52 minutes off

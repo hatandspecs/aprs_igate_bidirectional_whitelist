@@ -109,6 +109,33 @@ The design doc separates **Specification** (what it must do) from **Findings**
   'KD3CCO-10>APDW17' run/direwolf.log | grep -i W3YA-1`. §14.9 of the design doc
   has the worked example: one transmission recorded two ways, supporting opposite
   conclusions.
+- **This station is not the only igate that transmits to KD3CCO-7.** N3TJJ-7
+  and N3TJJ-13 both gate messages down to it, verified 2026-11-28: one `ack62`
+  went out from KD3CCO-10, N3TJJ-7 and N3TJJ-13 within eighteen seconds, each
+  through KE4MHE-10. **A message failing to reach the handheld is therefore not
+  evidence about this gateway at all** until the other two are accounted for,
+  and a downlink that works proves nothing about this station either. Check
+  `grep -a '::KD3CCO-7' run/direwolf.log | grep -av 'KD3CCO-10>'` before
+  attributing either outcome here.
+- **The handheld's transmit path was deliberately pinned to `W3YA-1` as part of
+  the W3YA-1 investigation, and a test left running reads exactly like a
+  coverage finding.** For that run the FT5D sent `KD3CCO-7>APY05D,W3YA-1` with
+  no WIDE at all, so every copy of it in the log arrived through W3YA-1 because
+  nothing else was asked to repeat it. Returned to `WIDE1-1,WIDE2-1` on
+  2026-11-28, after which one beacon arrived **four ways** in seventeen seconds:
+  direct at audio level 25, W3YA-1 first hop, then WO3T-1 and KE4MHE-10 on the
+  second. The lesson is about the window, not the setting: **read the handheld's
+  configured path out of the frames before drawing a coverage conclusion from
+  them.** The 2026-11-08 archive has it generic, so the 11-07/11-08
+  measurements are unaffected, and `WIDE1-1,WIDE2-1` is the normal state to
+  expect.
+- **W3YA-1 is the weakest of the three digipeaters into this receiver**, which
+  is the number the frame-length hypothesis was missing. Measured 2026-11-28:
+  W3YA-1 arrives at audio level 19-20 against WO3T-1 at 39-41 and KE4MHE-10 at
+  34-36. The most marginal link, driving a hardware DPLL with no error
+  correction, is where the longest frames this station sends would fail first.
+  Supporting, not conclusive: it is a receive level standing in for a transmit
+  path, and the two length tests below are still the ones that settle it.
 - **`systemctl start` on an active oneshot does nothing** — use `restart`.
   `systemctl is-active` reports the unit, not the gateway; `./deploy_igate.sh
   status` reports what is actually running.
@@ -1015,13 +1042,130 @@ Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
   are in turn hard to reconcile with K3DNA**, which decodes this station at 91
   bytes on the same `APN391` firmware from 2.6x the distance, so the cause
   points at W3YA-1's installation rather than its firmware.
-- **Next test, agreed with the author: swap the FT-2900R for the VX-6R** and
-  re-run the identical 48-frame matrix at Low1 on `TX_VIA = W3YA-1`. It swaps
-  modulator, PLL and PA in one move. **Void condition: if the 74 B control
-  stops coming back, the VX-6R is mis-deviated at Direwolf's audio level and
-  the long-frame zeros mean nothing.**
+- **~~Next test: swap the FT-2900R for the VX-6R.~~ CANCELED 2026-11-26.**
+  A larger swap was run instead and moved nothing. Do not buy, borrow or dig
+  out that radio.
+
+### The 2026-11-26 three-transmitter result: it is the modem, not the station
+
+A second transmitter was built for the day: **KD3CCO-9**, an FTX-1 Optima on
+the laptop, Direwolf in the project's own Docker image, 20 W to an N9TAX.
+That is a different radio, sound card, antenna and power level from the
+iGate, and it behaves **identically** to it. Frames were handed to each
+station byte-exact over KISS by `w3ya_matrix.py`, on an explicit `W3YA-1`
+path so a relay is unambiguous.
+
+| On air | FT5DR, internal TNC | KD3CCO-9, Direwolf | KD3CCO-10, Direwolf | pooled Direwolf |
+|---|---|---|---|---|
+| 76 B | 4/7 | 16/24 | 5/8 | 21/32 |
+| 83 B | 1/1 | 4/24 | 2/8 | 6/32 |
+| **89 B** | **4/7** | **0/24** | **0/8** | **0/32** |
+| 95 B | 0/6 | 0/24 | 0/8 | 0/32 |
+
+**0 of 32 against 4 of 7 at 89 B, Fisher p = 0.0004, and no difference
+whatever at the 76 B control (p = 0.81).** The KD3CCO-9 column pools three
+transmit configurations that all gave 0/8: plain FM at 44100, D-FM at 44100,
+and D-FM at 48000.
+
+- **The contemporaneous control is the strongest part.** At **18:11:32**,
+  between frames `{22` and `{23` of the last sweep, W3YA-1 relayed a **93 B**
+  frame from NJ3T-4, and a 92 B one from W3YMW minutes earlier. Same
+  digipeater, same channel, same minutes it refused every 89 B frame from
+  KD3CCO-9. That kills time of day, propagation, W3YA-1 being busy or
+  degraded, and any universal length ceiling in one observation.
+- **Everything clearing 89 B at W3YA-1 has a hardware or firmware modem.**
+  NJ3T-4 is `APN382`, a KPC-3 like W3YA-1 itself. The only two transmitters
+  that cannot are the two PC sound cards.
+- **Ruled out on 2026-11-26, do not re-test:** the iGate's radio (a different
+  one behaves the same), the sound card (two different codecs, same result),
+  mic-path audio processing (FM and D-FM identical at 89 B), symbol-timing
+  jitter from Direwolf's non-integer 36.75 samples per symbol at 44100
+  (48000 gives exactly 40 and changed nothing), deviation, transmit power,
+  and antenna.
+- **Deviation is measured and is not the discriminator.** At the Pi,
+  KD3CCO-7 reads 24 and KD3CCO-9 reads 22 against a population median of 38.
+  Under a decibel apart, yet 4/7 against 0/24 at 89 B. The iGate was already
+  measured at **2.8 kHz** by Carson's rule on 2026-10-03, inside the 2.5 to
+  3.0 kHz target. **Do not chase more deviation**: the level-38 population is
+  mostly digipeater retransmissions running hot, and pushing toward them
+  drives AFSK into the limiter, which is the failure the published article
+  already warns about.
+- **The FTX-1 was found clipping** at ALSA `Speaker` 10 and above, with no
+  gain in deviation past the knee. It now runs at 9. `USB MOD GAIN` 48 to 80
+  did not move the ceiling, and the radio is at its design limit for DATA-FM.
+- **What is left** is an interaction between Direwolf's AFSK waveform and
+  W3YA-1's single hardware DPLL with no error correction. No mechanism has
+  been identified. The cheapest remaining instrument is still W3SWL-2's
+  Direwolf log, which needs no transmissions.
+
+### KD3CCO-9, the laptop test transmitter (new 2026-11-26)
+
+`w3ya_matrix.py` builds AX.25 UI frames to an exact on-air byte count and
+hands them to one or more Direwolf instances over KISS. It replaces
+`w3ya_length_sweep.py` for anything needing byte-exact control, because that
+one injects into APRS-IS and lets the gateway build the frame. `--score LOG`
+reports relayed/sent per station per length, `--dry-run` builds without
+transmitting, and on-air length uses the same accounting as
+`digi_length_profile.onair()` so numbers stay comparable across the
+repository.
+
+`ftx1_test.conf` is the Direwolf config for the FTX-1. It deliberately has no
+`IGSERVER`: a second igate would put another copy of every test frame into
+the dedupe window. To bring the station back up:
+
+- **Release the codec from PipeWire first**, or Direwolf cannot open it:
+  `pactl set-card-profile alsa_card.usb-C-Media_Electronics_Inc._USB_Audio_Device-00 off`
+  (restore with `output:analog-stereo+input:analog-stereo`).
+- **Run rigctld on the host, not in the container.** The entrypoint's own
+  rigctld wedges there, listening on 4532 but never answering, while the
+  identical command works on the host. Unexplained, and worth an hour if it
+  matters later. Use
+  `rigctld -m 1051 -r /dev/ttyUSB0 -s 38400 -p /dev/ttyACM0 -P RIG -t 4532 -T 127.0.0.1`,
+  then run the container with `--network host` and `-e CAT=none`.
+- Model **1051**, CAT on `/dev/ttyUSB0` at 38400, PTT via `/dev/ttyACM0`.
+  The hamlib mode name that selects D-FM is **`PKTFM`**.
+- **Do not send raw CAT with `rigctl w`.** `w "MD0A;"` timed out and left the
+  VFO on 146.365 MHz. Use hamlib's own `F` and `M` commands.
+- `--group-add 18 --group-add 63` for dialout and audio, `--device /dev/snd`.
+- Laptop receive is poor and cannot be fixed: the codec is maxed at +23 dB
+  with no boost or source control, and `USB OUT LEVEL` moves nothing in
+  either the MODE FM or MODE DATA group. The laptop is a weak second witness
+  only; it saw 7 relays where the Pi saw 24. **The Pi is the instrument.**
 
 ### Traps when running a length sweep
+
+- **aprs.fi cannot see digipeater relays of this station, ever.** Measured
+  2026-11-26: the iGate pushed **nine** `W3YA-1*` copies into APRS-IS as
+  `[rx>ig]` lines, and aprs.fi stored **none** of them. The direct copy
+  arrives about a second earlier with an identical source and information
+  field, lands inside the APRS-IS dedupe window, and the repeated copy is
+  dropped before storage. Counted on one sweep: the Pi logged 38 receive
+  events, aprs.fi held exactly 32, missing precisely the 6 relayed copies.
+  This is not a rendering question. aprs.fi *does* print asterisks, and the
+  API returns them in plain text for other stations
+  (`KB3EWY-9 → W3YA-1,WIDE1*`); the hex view shows `0x2c` after `W3YA-1`,
+  never `0x2a`. **Score relays from the local Direwolf log and nothing else.**
+  The aprs.fi raw page is also behind a Cloudflare browser check, so neither
+  curl nor WebFetch can reach it; only a real browser can.
+- **`digi_relay_audit.py` silently ignores a plain `.log` file.** Its
+  `logfiles()` keeps only names ending `.log.gz`, so a pulled uncompressed
+  `direwolf.log` is skipped with no warning. On 2026-11-26 that read 2 of 3
+  logs and ended a day and a half early. Gzip anything before putting it in
+  an analysis directory. Same family as the `direwolf.log.gz` naming trap
+  below.
+- **`grep` without `-a` treats `direwolf.log` as binary** and prints
+  "binary file matches" instead of the matching lines, which reads as a clean
+  negative. The Python tools are safe because they open `latin-1`; any shell
+  grep on that log needs `-a`.
+- **An addressee on the whitelist creates a transmit loop.** A test frame
+  addressed to `KD3CCO-1` was gated to APRS-IS by W3SWL-2, pulled straight
+  back by this station's `IGFILTER g/KD3CCO*`, and **retransmitted on
+  `WIDE1-1,WIDE2-2` two seconds later** on the wrong path. `w3ya_matrix.py`
+  defaults to addressee `TESTLEN` for that reason. Keep test addressees off
+  `WHITELIST_CALLS`.
+- **`KISS_PORT` must go back to 0 after testing.** It binds 0.0.0.0 with no
+  authentication and anything that reaches it can transmit under MYCALL. The
+  config comment says so; honor it.
 
 - **`w3ya_length_sweep.py` had `AX25_OVERHEAD = 27` hardcoded**, which is right
   only for a ONE-entry path. With `TX_VIA = WIDE1-1,WIDE2-2` it understates
@@ -1033,8 +1177,10 @@ Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
   `WIDE1-1,WIDE2-2` the W3YA-1 control rate is only ~20%, so most cycles carry
   no information about it by the script's own rule; the explicit path gives
   ~41%. Changing it means editing `igate.conf`, `deploy_igate.sh config` and a
-  restart. **Restore it afterwards** and confirm `IGTXVIA 0 WIDE1-1,WIDE2-2`
-  in `run/direwolf.conf`. A backup `igate.conf.bak-txvia-2026-11-15` is on the
+  restart. **Restore it afterwards** and confirm `IGTXVIA 0 WIDE1-1,WIDE2-1`
+  in `run/direwolf.conf` -- that is the restore target since 2026-11-28, and
+  the backup below predates the change, so read the value rather than the
+  file name. A backup `igate.conf.bak-txvia-2026-11-15` is on the
   Pi.
 - **The script's `sent_at` only means APRS-IS accepted the injection.** Confirm
   each frame against a `[0L` line in `run/direwolf.log` before counting it.
@@ -1053,9 +1199,43 @@ Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
   archives, so a pull with that name parses to zero frames silently. Name it
   something else, as `pulled-low1-explicit.log.gz`.
 
+- **Decode `<0xNN>` before measuring any frame length.** Dire Wolf prints a
+  non-printable byte as those six characters, so `len()` on the log text adds
+  five bytes per escaped byte. That hits every MIC-E frame and every Yaesu
+  frame with its trailing `<0x0d>`, and corrupt decodes carrying long runs of
+  `<0xff>` land at 300-plus bytes and take over the top of a max-length table.
+  Found 2026-11-26 after a re-implementation put K3DNA's maximum at 311 B;
+  with escapes decoded it is 224 B and the whole table reproduces. **A max
+  emitted over about 240 bytes is the bug, not a finding** -- AX.25 on this
+  channel does not go there.
+- **One station's tocall is not one station's equipment.** N3DXC-2 transmits
+  under `APMI06`, `APN001` and `BEACON`, across two vendors' ranges, so a
+  first-seen tocall is an arbitrary pick. Count them before labelling a row.
+  The matched pair is safe: K3DNA and W3YA-1 each send `APN391` and nothing
+  else, 1,120 and 1,111 beacons over the two logs.
+- **The gateway's direct path to K3DNA comes and goes.** 403 direct copies in
+  2026-10-29 to 2026-11-20, then **zero** in the 2026-11-25/26 window, where
+  all 326 of its beacons and all 511 path appearances arrived via WO3T-1,
+  KE4MHE-10 or W3YA-1. aprs.fi puts the last direct copy at 2026-11-20. A
+  36-hour window is not enough to measure K3DNA, and a zero there is the
+  window rather than the station. KE4MHE-10 moves the other way, 105 emitted
+  copies in those three weeks against 5,942 in the following 36 hours.
+- **K3DNA relayed a 130-byte frame of ours on 2026-11-26**, which raises the
+  `K3DNA 91` entry in the max-of-mine list above. Shared `WIDE1-1,WIDE2-1`
+  ladder, credited by path: the gateway heard
+  `KD3CCO-10>APDW18,K3DNA,WIDE1,WO3T-1,WIDE2*`, so WO3T-1 emitted the copy
+  and K3DNA had handled it first. **Credit by path, not by emission, whenever
+  the ladder uses a shared path** -- the station that emitted the copy heard
+  is usually not the only one that touched the frame.
 - **Equipment comes free from the tocall**, and Dire Wolf prints its own decode
-  on the line after each frame. `APN3xx`/`APNU` = Kantronics, `APMI` = PLXDigi,
-  `APDW` = Dire Wolf, `APY05D` = Yaesu FT5D, `APK1xx` = Kenwood.
+  on the line after each frame. `APN3xx` = Kantronics KPC-3, `APNUxx` = UIdigi,
+  `APMIxx` = Microsat WX3in1, `APDW` = Dire Wolf, `APY05D` = Yaesu FT5D,
+  `APK1xx` = Kenwood. **Corrected 2026-11-26:** this list previously read
+  `APNU` as Kantronics and `APMI` as PLXDigi, both wrong, and that produced a
+  refuted equipment-gradient theory built on calling N3SNN-3 a PLXDigi and
+  WO3T-1 a Kantronics. N3SNN-3 settles its own case by beaconing the string
+  `WX3in1Mini` beside its `APMI04` tocall. Prefer a station's own beacon text
+  over the tocall family wherever it names the hardware.
 - **Pairing caveat in the audit.** A transmission is keyed on (source,
   information field). W3YA-1 pairs at 99% (608/613), but some relayed copies
   carry a trailing newline the TX-side record lacks, which is why W3TM-10 shows
@@ -1070,8 +1250,9 @@ Audited over **166,803 frames in twelve logs**, 2026-10-27 to 2026-11-15:
 ### W3YA-1 repeats the beacons and none of the gated traffic (2026-11-07)
 
 Counted over the text log's window, from echoes of this station's own
-transmissions. A path containing `WIDE2` is gated traffic, since
-`TX_VIA = WIDE1-1,WIDE2-2`; a path with only `WIDE1*` is a beacon, since
+transmissions. A path containing `WIDE2` is gated traffic, since `TX_VIA` was
+`WIDE1-1,WIDE2-2` when this was counted (`WIDE1-1,WIDE2-1` from 2026-11-28,
+which does not change the rule); a path with only `WIDE1*` is a beacon, since
 `BEACON_VIA = WIDE1-1`.
 
 | Digipeater | Gated, first hop | Beacons |
@@ -1097,15 +1278,23 @@ handheld's message list, and that step is not optional: skipping it undercounted
 the downlink by half. By site: South Atherton corridor 3 of 4, Elixer Cafe
 downtown 0 of 6, Fraser garage fifth floor 1 of 1.
 
-**The handheld's antenna does not explain that split, and the reason is worth
-keeping.** Stock rubber duck on every message. In a moving vehicle for the South
-Atherton sites and the Fraser garage, **on foot for both Elixer sites** (four
-from inside the building, two from the sidewalk). The messages that arrived went
-to a rubber duck shielded inside a car; the six that failed went to the same
-radio in open air. Taking the handheld out of the vehicle improved its receive
-situation and the downlink went to zero, so the limitation sits elsewhere in the
-chain. A mag-mount rerun would still be worth doing, to find out whether it
-lifts the overall level rather than the ranking.
+**Building penetration is the limit at the handheld** (established
+2026-11-28, superseding the 2026-11-07 reading of this split). Stock rubber
+duck on every message. In a moving vehicle for the South Atherton sites and
+the Fraser garage, **on foot for both Elixer sites** (four from inside the
+building, two from the sidewalk). On 2026-11-28 the same radio took 0 of 6
+gated messages inside a South Atherton McDonald's and had working
+bidirectional messaging within a minute of walking out to the parking lot,
+about twenty meters, with nothing else changed: same radio, same rubber duck,
+same path, same digipeaters. Indoors is the limit.
+
+The 2026-11-07 wording held that open air was *worse* than a rubber duck
+shielded inside a car, so the limitation sat elsewhere in the chain. That
+rested on the two Elixer sidewalk samples, which is a thinner sample than the
+conclusion drawn from it, at a more obstructed downtown site than South
+Atherton. **Do not carry that inference forward.** A mag-mount rerun is still
+worth doing, to find out whether it lifts the overall level rather than the
+ranking.
 
 The three easy explanations are ruled out: the station copies W3YA-1 direct 90
 times in the same log, so it is not a hearing problem; 28 gated transmissions
@@ -1461,8 +1650,10 @@ sent: W3TM-10 only ever 76, W3YA-1 max 75, WO3T-1 75 and 91, K3DNA 75, 91 and
 98.
 
 **Confound to respect in any beacon-against-message comparison.** Beacons go out
-on `BEACON_VIA = WIDE1-1` and gated messages on `TX_VIA = WIDE1-1,WIDE2-2`, so
-the two offer different aliases and draw different responders. K3DNA repeats 6%
+on `BEACON_VIA = WIDE1-1` and gated messages on `TX_VIA`, which was
+`WIDE1-1,WIDE2-2` for every measurement in this section and is
+`WIDE1-1,WIDE2-1` from 2026-11-28. Either way the two offer different aliases
+and draw different responders. K3DNA repeats 6%
 of the long frames and 0.8% of the short ones, which is an alias effect and not
 a length effect. The 2026-11-14 sweep held the path fixed and is the cleaner
 evidence.
